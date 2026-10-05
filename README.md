@@ -364,10 +364,11 @@ access:
 
 - **本机跑不了 `go test -race`**（无 gcc），所以它被放进了 CI 的 Linux 门（`.github/workflows/ci.yml`）——
   也就是说这条限制是"本机不可复现"，不是"没验过"。这个步骤是真的红过（run 37374000997，退出码 1），
-  而 GitHub 的 job 日志需要仓库管理员权限才能下载，所以现在把失败测试名与完整 `DATA RACE` 报告
-  用 `PATCH /check-runs/{id}` 写进 **check run 的 `output.summary`**——那是公开 API 唯一会回给匿名读者的一份；
-  `$GITHUB_STEP_SUMMARY` 试过，它只在登录后的 UI 里渲染，API 与匿名页面都是空的。原始 transcript 另存为
-  `go-test-logs` artifact，本地可直接 `node tmp/watch-ci.mjs 20 120 <sha>` 观察（`tmp/` 不入库）。
+  而失败测试名与完整 `DATA RACE` 报告写进**该 job 的 step summary**：打开 Actions 里那次运行、点开 job 顶部就能看到，
+  **但要登录 GitHub**。三个"让匿名读者也能读到"的想法都试过并且都失败了——job 日志与 artifact 下载都返回 403（已匿名验证）；
+  step summary 不会进 check-runs 的 `output.summary`；工作流自己 `PATCH /check-runs/{id}` 虽然返回 2xx，
+  但 **job 一结束该字段就被清空**（run 37377940124：一个在 job 之后运行、写入该字段的探测 job，从外部读回来仍是 null）。
+  所以这个仓库目前的诚实说法是：**失败原因需要登录才能读**；原始 transcript 另存为 `go-test-logs` artifact。
 - **测量不是容量承诺**：绝对 QPS 依赖这台主机、这个 mock 和这个客户端；带轮间噪声带的结论才算结论。
 - **云层在 M4 里是 stand-in**：分层路由的跨层延迟差是"本地真模型 + 本仓 mock"的差，不是与真实云 API 的对比。
 - **量化对比是 drift 不是精度**：AWQ/GPTQ 与 FP16 的输出差异以文本漂移度衡量，没有人工或自动评分。

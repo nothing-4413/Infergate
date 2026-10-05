@@ -26,22 +26,21 @@ jobs:
   # same one-line annotation, which is what a gate that cannot be read looks like.
   #
   # What replaced it: the transcript goes to a file, scripts/ci-summarize-go-test.sh
-  # keeps the failing tests and any race report, and the last step of the job PATCHes
-  # the check run with that text -- check-runs `output.summary` is the one field the
-  # public API serves to an anonymous reader. The raw transcript is uploaded as an
-  # artifact as well.
+  # keeps the failing tests and any race report, and that text goes into the job's
+  # step summary, where a signed-in reader sees it without downloading anything. The
+  # raw transcript is uploaded as an artifact as well.
   #
-  # Writing $GITHUB_STEP_SUMMARY was tried in between and did not work: it renders in
-  # the UI for a signed-in reader, and it does NOT populate check-runs
-  # output.summary -- the API and the job page both came back empty on the run that
-  # added it. That mistake is the one internal/repofmt/ci_wiring_test.go now forbids.
+  # Two later attempts to make the same text readable WITHOUT signing in both
+  # failed, and the details are recorded at the summarize steps below: step
+  # summaries never reach check-runs output.summary, and a check run PATCHed by the
+  # workflow is wiped when the job completes. There is no anonymous channel here.
   base:
     name: build / vet / test / race
-    # checks: write is what lets the last step of this job put its failure output
-    # where an unauthenticated reader can get it. The token needs no other scope.
+    # Read-only. A `checks: write` scope was added while this job was PATCHing its
+    # own check run with the failure summary; that scope went away with the
+    # publishing step, and nothing here needs it back.
     permissions:
       contents: read
-      checks: write
     # Pinned rather than ubuntu-latest: the label announced a migration to Ubuntu
     # 26 (runner-images#14748), and a silent distro change is not something a gate
     # should inherit.
@@ -89,17 +88,16 @@ jobs:
       # The old shape piped into `grep -E '...'`, which dropped everything else AND
       # made the step exit 1 without saying anything a reader could act on. Now the
       # transcript goes to a file, the next step summarizes it into the step
-      # summary, and `if: always()` is what makes the summary appear on the red run
-      # rather than only on the green one.
+      # summary, and `if: always()` is what makes that summary appear on a red run
+      # rather than only on a green one.
       - name: go test
         run: |
           set -o pipefail
-          mkdir -p /tmp/ci-summary
           go test ./... -count=1 -timeout 20m 2>&1 | tee /tmp/go-test.log
 
       - name: summarize go test
         if: always()
-        run: bash scripts/ci-summarize-go-test.sh /tmp/go-test.log /tmp/ci-summary/test.md "go test"
+        run: bash scripts/ci-summarize-go-test.sh /tmp/go-test.log "$GITHUB_STEP_SUMMARY" "go test"
 
       # The local machine cannot run this: `-race` needs cgo and there is no gcc
       # (README section 4 / section 10). A hosted runner can, which is the whole
@@ -108,34 +106,33 @@ jobs:
       - name: go test -race
         run: |
           set -o pipefail
-          mkdir -p /tmp/ci-summary
           go test -race ./... -count=1 -timeout 20m 2>&1 | tee /tmp/go-test-race.log
 
       - name: summarize go test -race
         if: always()
-        run: bash scripts/ci-summarize-go-test.sh /tmp/go-test-race.log /tmp/ci-summary/race.md "go test -race"
+        run: bash scripts/ci-summarize-go-test.sh /tmp/go-test-race.log "$GITHUB_STEP_SUMMARY" "go test -race"
 
-      # The step summaries above render in the UI for a signed-in reader. This step
-      # is what makes the same text readable by anyone: it PATCHes the job's check
-      # run, and check-runs `output.summary` is served by the public API. Without it
-      # a red run is, once again, one annotation reading "exit code 1".
+      # WHERE A RED RUN'S REASON ACTUALLY LIVES, after three attempts to put it
+      # somewhere better:
       #
-      # ${{ job.status }} decides whether that is worth doing: on a green job the
-      # summaries only list package lines, so it prints a digest to the step log
-      # instead of overwriting a passing check run's (empty) summary.
+      #   The job log needs admin rights (403 for everyone else, verified
+      #   anonymously). So does the artifact download.
       #
-      # continue-on-error because this is publishing, not gating: if the check run
-      # cannot be updated, the test result is still whatever the tests said.
-      - name: Publish failure summary
-        if: always()
-        continue-on-error: true
-        run: |
-          if [ "${{ job.status }}" = "success" ]; then mode=digest; else mode=publish; fi
-          bash scripts/ci-publish-failure-summary.sh /tmp/ci-summary "build / vet / test / race" "$mode"
-
-      # The transcript itself is not portable enough to rely on: the job log needs
-      # admin rights and an artifact needs a download. Uploading it keeps the summary
-      # free to stay a summary.
+      #   The step summary above is the one place a reader sees the failing test
+      #   names without downloading anything -- but only signed in. It does not
+      #   reach check-runs output.summary, and it is not in the anonymous job page.
+      #
+      #   PATCHing the job's own check run does work (gh api returns 2xx, from the
+      #   job and from a later job, with the token in GH_TOKEN) and is then WIPED
+      #   when the job completes: a job that ran afterwards and wrote
+      #   output.summary read it back as null from outside, on run 37377940124.
+      #   Check-runs output is not a channel a workflow can hand anything to an
+      #   anonymous reader through. Do not try again.
+      #
+      # What that leaves is honest and small: the summary for anyone who signs in,
+      # the full transcript in the artifact, and this job's own red/green state for
+      # everyone. internal/repofmt/ci_wiring_test.go keeps the summary wiring in
+      # place and keeps the check-run detour from coming back.
       - name: Upload test transcripts
         if: always()
         uses: actions/upload-artifact@v4
@@ -146,56 +143,6 @@ jobs:
             /tmp/go-test-race.log
           if-no-files-found: ignore
           retention-days: 7
-
-  # TEMPORARY PROBE -- delete once it has answered its question.
-  #
-  # Question: does a PATCH of a job-owned check run's output.summary survive that
-  # job's completion? It was PATCHed successfully (the step exited 0, so the API
-  # answered 2xx) from inside the base job on run 37376195840 and again with the
-  # jq-less path on run 37376841910, and both times output.summary read back as
-  # null from outside. Either the API discards the field when the owning job
-  # completes, or that 2xx was never about the field.
-  #
-  # This job runs AFTER the base job has completed and PATCHes the same check run,
-  # then reads it straight back into the log. If the read-back shows the probe text
-  # and an external GET afterwards shows null, the answer is "completion wipes it",
-  # and in-job publishing is dead rather than merely broken.
-  probe-check-run-wipe:
-    name: probe check run wipe
-    needs: base
-    if: always()
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      checks: write
-    steps:
-      # Exit code 4 on the first attempt is gh's "not authenticated" code, which
-      # points at the token rather than at the API shape. So say what the token is:
-      # present or not, which variable it came from, and what gh thinks of it. No
-      # --jq anywhere, because a failing gh api piped into head loses its status.
-      - name: Report the token and try the PATCH
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set +e
-          echo "GITHUB_TOKEN is ${GITHUB_TOKEN:+set}${GITHUB_TOKEN:-unset}"
-          echo "GH_TOKEN is ${GH_TOKEN:+set}${GH_TOKEN:-unset}"
-          echo "--- gh auth status ---"
-          gh auth status
-          echo "--- anonymous-ish GET of this commit's check runs ---"
-          gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs" > /tmp/cr.json
-          echo "GET exit=$?"
-          id=$(sed -n 's/.*"id": *\([0-9]*\).*/\1/p' /tmp/cr.json | head -n 1)
-          echo "first check run id parsed by sed: ${id}"
-          echo "--- PATCH ---"
-          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/check-runs/${id}" \
-            -f "output[title]=PROBE TITLE" \
-            -f "output[summary]=PROBE SUMMARY from a job that runs after base completed"
-          echo "PATCH exit=$?"
-          echo "--- read back ---"
-          gh api "repos/${GITHUB_REPOSITORY}/check-runs/${id}"
-          echo "readback exit=$?"
 
 
   # The curl gates: real binaries, real processes, real sockets, real curl.exe.

@@ -1,5 +1,5 @@
 // CI-wiring checks that have no Go source to attach to. These are deliberately
-// shallow -- they read three files and look for strings -- because the property they
+// shallow -- they read two files and look for strings -- because the property they
 // protect is not a behaviour of this module, it is a promise about what a red run
 // publishes.
 package repofmt
@@ -20,21 +20,25 @@ import (
 // attempt piped `go test` through a `grep` so the FAIL lines landed in the step log
 // -- which only helped readers who were already allowed to open it, and the second
 // failure produced the same annotation. The second attempt wrote
-// $GITHUB_STEP_SUMMARY, which is the documented way and does render in the UI: it
-// does NOT populate check-runs `output.summary`, so the check-run API and the job
-// page both served an anonymous client nothing.
+// $GITHUB_STEP_SUMMARY, which is the documented way and does render in the UI for a
+// signed-in reader: it does NOT populate check-runs `output.summary`, so the
+// check-run API and the anonymous job page both served nothing.
 //
-// What works is PATCHing the check run, because `PATCH /check-runs/{id}`'s
-// `output.summary` is the one field a public API reader can get. So the assertions
-// below are about the four links in that chain, each of which has been missing at
-// some point: the transcript exists as a file, something summarizes it into a
-// fragment, something publishes the fragments to the check run, and the publishing
-// step runs when a previous step failed.
+// The third attempt PATCHed the job's own check run, which does work -- `gh api`
+// returned 2xx with the token supplied explicitly -- and is then wiped when the job
+// completes. A job that ran afterwards PATCHed `output.summary` and read it back as
+// null from outside (run 37377940124). Check-runs output is not a channel a workflow
+// can hand an anonymous reader anything through, and the assertions below exist so
+// that detour does not come back.
+//
+// So the honest chain is what this test now pins: the transcript lands in a file,
+// the summarizer turns it into the job's step summary (readable to any signed-in
+// reader, without downloading anything), the raw transcript is uploaded as an
+// artifact, and every step that has to run after a failure carries `if: always()`.
 func TestRedRunPublishesAReadableTranscript(t *testing.T) {
 	root := repoRoot(t)
 	workflow := readFile(t, filepath.Join(root, ".github", "workflows", "ci.yml"))
 	summarize := readFile(t, filepath.Join(root, "scripts", "ci-summarize-go-test.sh"))
-	publish := readFile(t, filepath.Join(root, "scripts", "ci-publish-failure-summary.sh"))
 
 	// Link 1: the transcript has to exist as a file for anything to summarize. The
 	// grep attempt piped it and never kept it.
@@ -43,18 +47,9 @@ func TestRedRunPublishesAReadableTranscript(t *testing.T) {
 			"a summary cannot be built from a pipe")
 	}
 
-	// Link 2: it goes to a fragment, not into $GITHUB_STEP_SUMMARY directly. The
-	// indirection is what lets one step publish all of them together, and doing it
-	// the direct way was the attempt that looked right and was unreadable.
-	for _, frag := range []string{"/tmp/ci-summary/race.md", "/tmp/ci-summary/test.md"} {
-		if !strings.Contains(workflow, frag) {
-			t.Errorf("ci.yml no longer writes a summary fragment to %s", frag)
-		}
-	}
-	// Two checks below read only the lines that actually run. A `#` line is a
-	// comment, and everything inside a `run: |` block is shell -- and this workflow
-	// discusses the mistakes it is avoiding in both, which is the point of it. So
-	// what is scanned is the YAML a runner would execute, not the prose around it.
+	// Only the lines a runner would execute count. A `#` line is a comment and
+	// everything inside a `run: |` block is shell -- and this workflow discusses the
+	// mistakes it is avoiding in both, which is the point of it.
 	var executable []string
 	blockIndent := -1
 	for _, line := range strings.Split(workflow, "\n") {
@@ -74,12 +69,17 @@ func TestRedRunPublishesAReadableTranscript(t *testing.T) {
 		}
 		executable = append(executable, code)
 	}
+	runs := strings.Join(executable, "\n")
 
-	if strings.Contains(strings.Join(executable, "\n"), "GITHUB_STEP_SUMMARY") {
-		t.Error("ci.yml runs a step that writes to $GITHUB_STEP_SUMMARY, which renders " +
-			"in the UI but does not populate check-runs output.summary -- i.e. not " +
-			"readable by an anonymous client. Publish through " +
-			"scripts/ci-publish-failure-summary.sh")
+	// Link 2: the summary is written, and it is written where the UI reads it. The
+	// second argument has to be the runner's own summary file -- writing to a
+	// fragment and PATCHing a check run with it is the detour described above.
+	// Scanned on the whole file rather than on `runs`: the write happens inside a
+	// `run: |` block, which the tokenizer deliberately treats as opaque shell.
+	if !strings.Contains(workflow, "GITHUB_STEP_SUMMARY") ||
+		!strings.Contains(workflow, "scripts/ci-summarize-go-test.sh") {
+		t.Error("ci.yml no longer passes $GITHUB_STEP_SUMMARY to the summarizer; a red " +
+			"run's failing test names then reach no reader at all")
 	}
 
 	// A pipe through grep was the first attempt.
@@ -89,36 +89,20 @@ func TestRedRunPublishesAReadableTranscript(t *testing.T) {
 		}
 	}
 
-	// Link 3: the fragments reach the check run.
-	if !strings.Contains(workflow, "ci-publish-failure-summary.sh") {
-		t.Error("ci.yml no longer calls scripts/ci-publish-failure-summary.sh, so the " +
-			"failure output never reaches check-runs output.summary")
-	}
-	if !strings.Contains(publish, "check-runs/${id}") || !strings.Contains(publish, "output.summary") {
-		t.Error("the publisher no longer PATCHes a check run's output.summary")
-	}
-	if !strings.Contains(publish, "--rawfile") {
-		t.Error("the publisher builds its JSON without --rawfile; an interpolated " +
-			"transcript would break on the first quote or backslash in a Go stack trace")
-	}
-	// jq is optional and must stay optional. The publisher's first real run reported
-	// success while leaving output.summary empty: it demanded jq, jq was not there,
-	// and the step exited 0 without saying so publicly. The gh-only fallback is what
-	// makes it work on such a runner; dropping it empties the summary again.
-	if !strings.Contains(publish, "command -v jq") {
-		t.Error("the publisher no longer treats jq as optional; on a runner without " +
-			"it the step still exits 0 and publishes nothing")
-	}
-	if !strings.Contains(publish, "--raw-field") {
-		t.Error("the publisher lost the gh-only path that builds the JSON without jq")
+	// Link 3: the detour must not return. This is a negative assertion about a
+	// channel that was measured: the field is wiped when the owning job completes.
+	if strings.Contains(runs, "check-runs") || strings.Contains(runs, "checks: write") {
+		t.Error("ci.yml is publishing to check runs again; a job's check-run output is " +
+			"wiped when the job completes, so that text reaches nobody (see the comment " +
+			"above the summarize steps)")
 	}
 
-	// Link 4: publishing has to happen on the failing run. This is the mistake that
-	// leaves the gate silent precisely when it matters.
-	if strings.Count(workflow, "if: always()") < 4 {
-		t.Errorf("ci.yml has %d `if: always()` steps; both summarize steps, the publish "+
-			"step and the artifact upload need one, or the summary only appears when "+
-			"nothing failed", strings.Count(workflow, "if: always()"))
+	// Link 4: the summary has to be produced on the failing run. This is the mistake
+	// that leaves the gate silent precisely when it matters.
+	if n := strings.Count(workflow, "if: always()"); n < 3 {
+		t.Errorf("ci.yml has %d `if: always()` steps; both summarize steps and the "+
+			"artifact upload need one, or the summary only appears when nothing "+
+			"failed", n)
 	}
 
 	// The summarizer has to carry the race report, not just the words "DATA RACE".

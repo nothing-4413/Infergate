@@ -8,9 +8,12 @@
 # twice, the second time after a `grep` had been added precisely to fix it. The
 # grep only helped readers who were allowed to open the log.
 #
-# The step summary is the one artifact that is NOT behind that wall: it comes back
-# in check-runs `output.summary` over the plain public API. So this script is the
-# difference between "the gate is red" and "the gate is red because of this".
+# The step summary is what a reader sees without downloading anything, and it is
+# where this text has to live. Two better-sounding channels were measured and are
+# closed: the summary does not populate check-runs `output.summary`, and a check run
+# PATCHed by the workflow is wiped when the job completes (run 37377940124). A sign-in
+# is therefore required to read the failing test names -- say so in the docs rather
+# than claiming otherwise a third time.
 #
 # The whole DATA RACE report is kept, not just its banner line. A race is only
 # actionable as the pair of accesses that raced plus the state they shared, and

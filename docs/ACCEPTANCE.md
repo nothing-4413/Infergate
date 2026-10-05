@@ -51,19 +51,22 @@ curl 门编译真二进制、拉真进程、用真 `curl.exe` 打真 socket，�
 | `.\scripts\verify-m*.ps1` | 1060 条 curl 端到端断言 | **绿**：`curl gates (M0-M6, operator token)` job 在 run 37374000997 上 119 秒跑完，8 个门（M0–M6 + 管理面令牌门）全过 |
 
 两个 `go test` 步骤把整份 transcript 写进 `/tmp`，再由 `scripts/ci-summarize-go-test.sh`
-捕出失败测试与**完整的 DATA RACE 报告**写成分片，最后由
-`scripts/ci-publish-failure-summary.sh` 用 `PATCH /check-runs/{id}` 把分片放进
-**check run 的 `output.summary`**；每一步都带 `if: always()`，所以这条路在红的那一次也走得通。
+捕出失败测试与**完整的 DATA RACE 报告**，写进**该 job 的 step summary**（`$GITHUB_STEP_SUMMARY`）；
+每一步都带 `if: always()`，所以这条路在红的那一次也走得通。
 
-为什么不是 `$GITHUB_STEP_SUMMARY`：那是文档写的方式，也确实**渲染在 UI 里**，但它
-**不会**填进 check-runs 的 `output.summary` —— 加了它的那次 run，check-run API 与
-匿名拉到的 job 页面 HTML 里都是空的（step summary 存在另一处、且不在公开 API 里）。
-job 日志（`GET /actions/jobs/{id}/logs` 需要仓库管理员权限）与 artifact 同样读不到。
-这条链试过三版：注解 → `grep` 进步骤日志 → `$GITHUB_STEP_SUMMARY`，前两版只是让
-**本来就有权限的人**看得见，第三版连匿名读者都看不见。
+**读这份摘要要登录 GitHub**，这一点必须明说，因为三个"让匿名读者也能读到"的做法都试过、都失败了：
 
-判据：`GET /repos/{o}/{r}/check-runs/{id}` 里 `output.summary` 应当直接写着失败的测试名或一份
-race 报告；原始 transcript 另存为 `go-test-logs` artifact。
+1. **job 日志**（`GET /actions/jobs/{id}/logs`）与 **artifact 下载**都返回 403（原文
+   `{"message":"Must have admin rights to Repository.", "status":403}`），已匿名验证。
+   第一版就是为此加 `| grep`，但它只帮到本来就有权限打开日志的人。
+2. **step summary 不进 check-runs 的 `output.summary`**：加了它的那次 run，check-run API 与
+   匿名拉到的 job 页面 HTML 里都是空的。它确实渲染在 UI 里，但要先登录。
+3. **工作流自己 `PATCH /check-runs/{id}`**：写 `output.summary` 会返回 2xx（`gh` 需要显式
+   `GH_TOKEN`，否则退出码 4），**但 job 一结束该字段就被清空**。run 37377940124 里一个在 base job
+   之后运行、专门 PATCH 并读回该字段的探测 job 证实了这一点：从外部读回来仍是 `null`。
+
+所以现在留在仓库里的说法是诚实的：`curl gates` 与 `go test` 的结论对**登录后的读者**可见（Actions 页）；
+失败原因在 job 的 step summary 里，原始 transcript 另存为 `go-test-logs` artifact。不再声称匿名可读。
 
 ### 管理面鉴权（`access`）的证据边界
 
