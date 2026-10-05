@@ -18,9 +18,18 @@ jobs:
   # WHAT ALREADY HAPPENED HERE (run 37361004384, commit b3280cb): build, vet and
   # `go test` passed; `go test -race` exited 1. The job log is not downloadable
   # without admin rights, and the only annotation GitHub attached was "Process
-  # completed with exit code 1", which names no test. That is why the two test
-  # steps below now append failure markers: a red run should say WHICH test broke
-  # without anyone needing the log.
+  # completed with exit code 1", which names no test.
+  #
+  # The first fix for that piped each test step through a `grep`, so the FAIL lines
+  # landed in the step log. That did not solve the problem: the log still needs
+  # admin rights. The second run's race failure therefore arrived as exactly the
+  # same one-line annotation, which is what a gate that cannot be read looks like.
+  #
+  # What replaced it: the transcript goes to a file, scripts/ci-summarize-go-test.sh
+  # keeps the failing tests and any race report, and the result is appended to the
+  # step summary -- which IS readable over the public API (check-runs
+  # output.summary) by anyone who can read the repository. The raw transcript is
+  # uploaded as an artifact as well.
   base:
     name: build / vet / test / race
     # Pinned rather than ubuntu-latest: the label announced a migration to Ubuntu
@@ -66,19 +75,47 @@ jobs:
       # -timeout 20m is well under the job timeout and well over the suite's real
       # cost; if a package ever hangs, the panic names the test instead of the job
       # dying silently.
+      #
+      # The old shape piped into `grep -E '...'`, which dropped everything else AND
+      # made the step exit 1 without saying anything a reader could act on. Now the
+      # transcript goes to a file, the next step summarizes it into the step
+      # summary, and `if: always()` is what makes the summary appear on the red run
+      # rather than only on the green one.
       - name: go test
         run: |
           set -o pipefail
-          go test ./... -count=1 -timeout 20m 2>&1 | tee /tmp/go-test.log | grep -E '^(ok|FAIL|---|\s+---)|panic:|DATA RACE'
+          go test ./... -count=1 -timeout 20m 2>&1 | tee /tmp/go-test.log
+
+      - name: summarize go test
+        if: always()
+        run: bash scripts/ci-summarize-go-test.sh /tmp/go-test.log "$GITHUB_STEP_SUMMARY" "go test"
 
       # The local machine cannot run this: `-race` needs cgo and there is no gcc
       # (README section 4 / section 10). A hosted runner can, which is the whole
-      # reason this step exists -- and on the first run it did fail, so it is not
-      # a formality.
+      # reason this step exists -- and on its first real run it did fail, so it is
+      # not a formality.
       - name: go test -race
         run: |
           set -o pipefail
-          go test -race ./... -count=1 -timeout 20m 2>&1 | tee /tmp/go-test-race.log | grep -E '^(ok|FAIL|---|\s+---)|panic:|DATA RACE|WARNING: DATA RACE'
+          go test -race ./... -count=1 -timeout 20m 2>&1 | tee /tmp/go-test-race.log
+
+      - name: summarize go test -race
+        if: always()
+        run: bash scripts/ci-summarize-go-test.sh /tmp/go-test-race.log "$GITHUB_STEP_SUMMARY" "go test -race"
+
+      # The step summary is public-readable; the job log is not. Uploading the raw
+      # transcript too means the summary can stay a summary and a reader who needs
+      # the whole thing can still get it.
+      - name: Upload test transcripts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-test-logs
+          path: |
+            /tmp/go-test.log
+            /tmp/go-test-race.log
+          if-no-files-found: ignore
+          retention-days: 7
 
   # The curl gates: real binaries, real processes, real sockets, real curl.exe.
   # 1060 assertions that the Linux job above cannot run at all, because all seven

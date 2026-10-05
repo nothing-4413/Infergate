@@ -103,7 +103,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m3.ps1   # 
 .\tools\go.cmd run .\cmd\verify-m4                                     # M4，877 条断言
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m4.ps1   # M4 curl，125 条（两层假上游，不需要 GPU）
 .\tools\go.cmd run .\cmd\verify-m5                                     # M5，420 条断言
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m5.ps1   # M5 curl，203 条
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m5.ps1   # M5 curl，211 条
 .\tools\go.cmd run .\cmd\verify-m6                                     # M6，381 条断言
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m6.ps1   # M6 curl，149 条（幂等 / 账本 / 能力发现）
 ```
@@ -780,7 +780,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\measure-m4.ps1  # 
   日志成本）、导出器异步（量的是建 span + 入队）、`sample_ratio 1.0` 是最坏情况、抓取是上界，
   固定请求数还意味着机器越快相位越短（本次 c=8 非流式相位约 0.5s）。
 
-验收：Go `cmd/verify-m5` **420** 条断言 + 真实进程 curl `scripts/verify-m5.ps1` **203** 条断言
+验收：Go `cmd/verify-m5` **420** 条断言 + 真实进程 curl `scripts/verify-m5.ps1` **211** 条断言
 （两个真 mock + 仓库自带的 `cmd/mockcollector`）+ `scripts/measure-m5.ps1` **10** 项检查全部通过、
 **0** 条失败断言（72 条在写产物前记录，12 条收尾断言在其后执行，标准输出共 84 条）。设计取舍与全部
 口径见 `docs/DESIGN.md` §12。

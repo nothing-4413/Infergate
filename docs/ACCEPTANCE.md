@@ -13,10 +13,19 @@ M4–M6 的验收与实测段落与各自的启动方式写在一起，见 [USAG
 | M2 语义缓存 | 103 | 157 | `baseline/m2-summary.json`（+ 语料、阈值扫描、6 条压测逐轮文件） |
 | M3 配额治理 | 470 | 323 | `baseline/m3-summary.json` |
 | M4 分层与量化 | 877 | 125 | `baseline/m4-summary.json` |
-| M5 可观测与压测 | 420 | 203 | `baseline/m5-summary.json`（+ 24 条逐轮文件） |
+| M5 可观测与压测 | 420 | 211 | `baseline/m5-summary.json`（+ 24 条逐轮文件） |
 | M6 幂等/账本/能力 | 381 | 149 | `baseline/m6-summary.json` |
 | **合计** | **2353** | **1060** | |
 | 管理面鉴权（`access`，不属任何里程碑） | 41 | 44 | 无（证据是 `scripts/verify-hardening.ps1` 的输出） |
+
+M5 的 curl 门从 203 条变成 211 条，加的是 8 条解析器自检（`10.0a`–`10.0h`）：
+下面那五条只把 p50/p90/p95/p99/max 互相比较，而**一个恒定值满足其中每一条不等式**。
+`verify-m5.ps1` 里原来有一个字面 U+00B5（微秒单位）写在 switch 标签上，
+Windows PowerShell 5.1 读无 BOM 的 `.ps1` 时用机器代码页解码，那个标签在本机解成了别的字符，
+于是 `42ms` 全部落到 `return -1.0`——五个值都是 -1，五条不等式恒真，
+门看起来是绿的却在解析它本该解析的东西之外。现在解析器在比较之前先对已知输入自证。
+`baseline/m5-summary.json` 仍是 203 条时跑出来的，所以这里出现过一个数字，
+上面这张表里是另一个；两者都能对账，因为它们指的是不同的运行。
 
 管理面鉴权默认关闭，所以 M0–M6 的两条证据链一行都没有覆盖它。它有自己的第三条链：
 `scripts/verify-hardening.ps1`，**真进程 + 真 curl + 44 条断言**，见下方「管理面鉴权的证据边界」。
@@ -37,14 +46,19 @@ curl 门编译真二进制、拉真进程、用真 `curl.exe` 打真 socket，�
 | `go vet ./...` | 静态检查 | 绿 |
 | `gofmt -l ./cmd ./internal` | 格式门 | 绿（加入这一步时仓库里有 7 个文件不干净，已一并修好） |
 | `go test ./... -count=1 -timeout 20m` | 全部单元/集成测试（Linux，无 `-race`） | 绿 |
-| `go test -race ./... -count=1 -timeout 20m` | 竞态检测（**本机做不到**：无 gcc） | **红**（run 37361004384，退出码 1） |
+| `go test -race ./... -count=1 -timeout 20m` | 竞态检测（**本机做不到**：无 gcc） | **红**（run 37374000997，退出码 1；这是它第一次真正跑起来） |
 | `.\tools\go.cmd run .\cmd\verify*` | 2353 条 Go 端到端断言 | 尚未接入（需要 Windows runner） |
-| `.\scripts\verify-m*.ps1` | 1060 条 curl 端到端断言 | 已写进 `ci.yml` 的第二个 job（`windows-2022`，7 个步骤 + 失败时上传 `tmp/**.log`），**首次运行尚未发生** |
+| `.\scripts\verify-m*.ps1` | 1060 条 curl 端到端断言 | **绿**：`curl gates (M0-M6, operator token)` job 在 run 37374000997 上 119 秒跑完，8 个门（M0–M6 + 管理面令牌门）全过 |
 
-两个 `go test` 步骤在失败时会 `grep` 出 `FAIL` / `--- FAIL` / `DATA RACE` 等行——**这是刻意的**：
+两个 `go test` 步骤把整份 transcript 写进 `/tmp`，再由 `scripts/ci-summarize-go-test.sh`
+捕出失败测试与**完整的 DATA RACE 报告**，追加到 `$GITHUB_STEP_SUMMARY`；
+`if: always()` 让摘要出现在红的那一次，而不是只出现在绿的那一次。**这是刻意的**：
 首次上 CI 时 `-race` 那一步只留下了一句 “Process completed with exit code 1”，
-而 GitHub 的 job 日志需要仓库管理员权限才能下载（`GET /actions/jobs/{id}/logs` 返回 403），
-于是失败原因无处可查；改成把关键行写进注解后，下一次红的时候能直接看到是哪个测试。
+而 GitHub 的 job 日志需要仓库管理员权限才能下载（`GET /actions/jobs/{id}/logs` 返回 403）。
+第一版修法是把 `go test` 管进 `grep`，那样只让**有权限打开日志的人**看得见——
+第二次红的时候，注解还是那一句，于是有了现在这版。
+判据：`GET /repos/{o}/{r}/check-runs/{job_id}` 的 `output.summary` 匿名可读，
+里面应当直接写着失败的测试名或一份 race 报告。原始 transcript 另存为 `go-test-logs` artifact。
 
 ### 管理面鉴权（`access`）的证据边界
 

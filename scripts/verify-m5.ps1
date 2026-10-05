@@ -424,20 +424,34 @@ function Get-SpanNamed {
     return $null
 }
 
+# NOTE ON THE MICRO SIGN. These two functions used to spell the microsecond unit
+# with a literal U+00B5 in the pattern and in a switch label. Windows PowerShell
+# 5.1 reads a .ps1 with no BOM using the machine's ANSI code page, so those three
+# characters decoded differently on every machine: on this one (CP936) the label
+# became U+00C2 U+00B5 and stopped matching the captures the pattern produced, so
+# every millisecond duration fell through to `return -1.0`. The assertions that
+# consume it still passed, because they compare percentiles with each other and a
+# constant satisfies every one of those inequalities -- a gate that read as green
+# while parsing nothing it was supposed to parse.
+#
+# The pattern now spells the unit as the escape `\u00B5`, and the decoded label is
+# named by code point, so the file is pure ASCII and both spellings are accepted.
+# The other gate scripts were already ASCII; this is the rule they were following.
 function Test-Duration {
     param([string]$Text)
-    return [regex]::IsMatch("$Text", '^[0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h)')
+    return [regex]::IsMatch("$Text", '^[0-9]+(\.[0-9]+)?(ns|us|\u00B5s|ms|s|m|h)')
 }
 
 function Get-Duration {
     param([string]$Text)
-    $m = [regex]::Match("$Text", '^([0-9]+(?:\.[0-9]+)?)(ns|us|µs|ms|s|m|h)$')
+    $m = [regex]::Match("$Text", '^([0-9]+(?:\.[0-9]+)?)(ns|us|\u00B5s|ms|s|m|h)$')
     if (-not $m.Success) { return -1.0 }
     $v = [double]$m.Groups[1].Value
+    $micro = [string][char]0x00B5 + 's'
     switch ($m.Groups[2].Value) {
         'ns' { return $v / 1000000.0 }
         'us' { return $v / 1000.0 }
-        'µs' { return $v / 1000.0 }
+        $micro { return $v / 1000.0 }
         'ms' { return $v }
         's' { return $v * 1000.0 }
         'm' { return $v * 60000.0 }
@@ -921,6 +935,23 @@ tracing:
     # 10. /stats
     # =======================================================================
     Write-Section '10. /stats reports the latency window'
+
+    # The parser first, on inputs whose answers are known. The five checks below
+    # this block only compare percentiles with each other, and a constant returns
+    # true for every one of those inequalities -- which is exactly how the micro
+    # sign in a switch label used to turn all five green while parsing nothing.
+    # Known inputs are the only way this gate can tell "ordered" from "unparsed".
+    # Assert-Equal stringifies and compares with -ceq, so the expected values are
+    # whole multiples of the unit word -- 1500000ns is 1.5ms exactly, in binary too.
+    $microSecond = [string][char]0x00B5 + 's'
+    Assert-Equal '10.0a the parser reads nanoseconds'  1.5      (Get-Duration '1500000ns')
+    Assert-Equal '10.0b the parser reads microseconds' 1.5      (Get-Duration '1500us')
+    Assert-Equal '10.0c the parser reads milliseconds' 42       (Get-Duration '42ms')
+    Assert-Equal '10.0d the parser reads seconds'      1500     (Get-Duration '1.5s')
+    Assert-Equal '10.0e the parser reads minutes'      120000   (Get-Duration '2m')
+    Assert-Equal '10.0f the parser reads hours'        3600000  (Get-Duration '1h')
+    Assert-Equal '10.0g the parser reads the micro sign' 1.5    (Get-Duration ('1500' + $microSecond))
+    Assert-True  '10.0h a non-duration is rejected'    ((Get-Duration 'not-a-duration') -lt 0)
 
     $stats = Get-Json (Invoke-Http -Url "$gwBase/stats").Body
     Assert-Equal '10.1 /stats counts every proxied request' $script:proxied ([int]"$($stats.requests)")

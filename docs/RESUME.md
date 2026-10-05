@@ -468,7 +468,7 @@ mock 注入延迟 0），每阶段 1500 请求 + 300 预热，**取 3 轮的 QPS
   `-diag` 的五路对照（直连 / 默认连接池 / 调参连接池 / 手写最小透传 / 真网关）**证伪了"网关逻辑是瓶颈"**
   ——真网关在进程内比手写最小透传还快（23.9k vs 22.2k QPS，p50 1.14ms / p95 2.71ms），真正有代价的是
   每请求日志（`error` 相对 `info` 约 +18% QPS、P95 少约 4ms）。
-- 验收与产物：`cmd/verify-m5` 420 条 + `scripts/verify-m5.ps1` 203 条（两个真 mock + 仓库自带
+- 验收与产物：`cmd/verify-m5` 420 条 + `scripts/verify-m5.ps1` 211 条（两个真 mock + 仓库自带
   `cmd/mockcollector`，断言的是"上游真的收到同一个 `traceparent`""OTLP 载荷真的 POST 到配置端点"
   "JSONL 行数 == `export_stats`"）+ `docs/baseline/m5-summary.json`（10 项检查全部通过、0 条失败断言：
   72 条在写产物前记录，12 条收尾断言（进程/端口清理）在其后执行，标准输出共 84 条；外加 24 份原始
@@ -537,7 +537,7 @@ JSONL 59400 行 == `export_stats.jsonl.written` 且每行都能解析出 `trace_
 - `deploy/` 的 Prometheus / Grafana 配置**没有在本机跑过**：只验证到"能解析 + 每个 `infergate_*` 名字
   与 M5 契约逐条对齐"，没有真抓取、查询或面板渲染。
 
-验收：Go 端到端 `cmd/verify-m5` **420** 条断言 + 真实进程 curl 门禁 `scripts\verify-m5.ps1` **203** 条
+验收：Go 端到端 `cmd/verify-m5` **420** 条断言 + 真实进程 curl 门禁 `scripts\verify-m5.ps1` **211** 条
 断言（两个真 mock + 仓库自带 `cmd/mockcollector`）+ `scripts/measure-m5.ps1` **10** 项检查全部通过、
 **0** 条失败断言（72 条记录 + 12 条收尾，共 84 条）。复现命令
 `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\measure-m5.ps1 -Concurrency '8,32,128' -Requests 3000 -Warmup 300 -Rounds 3 -Timeout 30s`。

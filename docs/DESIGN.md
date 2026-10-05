@@ -837,7 +837,7 @@ OTLP/HTTP 允许用 protobuf 的 JSON 映射直接 POST 到 `/v1/traces`，所�
   与环形缓冲的容量、丢弃数逐个对齐；同一 request id 的采样决策幂等；导出载荷逐字段断言（OTLP 的
   `kind` 是枚举**数字**而不是字符串、`parentSpanId` 指向 root、`status.code`、`startTimeUnixNano` 是十进制
   字符串）。这些不变式只有进程内断言写得死：对着几个真实样本反推"桶是否累积"是做不到的。
-- **真实进程门 `scripts/verify-m5.ps1`（203 条断言）**：两个真 mock 上游 + `cmd/mockcollector`（本仓库
+- **真实进程门 `scripts/verify-m5.ps1`（211 条断言；203 是加入 8 条解析器自检之前的数字）**：两个真 mock 上游 + `cmd/mockcollector`（本仓库
   自带的 OTLP/HTTP 采集端）+ 真 `curl.exe`。它证明的是跨进程的那部分：网关发给上游的 `traceparent` 与
   调用方带的是同一个（从采集端**记录的真实请求头**读回，而不是从网关自述里读）、OTLP 载荷真的 POST 到了
   配置的端点、JSONL 行数与 `/admin/tracing` 的 `export_stats` 一致、有界存储淘汰后旧 trace 取回是 404、
