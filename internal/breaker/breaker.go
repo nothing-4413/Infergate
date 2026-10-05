@@ -252,14 +252,14 @@ type Report struct {
 	Rejects int64  `json:"rejections"`
 
 	// Stats is the windowed picture the breaker is acting on.
-	Attempts       int64   `json:"attempts"`
-	Failures       int64   `json:"failures"`
-	Timeouts       int64   `json:"timeouts"`
-	FailureRatio   float64 `json:"failure_ratio"`
-	LatencyMeanMS  float64 `json:"latency_mean_ms"`
-	TTFBMeanMS     float64 `json:"ttft_mean_ms"`
-	HasLatency     bool    `json:"has_latency"`
-	OpenedForMS    float64 `json:"opened_for_ms,omitempty"`
+	Attempts      int64   `json:"attempts"`
+	Failures      int64   `json:"failures"`
+	Timeouts      int64   `json:"timeouts"`
+	FailureRatio  float64 `json:"failure_ratio"`
+	LatencyMeanMS float64 `json:"latency_mean_ms"`
+	TTFBMeanMS    float64 `json:"ttft_mean_ms"`
+	HasLatency    bool    `json:"has_latency"`
+	OpenedForMS   float64 `json:"opened_for_ms,omitempty"`
 }
 
 // Report snapshots the breaker and its window.

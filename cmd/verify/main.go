@@ -70,7 +70,7 @@ func main() {
 
 	checks := []struct {
 		name string
-		run  func(*checker, string) 
+		run  func(*checker, string)
 	}{
 		{"non-streaming passthrough", checkNonStream},
 		{"SSE stream byte transparency", checkStreamTransparent},
@@ -237,9 +237,9 @@ func checkToolCallDeltas(c *checker, base string) {
 		} `json:"choices"`
 	}
 	var (
-		args     strings.Builder
-		fnName   string
-		callID   string
+		args      strings.Builder
+		fnName    string
+		callID    string
 		fragments int
 	)
 	for _, f := range parseSSE(raw) {

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/infergate/infergate/internal/breaker"
+	"github.com/infergate/infergate/internal/cache"
 	"github.com/infergate/infergate/internal/metrics"
 	"github.com/infergate/infergate/internal/router"
 	"github.com/infergate/infergate/internal/upstream"
@@ -59,6 +60,15 @@ type Proxy struct {
 	// can inject a transport (to simulate a dead backend, a slow backend, or a
 	// mid-stream disconnect) without standing up a real server.
 	transportFor func(*upstream.Target) http.RoundTripper
+
+	// cache is the M2 semantic cache. Nil means every request goes upstream,
+	// which is exactly the M0/M1 behaviour.
+	//
+	// The Proxy holds a *cache.Cache rather than an interface because the cache
+	// is not a pluggable detail: the identity rules above (which prompts may be
+	// matched, which parameters must agree) are part of this package's
+	// correctness argument, not of the store's.
+	cache *cache.Cache
 }
 
 // Options configures a Proxy.
@@ -101,6 +111,11 @@ type Options struct {
 
 	// RetryBackoff is the base delay between attempts.
 	RetryBackoff time.Duration
+
+	// Cache answers repeated questions without an upstream call. Nil disables
+	// caching entirely (the M0/M1 behaviour), which is also why enabling it is
+	// an explicit configuration decision rather than a default.
+	Cache *cache.Cache
 }
 
 // New builds a Proxy.
@@ -127,6 +142,7 @@ func New(opts Options) *Proxy {
 		upstreamTTL: opts.UpstreamTimeout,
 		router:      opts.Router,
 		breakers:    opts.Breakers,
+		cache:       opts.Cache,
 	}
 	p.maxAttempts = opts.MaxAttempts
 	if p.maxAttempts < 1 {
@@ -171,7 +187,7 @@ type record struct {
 	// on a coarse clock, and gating on `firstToken > 0` would silently drop
 	// that sample.
 	firstTokenSet bool
-	usage      Usage
+	usage         Usage
 
 	// explicitModel distinguishes "the client asked for this model" from "we
 	// substituted the backend's own model", which matters when reading logs.
@@ -189,6 +205,20 @@ type record struct {
 	// failovers counts attempts that were abandoned because of a transport
 	// error or an upstream 5xx.
 	failovers int
+
+	// cacheIdent is this request's cache identity, computed once in serve so
+	// that the lookup, the response headers and the store all describe the same
+	// question. Nil when the cache is disabled.
+	cacheIdent *cacheIdentity
+
+	// cacheStatus is the value reported in X-InferGate-Cache and in the request
+	// log line. It is set even when nothing was cached, because "this request
+	// was skipped, and here is why" is the fact an operator needs.
+	cacheStatus string
+
+	// cacheReason explains a skip or an error, for the log rather than the
+	// response.
+	cacheReason string
 }
 
 // Usage mirrors sse.Usage without importing it here, keeping the record type
@@ -281,6 +311,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if rec.reason != "" {
 			attrs = append(attrs, slog.String("reason", rec.reason))
 		}
+		if rec.cacheStatus != "" {
+			attrs = append(attrs, slog.String("cache", rec.cacheStatus))
+			if rec.cacheReason != "" {
+				attrs = append(attrs, slog.String("cache_reason", rec.cacheReason))
+			}
+		}
 		if rec.attempts > 1 {
 			attrs = append(attrs, slog.Int("attempts", rec.attempts))
 		}
@@ -317,7 +353,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, rec *record) {
 		rec.status = http.StatusBadRequest
 		rec.outcome = metrics.OutcomeBadRequest
 		rec.reason = "read body"
-			writeError(w, http.StatusBadRequest, TypeBadRequest, "could not read request body: "+err.Error())
+		writeError(w, http.StatusBadRequest, TypeBadRequest, "could not read request body: "+err.Error())
 		return
 	}
 	if tooLarge {
@@ -334,6 +370,18 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, rec *record) {
 	rec.model = parsed.Model
 	rec.explicitModel = parsed.Model
 	rec.stream = parsed.Stream && isStreamPath(r.URL.Path)
+
+	// M2: the cache answers before routing is even considered, because a hit
+	// makes the routing decision moot. The identity is derived from the body as
+	// the CLIENT sent it, before any backend-specific model rewrite, so two
+	// requests that differ only in how they spell the model name share an
+	// exact key.
+	if p.cache != nil {
+		p.prepareCache(w, r, rec, body, parsed)
+		if p.cacheAttempt(w, r, rec) {
+			return
+		}
+	}
 
 	p.serveAttempts(w, r, rec, parsed, body)
 }
@@ -951,6 +999,13 @@ func (p *Proxy) copyWhole(w http.ResponseWriter, r *http.Request, resp *http.Res
 		if _, werr := w.Write(body); werr != nil {
 			rec.reason = "write to client: " + werr.Error()
 			return metrics.OutcomeCanceled
+		}
+		// M2: store the answer after it has been delivered. A cache write that
+		// is slow (or a Redis that has gone away) must cost the CALLER nothing;
+		// the answer is already on the wire, so the only thing a failure here
+		// can affect is whether the next identical request is cheap.
+		if resp.StatusCode == http.StatusOK {
+			p.storeCache(r.Context(), rec, body, resp.Header.Get("Content-Type"))
 		}
 		return metrics.OutcomeSuccess
 	}

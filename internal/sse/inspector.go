@@ -141,8 +141,8 @@ func (in *Inspector) Observe(f *Frame) Observation {
 	}
 
 	var env struct {
-		Model   string `json:"model"`
-		Usage   *struct {
+		Model string `json:"model"`
+		Usage *struct {
 			PromptTokens        int `json:"prompt_tokens"`
 			CompletionTokens    int `json:"completion_tokens"`
 			TotalTokens         int `json:"total_tokens"`

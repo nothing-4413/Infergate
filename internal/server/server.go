@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/infergate/infergate/internal/breaker"
+	"github.com/infergate/infergate/internal/cache"
 	"github.com/infergate/infergate/internal/config"
 	"github.com/infergate/infergate/internal/gateway"
 	"github.com/infergate/infergate/internal/metrics"
@@ -33,6 +34,7 @@ type Server struct {
 	breakers *breaker.Group
 	router   *router.Router
 	recorder *metrics.Recorder
+	cache    *cache.Cache
 	http     *http.Server
 	started  time.Time
 	version  string
@@ -99,6 +101,18 @@ func NewServer(cfg *config.Config, logger logAdapter) (*Server, error) {
 		Price:    price,
 	})
 
+	// M2: build the cache before the proxy, because a hit is answered without
+	// routing anything. Only an enabled cache is handed to the proxy; a
+	// disabled one still exists so /admin/cache can report what is configured.
+	semanticCache, err := buildCache(cfg, logger)
+	if err != nil {
+		return nil, err
+	}
+	var proxyCache *cache.Cache
+	if cfg.Cache.Enabled {
+		proxyCache = semanticCache
+	}
+
 	proxy := gateway.New(gateway.Options{
 		Upstreams:       registry,
 		Pricing:         priceBook,
@@ -110,6 +124,7 @@ func NewServer(cfg *config.Config, logger logAdapter) (*Server, error) {
 		Breakers:        breakers,
 		MaxAttempts:     cfg.Health.MaxFailuresPerRequest,
 		RetryBackoff:    cfg.Health.RetryBackoff.Duration(),
+		Cache:           proxyCache,
 	})
 
 	s := &Server{
@@ -120,6 +135,7 @@ func NewServer(cfg *config.Config, logger logAdapter) (*Server, error) {
 		breakers: breakers,
 		router:   routerInst,
 		recorder: recorder,
+		cache:    semanticCache,
 		started:  time.Now(),
 	}
 
@@ -132,6 +148,9 @@ func NewServer(cfg *config.Config, logger logAdapter) (*Server, error) {
 	mux.HandleFunc("GET /admin/upstreams", s.handleUpstreams)
 	mux.HandleFunc("GET /admin/breakers", s.handleBreakers)
 	mux.HandleFunc("POST /admin/breakers/reset", s.handleBreakerReset)
+	mux.HandleFunc("GET /admin/cache", s.handleCache)
+	mux.HandleFunc("POST /admin/cache/flush", s.handleCacheFlush)
+	mux.HandleFunc("GET /admin/cache/lookup", s.handleCacheLookup)
 
 	// Everything else is the OpenAI-compatible surface. The catch-all must not
 	// swallow the exact routes above: Go's ServeMux prefers the more specific
@@ -263,12 +282,12 @@ func (s *Server) handleUpstreams(w http.ResponseWriter, r *http.Request) {
 		"upstreams":   out,
 		"model_index": s.registry.ModelIndex(),
 		"routing": map[string]any{
-			"strategy":            s.router.Strategy(),
-			"weights":             s.cfg.Routing.Weights,
-			"fallback_model":      s.cfg.Routing.FallbackModel,
+			"strategy":             s.router.Strategy(),
+			"weights":              s.cfg.Routing.Weights,
+			"fallback_model":       s.cfg.Routing.FallbackModel,
 			"default_capabilities": s.cfg.Routing.DefaultCapabilities,
-			"max_attempts":        s.cfg.Health.MaxFailuresPerRequest,
-			"retry_backoff":       s.cfg.Health.RetryBackoff.String(),
+			"max_attempts":         s.cfg.Health.MaxFailuresPerRequest,
+			"retry_backoff":        s.cfg.Health.RetryBackoff.String(),
 		},
 		"breaker_states": s.breakerStates(),
 	})
@@ -304,12 +323,12 @@ func (s *Server) handleBreakers(w http.ResponseWriter, r *http.Request) {
 		"upstreams": reports,
 		"summary":   states,
 		"health": map[string]any{
-			"window":            s.cfg.Health.Window.String(),
-			"min_requests":      s.cfg.Health.MinRequests,
-			"failure_ratio":     s.cfg.Health.FailureRatio,
-			"open_duration":     s.cfg.Health.OpenDuration.String(),
-			"half_open_probes":  s.cfg.Health.HalfOpenProbes,
-			"max_attempts":      s.cfg.Health.MaxFailuresPerRequest,
+			"window":           s.cfg.Health.Window.String(),
+			"min_requests":     s.cfg.Health.MinRequests,
+			"failure_ratio":    s.cfg.Health.FailureRatio,
+			"open_duration":    s.cfg.Health.OpenDuration.String(),
+			"half_open_probes": s.cfg.Health.HalfOpenProbes,
+			"max_attempts":     s.cfg.Health.MaxFailuresPerRequest,
 		},
 	})
 }
@@ -360,14 +379,14 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	for _, row := range snap {
 		total += row.Count
 		requests = append(requests, map[string]any{
-			"route":          row.Route,
-			"upstream":       row.Upstream,
-			"model":          row.Model,
-			"status":         row.Status,
-			"outcome":        string(row.Outcome),
-			"count":          row.Count,
-			"mean_seconds":   row.MeanSeconds,
-			"total_seconds":  row.TotalSeconds,
+			"route":         row.Route,
+			"upstream":      row.Upstream,
+			"model":         row.Model,
+			"status":        row.Status,
+			"outcome":       string(row.Outcome),
+			"count":         row.Count,
+			"mean_seconds":  row.MeanSeconds,
+			"total_seconds": row.TotalSeconds,
 		})
 	}
 
@@ -411,8 +430,53 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		},
 		"first_token_mean": firstToken,
 		"streams":          streams,
+		"cache":            s.statsCache(r.Context()),
 		"uptime":           time.Since(s.started).Round(time.Second).String(),
 	})
+}
+
+// statsCache renders the M2 cache block for /stats. A nil or disabled cache
+// reports {"enabled": false} rather than omitting the key, so a dashboard can
+// tell "off" from "not deployed yet".
+func (s *Server) statsCache(ctx context.Context) map[string]any {
+	if s.cache == nil || !s.cache.Config().Enabled {
+		return map[string]any{"enabled": false}
+	}
+	cs := s.cache.Stats()
+	ss := s.cache.Store().Stats()
+	return map[string]any{
+		"enabled":         true,
+		"store":           s.cache.Store().Name(),
+		"lookups":         cs.Lookups,
+		"hits":            cs.Hits,
+		"exact_hits":      cs.ExactHits,
+		"semantic_hits":   cs.SemanticHits,
+		"misses":          cs.Misses,
+		"stores":          cs.Stores,
+		"hit_ratio":       hitRate(cs),
+		"stale_evictions": cs.StaleEvictions,
+		"entries":         cacheEntries(ctx, s.cache),
+		"evictions":       ss.Evicted,
+		"errors":          cs.LookupErrors + cs.StoreErrors,
+		"saved_tokens": map[string]any{
+			"prompt":     cs.SavedPromptTokens,
+			"completion": cs.SavedCompletionTokens,
+			"total":      cs.SavedPromptTokens + cs.SavedCompletionTokens,
+		},
+	}
+}
+
+// cacheEntries counts stored entries across every scope.
+//
+// The template is deliberately forgiving: this feeds a gauge, and a store that
+// is briefly unavailable (Redis restarting) must not turn /metrics into a 500
+// when every other number in the response is still valid.
+func cacheEntries(ctx context.Context, c *cache.Cache) int {
+	n, err := c.Store().Len(ctx, "")
+	if err != nil {
+		return -1
+	}
+	return n
 }
 
 // handleMetrics renders the counters in Prometheus text exposition format.
@@ -497,6 +561,45 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(&b, "infergate_breaker_trips_total{upstream=%q} %d\n", rep.Name, rep.Trips)
 		fmt.Fprintf(&b, "infergate_breaker_rejections_total{upstream=%q} %d\n", rep.Name, rep.Rejects)
 		fmt.Fprintf(&b, "infergate_breaker_failure_ratio{upstream=%q} %g\n", rep.Name, rep.FailureRatio)
+	}
+
+	// M2 cache counters. The hit/miss split is by far the most useful number
+	// here: a rising lookup count with a flat hit count means the cache is
+	// running but never matching, which looks exactly like a working cache from
+	// a request-rate graph.
+	if s.cache != nil {
+		cs := s.cache.Stats()
+		ss := s.cache.Store().Stats()
+		fmt.Fprintf(&b, "# HELP infergate_cache_lookups_total Cache lookups performed.\n")
+		fmt.Fprintf(&b, "# TYPE infergate_cache_lookups_total counter\n")
+		fmt.Fprintf(&b, "# HELP infergate_cache_hits_total Cache hits, by kind.\n")
+		fmt.Fprintf(&b, "# TYPE infergate_cache_hits_total counter\n")
+		fmt.Fprintf(&b, "# HELP infergate_cache_misses_total Lookups that fell through to an upstream.\n")
+		fmt.Fprintf(&b, "# TYPE infergate_cache_misses_total counter\n")
+		fmt.Fprintf(&b, "# HELP infergate_cache_stores_total Responses stored for later reuse.\n")
+		fmt.Fprintf(&b, "# TYPE infergate_cache_stores_total counter\n")
+		fmt.Fprintf(&b, "# HELP infergate_cache_errors_total Cache operations that failed and degraded to an upstream call.\n")
+		fmt.Fprintf(&b, "# TYPE infergate_cache_errors_total counter\n")
+		fmt.Fprintf(&b, "# HELP infergate_cache_entries Current entry count.\n")
+		fmt.Fprintf(&b, "# TYPE infergate_cache_entries gauge\n")
+		fmt.Fprintf(&b, "# HELP infergate_cache_evictions_total Entries dropped to stay within the per-scope bound.\n")
+		fmt.Fprintf(&b, "# TYPE infergate_cache_evictions_total counter\n")
+		fmt.Fprintf(&b, "# HELP infergate_cache_hit_ratio Share of lookups answered from the cache.\n")
+		fmt.Fprintf(&b, "# TYPE infergate_cache_hit_ratio gauge\n")
+		fmt.Fprintf(&b, "infergate_cache_lookups_total %d\n", cs.Lookups)
+		fmt.Fprintf(&b, "infergate_cache_hits_total{kind=\"exact\"} %d\n", cs.ExactHits)
+		fmt.Fprintf(&b, "infergate_cache_hits_total{kind=\"semantic\"} %d\n", cs.SemanticHits)
+		fmt.Fprintf(&b, "infergate_cache_misses_total %d\n", cs.Misses)
+		fmt.Fprintf(&b, "infergate_cache_stores_total %d\n", cs.Stores)
+		fmt.Fprintf(&b, "infergate_cache_errors_total{kind=\"lookup\"} %d\n", cs.LookupErrors)
+		fmt.Fprintf(&b, "infergate_cache_errors_total{kind=\"store\"} %d\n", cs.StoreErrors)
+		fmt.Fprintf(&b, "infergate_cache_entries{store=%q} %d\n", s.cache.Store().Name(), cacheEntries(r.Context(), s.cache))
+		fmt.Fprintf(&b, "infergate_cache_evictions_total %d\n", ss.Evicted)
+		fmt.Fprintf(&b, "infergate_cache_hit_ratio %g\n", hitRate(cs))
+		fmt.Fprintf(&b, "# HELP infergate_cache_saved_tokens_total Provider tokens a cache hit avoided regenerating.\n")
+		fmt.Fprintf(&b, "# TYPE infergate_cache_saved_tokens_total counter\n")
+		fmt.Fprintf(&b, "infergate_cache_saved_tokens_total{kind=\"prompt\"} %d\n", cs.SavedPromptTokens)
+		fmt.Fprintf(&b, "infergate_cache_saved_tokens_total{kind=\"completion\"} %d\n", cs.SavedCompletionTokens)
 	}
 
 	_, _ = w.Write([]byte(b.String()))

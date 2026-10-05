@@ -286,14 +286,14 @@ func (m *Recorder) ObserveStreamFrames(upstream string, frames, bytes int64) {
 
 // RequestSnapshot is one (route, upstream, model, status, outcome) counter.
 type RequestSnapshot struct {
-	Route         string
-	Upstream      string
-	Model         string
-	Status        int
-	Outcome       Outcome
-	Count         int64
-	TotalSeconds  float64
-	MeanSeconds   float64
+	Route        string
+	Upstream     string
+	Model        string
+	Status       int
+	Outcome      Outcome
+	Count        int64
+	TotalSeconds float64
+	MeanSeconds  float64
 }
 
 // Snapshot returns a stable copy of the request counters, sorted by key.

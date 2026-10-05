@@ -57,7 +57,56 @@ const (
 	// the response. It is response-only: a client that sees two names knows a
 	// failover happened without reading the gateway's logs.
 	HeaderTried = "X-InferGate-Tried"
+
+	// HeaderTenant names the isolation namespace a request belongs to, and is
+	// what keeps one caller's cached answers away from another's. When it is
+	// absent the gateway derives a namespace from the credential (hashed, never
+	// stored) or falls back to "anonymous".
+	HeaderTenant = "X-InferGate-Tenant"
+
+	// HeaderCache is a request directive and a response report, deliberately
+	// one header in both directions so that "what did I ask for" and "what did
+	// I get" are the same string in a log or a curl transcript.
+	//
+	// Request values: "bypass" (do not serve from the cache) and "refresh" (do
+	// not serve the stored answer, but replace it). Both still STORE the fresh
+	// answer unless the request is uncacheable - a bypass that also declined to
+	// store would make "force a refresh" a way to permanently disable caching
+	// for a scope, one request at a time.
+	//
+	// Response values: "hit-exact", "hit-semantic", "miss", "skip" (the request
+	// itself cannot be cached) and "bypass"/"refresh" echoed back when a
+	// directive was honoured.
+	HeaderCache = "X-InferGate-Cache"
+
+	// HeaderCacheAge reports the age of a served cached entry in whole
+	// milliseconds. An answer with an age is a different thing from an answer,
+	// which is why the number is always sent with a hit rather than left for
+	// the caller to infer from the body.
+	HeaderCacheAge = "X-InferGate-Cache-Age"
 )
+
+// Values of HeaderCache in the request direction.
+const (
+	cacheDirectiveBypass  = "bypass"
+	cacheDirectiveRefresh = "refresh"
+)
+
+// Values of HeaderCache in the response direction.
+const (
+	cacheStatusHitExact    = "hit-exact"
+	cacheStatusHitSemantic = "hit-semantic"
+	cacheStatusMiss        = "miss"
+	cacheStatusSkip        = "skip"
+	cacheStatusDisabled    = "disabled"
+	cacheStatusError       = "error"
+)
+
+// cacheStatusUpstream labels a request served from the cache in the per-request
+// metrics and logs. The upstream that ORIGINALLY produced the answer is not the
+// upstream that served this request, and attributing a cache hit to it would
+// make the per-upstream totals claim traffic that never arrived.
+const cacheStatusUpstream = "cache"
 
 // removeHopByHop deletes hop-by-hop headers from h, including any header the
 // Connection field itself lists.

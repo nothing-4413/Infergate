@@ -1,4 +1,4 @@
-# InferGate 设计文档（M0 + M1）
+# InferGate 设计文档（M0 + M1 + M2）
 
 本文档回答两个问题：**M0 / M1 的代码为什么这么组织**，以及**每个关键位置为什么这样写**。
 目标读者是"要能逐行讲清自己代码"的作者本人，所以每条都写到可以口头复述的程度。
@@ -339,3 +339,150 @@ M1 期间最大的一次"验证工具骗人"：`cmd/mockupstream` 的故障注�
 **按请求**生效的，网关转发时会把它带给**每一个**候选——于是"让第一个后端失败"实际变成了
 "让所有后端都失败"，测试看起来在验证故障转移，其实在验证全挂路径。所以按后端注入故障的能力
 （`internal/mockbackend`）不是方便，而是必需；curl 脚本里则改成"真的杀掉一个进程"。
+
+## 9. M2：语义缓存
+
+### 9.1 位置与依赖方向
+
+```
+请求 → 解析（inspectRequest + cacheIdentityFor）→ 缓存判定/命中 → 路由 → 尝试上游
+```
+
+缓存插在**解析之后、路由之前**（`internal/gateway/proxy.go` 的 `serve` 里
+`prepareCache` / `cacheAttempt` 先于 `serveAttempts`）：命中时不需要知道有哪些后端，
+更不应该去碰熔断器的窗口。这条"依赖方向"也解释了为什么 `gateway.Proxy` 里持有的是
+**具体类型** `*cache.Cache` 而不是接口——缓存的正确性论证（什么算同一个问题）属于网关这一层，
+存储层（`cache.Store`）才是可替换的。
+
+新增包：`internal/cache`（策略 + 两个 Store）、`internal/evalset`（带标签的语料）。
+`internal/embed`（离线 hashing + HTTP 两种 embedder）与 `internal/redis`（手写 RESP2 客户端）
+在 M2 之前就已存在并有测试。
+
+### 9.2 身份：什么算"同一个问题"
+
+一次缓存判定需要四个东西，全部在 `internal/gateway/cachereq.go` 里由**纯函数**算出：
+
+| 名称 | 内容 | 为什么 |
+| --- | --- | --- |
+| `Scope` | `tenant + model + capabilities` 的 sha256 前 16 位，前缀是清洗过的模型名 → `<model>/<hash16>` | 多租户隔离；不同能力约束可能路由到不同后端，回答不能互借 |
+| `ExactKey` | 客户端**原始** body + path + tenant 的 sha256 | 字节级重试必须命中，包括 temperature/seed/max_tokens 全一致 |
+| `Signature` | model、stream、temperature、top_p、max_tokens、n、seed、stop、tools、tool_choice、response_format + **对话前缀**的 sha256 | "总结设计文档"在 temperature 0 和 1 下是两个请求；同一句话在不同工具结果之后也是两个问题 |
+| `Prompt` | 最后一条 `user`/`tool` 消息的文本 | 语义检索的对象 |
+
+两个容易踩的细节：
+
+- **`ExactKey` 必须在 `rewriteModel` 之前算**。`rewriteModel` 会把 body 重新 marshal，
+  键序变成字典序；用改写后的 body 算键，两个客户端用不同别名指同一个模型时会得到不同的键。
+- **前缀整体参与 hash**（`messagesFingerprint`），而不是只看最后一句话。Agent 循环里
+  "同一个问题"往往是不同的上下文，只比最后一句话会把别的问题的答案发出去。
+
+`X-InferGate-Cache` 是**双向**头：请求侧取值 `bypass` / `refresh`，响应侧取值
+`hit-exact` / `hit-semantic` / `miss` / `skip` / `disabled` / `error`。它属于网关自己的头，
+上游拿不到（`isGatewayHeader` 会剥掉）。
+
+### 9.3 策略：只做减法
+
+`cache.Cacheable` 返回 `Decision{Lookup, Store, Semantic}`，初值全是 `true`，之后**只会被拿掉**：
+
+- `tools` 非空且未开 `allow_tools` → `Semantic=false`，理由 "tools present: exact match only"。
+- `temperature > 0`（或 `top_p < 1`）且未开 `allow_nondeterministic` → `Semantic=false`。
+- `bypass` / `refresh` → `Lookup=false`（但**仍然 Store**，所以 bypass 请求拿到的新答案会进缓存）。
+- 提示词短于 `min_prompt_chars` → 完全不缓存（`skip`）。
+
+这套规则来自一个不对称性：**miss 的代价是本来就要发生的一次上游调用，而错误的命中是调用方
+看不见的缺陷**。所以只要身份不确定，就选择重新问模型。注意 `temperature > 0` 仍然可以做
+**精确**命中——逐字节重试同一个采样请求是同一件事，而**换一种说法**永远不会被当成同一件事
+（网关测试 `TestCacheSamplingRequestsMatchExactlyOnly` 钉住这条）。
+
+省略 `temperature` 视为确定性（指针为 `nil`），因为省略参数是最常见的情况，而拒绝缓存它
+等于让缓存永远不命中。这条判断是有风险的，所以 `allow_nondeterministic` 与 `allow_tools`
+两个开关是给运维的，而不是给代码的。
+
+### 9.4 阈值：由测量决定，不由直觉决定
+
+离线 `HashingEmbedder` 是**词法**的，所以阈值必须对着语料量。`internal/evalset` 有 26 对
+带标签的中英样本（13 对应命中：同义改写、跨语言；13 对不该命中：近似词、只换一个实体），
+`cmd/measure-m2` 扫一遍阈值：
+
+```
+thresh    hit rate       false-hit rate
+0.84      77% (10/13)    23% (3/13)   nm-en-7,nm-en-8,nm-en-2
+0.86      62% (8/13)     0%  (0/13)
+0.88      62% (8/13)     0%  (0/13)
+0.90      46% (6/13)     0%  (0/13)
+0.94      31% (4/13)     0%  (0/13)
+```
+
+结论与取舍：
+
+- 0.86–0.88 是"零误命中"的安全平台；0.84 仍有 3 条误命中（`nm-en-2` 是
+  "reset my password" vs "reset my username" 这类，正是最不该命中的那种），0.90 起真命中
+  开始崩塌。
+- 工具推荐 0.88，代码默认 **0.86**：语料里最紧的一对真同义改写实测 0.8819，只比 0.88 高
+  0.0019——那是刀刃上的余量，不是余量。取平台的下沿保留约 0.02 的余量，而误命中率在语料上
+  仍为 0。
+- 阈值随 embedder 变：换成真实 embedding 模型后平台会整体移动，所以它是配置项
+  （`cache.threshold`），不是常量。`DefaultThreshold` 只是"离线 embedder + 这份语料"下的
+  实测值，替换 embedder 必须重跑 `cmd/measure-m2`。
+
+### 9.5 两个 Store、一套一致性测试
+
+`cache.Store` 有 memory（默认，进程内 LRU）与 Redis（跨副本共享）两种实现，同一个
+`TestStoreConformance` 对两者都跑。三处刻意的设计：
+
+- **向量与条目分开存**：`ig:cache:<scope>:vec` 是紧凑的 base64 float32 hash，
+  `...:meta` 才是 JSON。语义检索只读 vec hash，只对胜者取 JSON。
+- **过期按条目**（`...:exp` ZSET 的 score 是 expiresAt），不是 key 级 `EXPIRE`：
+  否则一个繁忙提示词会顺带延长同一 scope 里另一条陈旧答案的寿命。key 级 EXPIRE 只作为
+  2× TTL 的兜底。
+- **淘汰语义不同，且写在类型注释里**：memory 是真 LRU（`container/list`，因为
+  Agent 的会话历史正是"近期性有意义"的访问模式）；Redis 只能按创建时间 FIFO
+  （ZSET 报不出读取顺序）——"对近期性撒谎的缓存比承认自己按年龄淘汰的缓存更糟"。
+  这一条差异是唯一被允许的差异，也由 `TestRedisStoreIsFIFOAndDocumentedSo` 钉住。
+
+降级是硬要求：`NewRedisStore` 启动时 ping 一次（配错了要在启动时失败，而不是让每个请求
+静默 miss）；运行中 store 出错则退化为 miss，`/metrics` 仍然 200（`cacheEntries` 在
+store 报错时返回 -1，而不是把整个 `/metrics` 变成 500）。`internal/embed.Fallback`
+让 embedding 服务挂掉时退化成词法匹配，而不是让缓存失效。
+
+### 9.6 命中之后的账目：为什么不算上游消耗
+
+`ObserveTokens` 只在**真的发起过一次上游尝试**时调用，所以重放不会虚增 provider 消耗；
+命中时 `X-InferGate-Upstream-Name: cache`，`rec.usage` 仍然填上条目里的 token 数（日志里
+看得见答案包含多少 token），但这笔 token 记在缓存自己的 `saved_tokens` 上。同理刻意不动
+`rec.firstTokenSet`：首 token 直方图度量的是生成，把接近 0 的重放混进去，会让这个指标在
+缓存用得最狠的时候"变好"。上游的响应头也不会被重放——那等于声称一个从未被调用的后端刚刚作答。
+
+### 9.7 流式命中的重放
+
+流式答案存的是**客户端实际收到的帧字节**（`sse.Frame.Raw`，保留 id、model 和 provider 自己
+的分帧方式），上限 `max_body_bytes`，超限则放弃存储并把原因记进 `cache_reason`。重放时用
+`sse.NewReader` 重新解析这些字节并逐帧 `WriteUpstream`，每帧 flush，所以重放是增量的而不是
+一次性吐出。一个真实缺陷：`MirrorSSEHeader()` 在没有活的上游响应时什么都镜像不到，重放的
+响应因此**没有 Content-Type**——所以重放路径显式设置 `sse.ContentType`。
+
+### 9.8 验证：两个门 + 一份测量
+
+- `cmd/verify-m2`（Go，103 条断言，CI 门禁）：在进程内起**真实 server**（路由器、熔断器、
+  账目全在），覆盖 miss→exact→semantic、语料里所有不该命中的对、租户/模型隔离、
+  bypass/refresh、策略上限、流式逐帧重放、过期与 scope 上限、Redis store 与 store 死掉后的
+  降级、以及 `/admin/cache*`、`/stats`、`/metrics` 三个观测面。
+- `scripts/verify-m2.ps1`（curl，真进程）：内存 store 与真 Redis 协议服务
+  （`cmd/miniredis`，默认 :6399——刻意不是 6379，免得遮住本机真的 Redis）两条路径。
+- `scripts/measure-m2.ps1`：命中率/误命中率、命中率节流后的 token 与成本节省、命中与未命中
+  的端到端延迟对比，原始数据落在 `docs/baseline/m2-summary.json`。
+
+实测口径下的结果（本机回环，上游是仓库内 mock，store=memory，阈值 0.86）：请求口径命中率
+58.97%（23/39，13/13 对全部覆盖），13 对"近似但不同"的语料发 26 次请求**零命中**；
+纯命中路径 P95 5.5028ms（p50 1.0132ms）vs 纯未命中 47.3147ms（p50 5.5327ms）；
+节省上游 token 604；每 1000 请求成本 $0.036692 → $0.016（−56.39%）；杀掉上游进程后
+26 次请求仍全部 200（21 精确 + 5 语义，5xx 为 0），而未预热的对照请求返回 502。
+出厂配置 `min_prompt_chars: 12` 会跳过 26 对里 6 对（中文提示 7–8 个字），同一脚本在该配置下
+测得 41.03%（10/13 对），两个数一起报——否则测的是长度门而不是匹配器。
+
+这里也有一次"验证工具骗人"：第一版 `metricSum` 按**前缀**匹配 series，而暴露的 label 顺序
+每个 family 不同（`infergate_tokens_total` 以 upstream 开头，`infergate_cache_hits_total`
+以 kind 开头），于是它静默地读到 0——一个计数为 0 的指标和一个什么都没做的功能长得一模一样。
+现在用 `metricValue(text, series, labels)` 做**顺序无关**的 label 匹配。同一个验收器第一轮的
+7 条失败全部是期望写错或测试脚手架的 bug，没有一条是产品缺陷；这也是为什么验收器要先证明
+自己会失败。

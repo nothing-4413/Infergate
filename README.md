@@ -51,13 +51,18 @@ infergate/
 │   ├── infergate/          # 主程序入口：加载配置、起服务、优雅退出
 │   ├── mockupstream/       # OpenAI 兼容假上游，支持故障注入（延迟 / 异常码 / 省略 DONE）
 │   ├── loadtest/           # 压测与基线：直连 vs 经网关 × 流式/非流式 × 多并发
+│   ├── miniredis/          # 进程内 RESP2 服务（默认 :6399），给共享缓存做本机后端
+│   ├── measure-m2/         # 阈值扫描：语料 26 对，输出各阈值下的真命中率 / 误命中率
 │   ├── verify/             # M0 Go 端到端验收（38 条断言，CI 门禁）
-│   └── verify-m1/          # M1 Go 端到端验收：路由 / 故障转移 / 熔断（64 条断言）
+│   ├── verify-m1/          # M1 Go 端到端验收：路由 / 故障转移 / 熔断（64 条断言）
+│   └── verify-m2/          # M2 Go 端到端验收：语义缓存 / 存储降级 / 管理面（103 条断言）
 ├── configs/
 │   ├── infergate.yaml      # 生产形态示例（OpenAI / DeepSeek / 本地兜底）
 │   ├── mock.yaml           # 本地形态示例（指向 mockupstream，单上游 = M0 路径）
 │   ├── routing.yaml        # 生产形态多 Provider 路由（成本/延迟/可靠性权重 + 健康度窗口）
-│   └── routing-local.yaml  # 本地三副本路由（primary/secondary/tools，供 curl 验收与压测）
+│   ├── routing-local.yaml  # 本地三副本路由（primary/secondary/tools，供 curl 验收与压测）
+│   ├── cache-local.yaml    # M2 本地形态：单上游 + 内存缓存（逐行注释的配置说明）
+│   └── cache-redis.yaml    # M2 共享形态：同一套缓存策略换 Redis store
 ├── internal/
 │   ├── config/             # 配置加载：YAML -> JSON -> struct，环境变量覆盖，启动即校验
 │   ├── miniyaml/           # 手写 YAML 子集解析器（代价与收益见 docs/DESIGN.md）
@@ -67,19 +72,26 @@ infergate/
 │   ├── breaker/            # 滑动窗口熔断：closed / open / half-open + 半开探针
 │   ├── stats/              # 每上游滑动窗口统计（attempts/failures/timeouts/延迟/首字）
 │   ├── gateway/            # 代理核心：路由、多次尝试转发、流式中继、错误映射、计费
-│   ├── metrics/            # 内存指标聚合（请求 / 尝试 / token / 首字 / 流分片 / 熔断）
+│   ├── cache/              # 语义缓存：身份/策略/阈值门控 + memory(LRU) 与 Redis 两个 store
+│   ├── embed/              # Embedder：离线 hashing（词法）与 HTTP（OpenAI 兼容 /embeddings）
+│   ├── redis/              # 手写 RESP2 客户端（连接池、pipeline、超时、统计）
+│   ├── mockredis/          # 进程内 RESP2 服务端（测试用，支持 hash / zset）
+│   ├── evalset/            # 26 对中英标注语料（13 对同义改写 + 13 对近似但不同）
+│   ├── metrics/            # 内存指标聚合（请求 / 尝试 / token / 首字 / 流分片 / 缓存 / 熔断）
 │   ├── mockbackend/        # 进程内假上游（验收程序用，可按后端注入故障与停顿）
 │   ├── logging/            # slog 初始化
 │   └── server/             # HTTP 服务与运维端点（/healthz /readyz /stats /metrics /admin）
 ├── scripts/
 │   ├── verify-m0.ps1       # M0 curl 端到端验收（47 条断言，真实进程 + 真实 curl）
 │   ├── verify-m1.ps1       # M1 curl 端到端验收：优先级/能力/指定/熔断/恢复（56 条断言）
-│   └── measure-m1.ps1      # M1 实测：路由开销、故障吸收、熔断省下的延迟
+│   ├── verify-m2.ps1       # M2 curl 端到端验收：内存 store 与 Redis store 两条路径
+│   ├── measure-m1.ps1      # M1 实测：路由开销、故障吸收、熔断省下的延迟
+│   └── measure-m2.ps1      # M2 实测：命中率、token/成本节省、命中 vs 未命中延迟
 ├── tools/go.cmd            # 本机工具链 shim（GOROOT / GOCACHE 重定向，见第 4 节）
 └── docs/
     ├── DESIGN.md           # 模块划分、请求生命周期、关键决策与踩坑记录
     ├── RESUME.md           # 每个里程碑对应的简历项目描述（含量化指标占位）
-    └── baseline/           # 压测原始数据（m0-baseline.json、m1-*.json）
+    └── baseline/           # 压测原始数据（m0-baseline.json、m1-*.json、m2-summary.json）
 ```
 
 ---
@@ -164,9 +176,13 @@ curl.exe -s "$base/metrics"   # Prometheus 文本
 ### 3.4 一键验收（推荐）
 
 ```powershell
-# 两条路径：Go 端到端 + 真实进程 curl
-.\tools\go.cmd run .\cmd\verify
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m0.ps1
+# 每个里程碑两条路径：Go 端到端 + 真实进程 curl
+.\tools\go.cmd run .\cmd\verify                                        # M0，38 条断言
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m0.ps1   # M0 curl，47 条
+.\tools\go.cmd run .\cmd\verify-m1                                     # M1，64 条断言
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m1.ps1   # M1 curl，56 条
+.\tools\go.cmd run .\cmd\verify-m2                                     # M2，103 条断言
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m2.ps1   # M2 curl（内存 + Redis）
 ```
 
 `scripts/verify-m0.ps1` 会自行编译两个二进制、拉起两个真实进程、跑完 47 条断言，并在 `finally` 中
@@ -398,6 +414,133 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\measure-m1.ps1
 
 ---
 
+### 3.9 语义缓存（M2）
+
+缓存插在**解析之后、路由之前**：命中时不需要知道有哪些后端，也不会碰熔断器的窗口。
+默认**关闭**（打开缓存会改变调用方能观察到的事实：本该被调用的上游没被调用，答案可能是
+几分钟前的），要显式打开。
+
+```powershell
+# 起一个小栈：一个 mock 上游 + 一个网关（配置见 configs\cache-local.yaml）
+.\tools\go.cmd run .\cmd\mockupstream -listen :9200 -name local
+.\tools\go.cmd run .\cmd\infergate   -config configs\cache-local.yaml
+```
+
+```powershell
+# 同一个问题问两次：第二次的 X-InferGate-Cache 是 hit-exact，上游没有被调用
+curl.exe -s -D - -o NUL http://127.0.0.1:8082/v1/chat/completions -H "content-type: application/json" -d "{\"model\":\"mock-gpt\",\"messages\":[{\"role\":\"user\",\"content\":\"summarise the design document\"}]}"
+
+# 换一种说法问（"please summarise ..."）：hit-semantic，仍然没有调用上游
+curl.exe -s -D - -o NUL http://127.0.0.1:8082/v1/chat/completions -H "content-type: application/json" -d "{\"model\":\"mock-gpt\",\"messages\":[{\"role\":\"user\",\"content\":\"please summarise the design document\"}]}"
+```
+
+响应头与开关：
+
+| 头 | 取值 | 含义 |
+| --- | --- | --- |
+| `X-InferGate-Cache`（响应） | `hit-exact` / `hit-semantic` | 命中，且说明是逐字节命中还是语义命中 |
+| | `miss` / `skip` | 未命中 / 这条请求按策略不缓存 |
+| | `bypass` / `refresh` | 调用方要求跳过查询 / 重新生成 |
+| | `disabled` / `error` | 缓存没开 / store 出错（**降级为 miss，不是报错**） |
+| `X-InferGate-Cache-Age` | 毫秒 | 被重放的答案有多旧 |
+| `X-InferGate-Cache`（请求） | `bypass` / `refresh` | 二者都**仍然会**把新答案写进缓存 |
+| `X-InferGate-Tenant` | 任意字符串 | 多租户隔离；不设则按 `Authorization` 的哈希前缀分租户 |
+
+三个观测面（语义缓存出问题时，"没命中"和"命中了错的条目"在响应体里长得一样，所以必须能只看缓存）：
+
+```powershell
+curl.exe -s http://127.0.0.1:8082/admin/cache                       # 配置 + 命中率 + saved_tokens + 各 scope 条目数
+curl.exe -s "http://127.0.0.1:8082/admin/cache/lookup?prompt=summarise+the+design+document"   # 最近邻与相似度
+curl.exe -s -X POST http://127.0.0.1:8082/admin/cache/flush          # 清空（POST：GET 会被预取/爬虫清库）
+```
+
+`/metrics` 上的 `infergate_cache_*`（`lookups` / `hits{kind}` / `misses` / `stores` / `errors{kind}` /
+`entries` / `evictions` / `hit_ratio` / `saved_tokens_total{kind}`）与 `/stats` 的 `cache` 块同源。
+
+配置项（`configs/cache-local.yaml` 是逐行注释的版本，`configs/cache-redis.yaml` 是共享缓存版本）：
+
+| 键 | 默认 | 说明 |
+| --- | --- | --- |
+| `cache.enabled` | `false` | 显式开关 |
+| `cache.store` | `memory` | `memory`（进程内 LRU）或 `redis`（跨副本共享） |
+| `cache.threshold` | `0.86` | 语义门控；**实测值**，换 embedder 必须重跑 `cmd/measure-m2` |
+| `cache.ttl` | `15m` | 从写入起算，命中不续期（否则一个热问题能让答案永生） |
+| `cache.max_entries_per_scope` | `256` | 每 scope 上限；memory 按 LRU 淘汰，Redis 按创建时间 FIFO |
+| `cache.min_prompt_chars` | `12` | 太短的提示不值得 embedding，"hi" 命中别人的 "hi" 不算本事 |
+| `cache.allow_nondeterministic` | `false` | `temperature > 0` / `top_p < 1` 只做精确命中 |
+| `cache.allow_tools` | `false` | 带 `tools` 的请求只做精确命中（两种说法可以合法地选不同工具） |
+| `cache.embedding.provider` | `hashing` | `hashing`（离线词法，零依赖）/ `http`（OpenAI 兼容 `/embeddings`）/ `none`（只做精确命中） |
+| `cache.redis.*` | `127.0.0.1:6379` / `ig:cache` | 共享缓存；本机没有 Redis 时可用 `cmd/miniredis`（默认 :6399） |
+
+共享缓存的最小本地栈（无需安装 Redis）：
+
+```powershell
+.\tools\go.cmd run .\cmd\miniredis    -listen :6399
+.\tools\go.cmd run .\cmd\mockupstream -listen :9201 -name local
+.\tools\go.cmd run .\cmd\infergate    -config configs\cache-redis.yaml
+```
+
+### 3.10 M2 验收与实测
+
+```powershell
+.\tools\go.cmd run .\cmd\verify-m2                                   # Go 门禁，103 条断言
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m2.ps1     # curl 门禁（内存 + 真 Redis 协议）
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\measure-m2.ps1    # 命中率 / 延迟 / 成本实测
+.\tools\go.cmd run .\cmd\measure-m2                                  # 阈值扫描（语料 26 对）
+```
+
+阈值扫描（离线 hashing embedder，`internal/evalset` 的 26 对中英标注语料）：
+
+| 阈值 | 真命中率 | 误命中率 | 误命中 |
+| --- | --- | --- | --- |
+| 0.84 | 77% (10/13) | 23% (3/13) | nm-en-2、nm-en-7、nm-en-8 |
+| **0.86** | **62% (8/13)** | **0% (0/13)** | — |
+| 0.88 | 62% (8/13) | 0% (0/13) | — |
+| 0.90 | 46% (6/13) | 0% (0/13) | — |
+| 0.94（旧默认） | 31% (4/13) | 0% (0/13) | — |
+
+怎么读：
+
+- **0.86–0.88 是"零误命中"平台**。0.84 多出的两次命中是拿"删掉 tenant alpha 的缓存条目"命中
+  "tenant beta"、拿"给 router 写单测"命中"给 breaker 写单测"换来的——命中率 +15%，代价是
+  错租户、错包。
+- **离线 embedder 的天花板是 embedder 的属性，不是阈值的属性**：语料里有 5 对真同义改写的
+  相似度低于某个近似对，任何阈值都分不开它们。要更高的命中率，就把 `cache.embedding.provider`
+  指向真实模型（`http`）并重跑扫描。
+- 换 embedder 后平台会整体平移，所以阈值是配置项而不是常量。
+
+端到端实测（`scripts/measure-m2.ps1` → `docs/baseline/m2-summary.json`，本机回环，上游是仓库内的
+`cmd/mockupstream`，store=memory，embedder=hashing-512，阈值 0.86）：
+
+| 指标 | 结果 | 口径 |
+| --- | --- | --- |
+| 命中率 | **58.97%**（23/39：18 精确 + 5 语义） | 13 对应命中语料各发 3 次（A 未命中 → A 精确命中 → B 语义命中） |
+| 覆盖到的语料对 | **13/13** | 每对至少命中过一次 |
+| 误命中 | **0/26** | 13 对近似但不同的语料各发 2 次，一次都没命中 |
+| 端到端 P95 | **47.31ms → 5.50ms** | `/stats`：纯未命中 3626 次 P95 47.3147ms vs 纯命中 3600 次 P95 5.5028ms（p50 5.5327 → 1.0132ms） |
+| 命中不产生上游请求 | 上游日志 31 次调用 == 31 次未命中 | 压测每轮 3600 请求 = 3598 命中 + 2 未命中 + 2 次上游调用 |
+| 上游 token | 节省 **604**（prompt 319 + completion 285） | `/admin/cache` 全语料 delta；命中时计在 cache 账上，不计入上游 |
+| 成本 | 每 1000 请求 **$0.036692 → $0.016**（−**56.39%**） | 按配置价格表（`mock-gpt` in 1 / out 3 USD/1M）外推 |
+| 压测错误数 | **0** | 800 请求 + 100 预热 × 3 轮 × 并发 8/32，缓存开/关交错执行 |
+
+怎么读：
+
+- **命中率必须带口径**。62% 是"语料对"口径（阈值扫描，13 对里命中 8 对），58.97% 是"请求"口径
+  （每个应命中的对发 3 次，其中 B 只有部分触发）。同一个系统两个数都对，混着说就是错。
+- **换一个长度门就会换一个命中率**：出厂配置 `min_prompt_chars: 12` 会跳过 26 对里 6 对
+  （中文提示只有 7–8 个字），命中率降到 41.03%（10/13 对）、9 次 `skip`。所以实测跑的是
+  `min_prompt_chars: 1` 的临时配置（写进 `tmp/`，不动 `configs/`），两个数都报出来。
+- **上游是本机 mock，所以延迟差只说明省掉了网关自己的工作**（一次 HTTP 往返 + provider JSON 编解码），
+  不代表省掉了真实 provider 的生成时间；真正硬的结论是"命中不产生上游请求"（mock 自己记的调用数
+  恰好等于未命中数）和命中路径的 P95。
+- **两个数的口径不同，必须一起说**：节省的 token（319 + 285）是 `/admin/cache` 在**全部 65 次**
+  语料请求（含"不该命中"的探针）上的 delta，而 −56.39% 是按 **39 次**应命中请求的工作量模型外推的
+  （模型口径下节省 $0.000807）。差的 $0.000367 记为 `cost_cross_check_delta_usd`，不藏。
+- 三轮交错只给区间不给置信区间：本机轮间抖动最坏 47.1%（两次跑出来的 P95 差了一倍，
+  所以文档里只引用同一次运行内部"命中 vs 未命中"的对比，不跨次引用绝对值）。
+
+---
+
 ## 4. 本机工具链说明（为什么有 `tools/go.cmd`）
 
 这台机器上 `go` 不在 PATH，且有两处硬限制，M0 的构建方式是被它们逼出来的：
@@ -425,7 +568,7 @@ schannel 取不到凭证，所以验收脚本只打本机回环地址。
 | --- | --- | --- |
 | M0 | 最小网关：OpenAI 兼容透传 + SSE 流式 + 基础计量与可观测 | **完成** |
 | M1 | 多 Provider 路由（成本 / 延迟 / 能力 / 健康度）+ 故障转移 | **完成** |
-| M2 | 语义缓存：Embedding + 阈值门控 + Redis | 计划中 |
+| M2 | 语义缓存：Embedding + 阈值门控 + Redis | **完成** |
 | M3 | Token 配额与成本治理：预算、超限降级、计量对账 | 计划中 |
 | M4 | vLLM 本地推理服务化 + 量化对比（FP16 / AWQ / GPTQ） | 计划中 |
 | M5 | 可观测完善 + 压测基线（QPS / P95 / 首字延迟 / 缓存命中率） | 计划中 |
@@ -492,3 +635,57 @@ M1 的取舍与已知边界（都写在代码注释里，不是事后找补）�
    一份看起来正常、实际自相矛盾的答案。
 4. **打分与排序不碰 IO**：`internal/router` 只吃传入的候选与窗口快照，不读网络也不改输入，
    所以策略可以单测、决策可以解释（`reason=` 直接进日志）。
+
+---
+
+## 8. 已验证结论（M2 验收口径）
+
+| 验收项 | 结论 | 证据 |
+| --- | --- | --- |
+| 单元 / 集成测试 | 全绿 | `go test ./...` exit 0（cache / gateway / embed / redis / evalset / config 全包含在内） |
+| 静态检查 | 全绿 | `go vet ./...` exit 0 |
+| Go 端到端 | 103/103 断言通过 | `go run ./cmd/verify-m2` |
+| 精确命中 | 同字节重试不再调用上游 | `TestCacheMissThenExactHit`、verify-m2 段 1 |
+| 语义命中 | 换一种说法命中（语料实测 0.8819 的真同义对） | `TestCacheSemanticHitAcrossWording`、verify-m2 段 2 |
+| 语义不误命中 | 语料里 13 对不该命中的全部不命中 | verify-m2 段 2 逐对检查 `evalset.Cases()` |
+| 阈值有据 | 0.86：真命中 8/13、误命中 0/13（0.84 是 3 条误命中） | `go run ./cmd/measure-m2`，见 3.10 |
+| 租户与模型隔离 | 不同 tenant / 不同 model 永不互借 | `TestCacheIsScopedToTenantAndModel`、verify-m2 段 3 |
+| 采样请求只精确命中 | `temperature > 0` 的重试命中、改写不命中 | `TestCacheSamplingRequestsMatchExactlyOnly`、`internal/cache` `TestNondeterministicRequestsAreNeverSemanticallyMatched` |
+| 工具请求只精确命中 | 带 `tools` 的请求只做精确匹配 | `TestCacheToolsAreExactMatchOnly` |
+| 答案形状参与身份 | `max_tokens` / 对话前缀不同即不命中 | `TestCacheSignatureBlocksADifferentAnswerShape`、`TestCacheSignatureSeparatesConversationPrefixes` |
+| 短提示不缓存 | 低于 `min_prompt_chars` 直接 `skip` | `TestCacheSkipsTrivialPrompts` |
+| bypass / refresh | 跳过查询，且**仍然写入**新答案 | `TestCacheBypassSkipsTheLookupButStillStores`、`TestCacheRefreshReplacesTheStoredAnswer` |
+| 流式重放 | 逐帧与原流一致（帧数、payload、`[DONE]` 都对） | `TestCacheReplaysStreamingAnswers`、verify-m2 段 6「byte-identical」 |
+| 命中不算上游消耗 | 上游 token 计数不变，节省记在 `saved_tokens` | `TestCacheHitIsNotAttributedToAnUpstream`、verify-m2 段 9 |
+| 两个 Store 同一套要求 | memory 与 Redis 跑同一个一致性套件 | `TestStoreConformance`（含过期、淘汰、flush、并发） |
+| 存储降级 | store 死掉只是不命中，不是报错 | `TestRedisStoreDegradesWhenTheServerGoesAway`、verify-m2 段 8、`/metrics` 仍 200 |
+| 只缓存成功的答案 | 上游 4xx 原样回传且不入缓存 | `TestCacheStoresOnlySuccessfulAnswers` |
+| 关掉即 M1 | 不命中、不加头、行为与 M1 完全一致 | `TestCacheDisabledLeavesM1Behaviour`、`TestCacheDoesNotAnswerNonCompletionRoutes` |
+| 四个管理面 | `/admin/cache`、`/admin/cache/lookup`、`POST /admin/cache/flush`、`/stats` 的 cache 块 | verify-m2 段 9；GET flush 返回 404 |
+| 命中率实测 | 请求口径 58.97%（23/39），13/13 对全部覆盖 | `docs/baseline/m2-summary.json` 的 `hit_rate` |
+| 零误命中实测 | 13 对近似但不同的语料发 26 次请求，0 次命中 | `docs/baseline/m2-summary.json` `false_hits: 0` |
+| 命中延迟实测 | 纯命中 P95 5.5028ms（p50 1.0132） vs 纯未命中 P95 47.3147ms（p50 5.5327） | 同上 `latency.gateway_stats` |
+| 命中不产生上游请求 | 上游日志 31 次调用 == 31 次未命中；每轮 3600 请求 = 3598 命中 + 2 未命中 | 同上 `hit_rate.upstream_calls_seen_by_mock`、`latency.rows` |
+| 上游挂了仍能服务 | 杀掉上游进程后 26 次请求全部 200（21 精确 + 5 语义），5xx 0；未预热对照请求 502 | 同上 `shield` 块（含 `shield_assertion_passed`） |
+| 成本实测 | 每 1000 请求 $0.036692 → $0.016（−56.39%） | 同上 `cost`（按配置价格表外推） |
+| 压测无错误 | 缓存开/关各 3 轮 × 8/32 并发，错误数 0 | 同上 `latency.rows[].errors` |
+
+M2 的取舍与已知边界（同样写在代码注释里）：
+
+1. **命中判定必须能解释**：`X-InferGate-Cache` 区分 `hit-exact` 与 `hit-semantic`，
+   `/admin/cache/lookup` 给出最近邻与相似度。语义缓存最难的运维问题不是"没命中"，而是
+   "命中了错的东西"——这两种情况在响应体里长得一样。
+2. **离线 `hashing` embedder 是词法的，天花板偏低**：语料里有 5 对真同义改写的相似度低于
+   某个近似对，任何阈值都分不开。要更高的命中率就换成 `provider: http` 的真实 embedding
+   模型，并重跑 `cmd/measure-m2`——阈值是配置项，因为它是 embedder 的属性。
+3. **`memory` store 是每进程的**：多副本必须用 `redis`，否则两个副本会对同一个问题给出不同
+   答案（缓存反而是不一致的来源）。所以 `buildCache` 在 Redis 连不上时直接启动失败，而不是
+   静默退回进程内存。
+4. **Redis 的淘汰是"按创建时间 FIFO"，不是 LRU**（ZSET 报不出读取顺序）：
+   对近期性撒谎的缓存比承认自己按年龄淘汰的缓存更糟。memory store 则是真 LRU。
+5. **省略 `temperature` 视为确定性**：这是最常见的情况，不这么判缓存几乎永远不命中；
+   想更保守就设 `allow_nondeterministic: false` 并让调用方显式传参。
+6. **语义检索是 scope 内的全量扫描**（几百条 512 维向量，几十微秒），不是 ANN 索引；
+   `max_entries_per_scope` 就是让这个假设成立的上界。
+7. **重放不算生成**：命中时不写 `first_token` 直方图——把接近 0 的重放混进去，会让这个指标
+   在缓存用得最狠的时候"变好"。

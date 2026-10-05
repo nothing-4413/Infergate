@@ -10,12 +10,12 @@
 
 GO ?= tools/go.cmd
 
-.PHONY: all build vet test verify verify-curl verify-m1 loadtest diag run-mock run-gateway clean help
+.PHONY: all build vet test verify verify-curl verify-m1 verify-m2 verify-m2-curl measure-m2 loadtest diag run-mock run-gateway run-fleet run-cache run-cache-redis run-miniredis clean help
 
 all: build vet test
 
 help:
-	@echo "targets: build vet test verify verify-curl verify-m1 loadtest diag run-mock run-gateway clean"
+	@echo "targets: build vet test verify verify-curl verify-m1 verify-m2 verify-m2-curl measure-m2 loadtest diag run-mock run-gateway run-fleet run-cache run-cache-redis run-miniredis clean"
 
 ## build: compile every package and emit the two binaries.
 build:
@@ -59,6 +59,41 @@ verify-m1-curl:
 ##   $(GO) run ./cmd/mockupstream -listen :9102 -name tools
 run-fleet:
 	$(GO) run ./cmd/infergate -config configs/routing-local.yaml
+
+## verify-m2: semantic cache acceptance (103 assertions, the M2 CI gate).  Every
+## claim comes from the assembled server -- router, breakers and accounting
+## included -- because a cache that returns the right bytes while attributing
+## them to an upstream that was never called would pass a cache-unit test.
+verify-m2:
+	$(GO) run ./cmd/verify-m2
+
+## verify-m2-curl: the same claims through the real binary and real curl.exe,
+## against both the memory store (the default) and a real Redis protocol server
+## (cmd/miniredis), on :18280/:18281 with mocks on :19500/:19501.
+verify-m2-curl:
+	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-m2.ps1
+
+## measure-m2: what the cache is worth -- hit rate and false-hit rate over the
+## labelled corpus (internal/evalset), token and cost saving, and end-to-end
+## latency for a hit versus a miss.  Writes docs/baseline/m2-summary.json.
+measure-m2:
+	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/measure-m2.ps1
+
+## run-cache: the M2 sample (configs/cache-local.yaml) on :8082 with a memory
+## store.  Needs one mock in another shell:
+##   $(GO) run ./cmd/mockupstream -listen :9200 -name local
+run-cache:
+	$(GO) run ./cmd/infergate -config configs/cache-local.yaml
+
+## run-miniredis: the in-repo RESP2 server on :6399 -- deliberately not 6379, so
+## a real Redis installed on this host is never shadowed.
+run-miniredis:
+	$(GO) run ./cmd/miniredis -listen :6399
+
+## run-cache-redis: the shared-cache sample (configs/cache-redis.yaml) on :8083.
+## Start `make run-miniredis` and a mock on :9201 in other shells first.
+run-cache-redis:
+	$(GO) run ./cmd/infergate -config configs/cache-redis.yaml
 
 ## loadtest: the M0 baseline.  Medians of 3 rounds, spreads included, because a
 ## single pass on a shared laptop is not reproducible (see docs/RESUME.md).

@@ -55,16 +55,16 @@ import (
 
 func main() {
 	var (
-		target     = flag.String("url", "", "target base URL; empty means run the in-process baseline with -all")
-		all        = flag.Bool("all", false, "run the full in-process baseline (direct and via gateway, stream and non-stream)")
-		diag       = flag.Bool("diag", false, "attribute the gateway's cost: compare a bare reverse proxy, a minimal passthrough hop, and the real gateway")
+		target      = flag.String("url", "", "target base URL; empty means run the in-process baseline with -all")
+		all         = flag.Bool("all", false, "run the full in-process baseline (direct and via gateway, stream and non-stream)")
+		diag        = flag.Bool("diag", false, "attribute the gateway's cost: compare a bare reverse proxy, a minimal passthrough hop, and the real gateway")
 		concurrency = flag.String("c", "8,32,128", "comma-separated concurrency levels")
-		requests   = flag.Int("n", 800, "requests per phase (per concurrency level)")
-		warmup     = flag.Int("warmup", 100, "warmup requests per phase, excluded from the numbers")
-		rounds     = flag.Int("rounds", 3, "repeats per phase; the median is reported, because a single pass cannot separate a real effect from drift")
-		timeout    = flag.Duration("timeout", 30*time.Second, "per-request timeout")
-		ttfb       = flag.Duration("ttfb", 0, "mock's artificial delay before its first stream frame")
-		out        = flag.String("out", "", "write the results as JSON to this path")
+		requests    = flag.Int("n", 800, "requests per phase (per concurrency level)")
+		warmup      = flag.Int("warmup", 100, "warmup requests per phase, excluded from the numbers")
+		rounds      = flag.Int("rounds", 3, "repeats per phase; the median is reported, because a single pass cannot separate a real effect from drift")
+		timeout     = flag.Duration("timeout", 30*time.Second, "per-request timeout")
+		ttfb        = flag.Duration("ttfb", 0, "mock's artificial delay before its first stream frame")
+		out         = flag.String("out", "", "write the results as JSON to this path")
 	)
 	flag.Parse()
 
@@ -121,28 +121,28 @@ type result struct {
 	QPS         float64 `json:"qps"`
 	// Rounds and the QPS spread of the repeated runs: a wide spread means the
 	// host was too noisy for the number to mean anything.
-	Rounds  int     `json:"rounds,omitempty"`
-	QPSMin  float64 `json:"qps_min,omitempty"`
-	QPSMax  float64 `json:"qps_max,omitempty"`
+	Rounds int     `json:"rounds,omitempty"`
+	QPSMin float64 `json:"qps_min,omitempty"`
+	QPSMax float64 `json:"qps_max,omitempty"`
 
-	P50 time.Duration `json:"p50"`
-	P95 time.Duration `json:"p95"`
-	P99 time.Duration `json:"p99"`
-	Max time.Duration `json:"max"`
+	P50  time.Duration `json:"p50"`
+	P95  time.Duration `json:"p95"`
+	P99  time.Duration `json:"p99"`
+	Max  time.Duration `json:"max"`
 	Mean time.Duration `json:"mean"`
 
 	// Stream-only.
-	TTFTP50 time.Duration `json:"ttft_p50,omitempty"`
-	TTFTP95 time.Duration `json:"ttft_p95,omitempty"`
-	TTFTMean time.Duration `json:"ttft_mean,omitempty"`
-	BytesMean int64        `json:"bytes_mean,omitempty"`
-	FramesMean float64    `json:"frames_mean,omitempty"`
+	TTFTP50    time.Duration `json:"ttft_p50,omitempty"`
+	TTFTP95    time.Duration `json:"ttft_p95,omitempty"`
+	TTFTMean   time.Duration `json:"ttft_mean,omitempty"`
+	BytesMean  int64         `json:"bytes_mean,omitempty"`
+	FramesMean float64       `json:"frames_mean,omitempty"`
 
 	// Gateway-reported, when the target exposes /metrics. GatewayMean is the
 	// gateway's own view of request duration; the gap to Mean is relay overhead
 	// plus client/server network time.
-	GatewayMean   time.Duration `json:"gateway_mean,omitempty"`
-	GatewayCount  int           `json:"gateway_count,omitempty"`
+	GatewayMean    time.Duration `json:"gateway_mean,omitempty"`
+	GatewayCount   int           `json:"gateway_count,omitempty"`
 	FirstTokenMean time.Duration `json:"gateway_first_token_mean,omitempty"`
 
 	Wall time.Duration `json:"wall"`
@@ -1084,7 +1084,7 @@ func newClient(timeout time.Duration) *http.Client {
 	return &http.Client{
 		Timeout: timeout,
 		Transport: &http.Transport{
-			DialContext: (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+			DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 			MaxIdleConns:          512,
 			MaxIdleConnsPerHost:   256,
 			IdleConnTimeout:       90 * time.Second,

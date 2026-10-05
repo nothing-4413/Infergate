@@ -189,14 +189,14 @@ func baseConfig(entries []fleetEntry) *config.Config {
 	cfg.Server.MaxBodyBytes = 8 << 20
 	cfg.Log.Level = "error"
 	cfg.Health = config.HealthConfig{
-		Window:                 config.Duration(30 * time.Second),
-		Buckets:                6,
-		MinRequests:            2,
-		FailureRatio:           0.5,
-		OpenDuration:           config.Duration(300 * time.Millisecond),
-		HalfOpenProbes:         1,
-		MaxFailuresPerRequest:  2,
-		RetryBackoff:           config.Duration(10 * time.Millisecond),
+		Window:                config.Duration(30 * time.Second),
+		Buckets:               6,
+		MinRequests:           2,
+		FailureRatio:          0.5,
+		OpenDuration:          config.Duration(300 * time.Millisecond),
+		HalfOpenProbes:        1,
+		MaxFailuresPerRequest: 2,
+		RetryBackoff:          config.Duration(10 * time.Millisecond),
 	}
 	cfg.Pricing = config.PricingConfig{Default: config.ModelPrice{In: 1, Out: 3}, Models: map[string]config.ModelPrice{}}
 

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -99,6 +100,26 @@ func (p *Proxy) relayStream(w http.ResponseWriter, r *http.Request, resp *http.R
 	ticker := time.NewTicker(heartbeatInterval)
 	defer ticker.Stop()
 
+	// M2: the frames are captured as they are written so a successful answer can
+	// be replayed later. The capture is capped at the body limit: a stream that
+	// outgrows it is not stored rather than stored truncated, because a
+	// truncated replay would look like a valid but unfinished answer.
+	var (
+		cacheBuf      bytes.Buffer
+		cacheOverflow bool
+	)
+	capture := func(raw []byte) {
+		if cacheOverflow || p.cache == nil || rec.cacheIdent == nil || !rec.cacheIdent.Eligible {
+			return
+		}
+		if int64(cacheBuf.Len()+len(raw)) > p.maxBody {
+			cacheOverflow = true
+			cacheBuf.Reset()
+			return
+		}
+		cacheBuf.Write(raw)
+	}
+
 	var (
 		wroteDone bool
 		firstData bool
@@ -165,6 +186,11 @@ func (p *Proxy) relayStream(w http.ResponseWriter, r *http.Request, resp *http.R
 				rec.reason = "client write: " + werr.Error()
 				return metrics.OutcomeCanceled
 			}
+			// Capture the exact bytes the client received, so a replay is a
+			// frame-for-frame copy rather than a re-serialisation of the
+			// parsed payload (which would lose the id, the model and the
+			// provider's own frame choices).
+			capture(frame.Raw)
 			rec.frames++
 			if frame.IsDone() {
 				wroteDone = true
@@ -181,6 +207,11 @@ func (p *Proxy) relayStream(w http.ResponseWriter, r *http.Request, resp *http.R
 			rec.reason = "client write: " + err.Error()
 			return metrics.OutcomeCanceled
 		}
+		// The sentinel is the only frame the gateway writes itself; every other
+		// captured frame is the provider's own bytes. Reproducing it here keeps
+		// a stored stream complete, which matters because a replay without
+		// [DONE] would leave a client waiting for an end that never comes.
+		capture([]byte("data: [DONE]\n\n"))
 	}
 
 	usage := inspector.Usage()
@@ -206,6 +237,15 @@ func (p *Proxy) relayStream(w http.ResponseWriter, r *http.Request, resp *http.R
 		slog.Int64("frames", rec.frames),
 		slog.Int64("bytes", rec.respBytes),
 	)
+	// M2: store only a stream that ended cleanly and fitted in the body limit.
+	// A stream cut short mid-answer is not an answer, and storing it would make
+	// every later replay look like a model that stopped in the middle of a
+	// sentence.
+	if cacheOverflow {
+		rec.cacheReason = fmt.Sprintf("stream exceeded the %d-byte store limit", p.maxBody)
+	} else {
+		p.storeCache(r.Context(), rec, cacheBuf.Bytes(), sse.ContentType)
+	}
 	return metrics.OutcomeSuccess
 }
 

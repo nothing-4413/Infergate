@@ -53,10 +53,10 @@ type bucket struct {
 	// latency is the EMA of the whole request duration in seconds, sampled on
 	// success only. Failures are counted separately: mixing them in would make
 	// a backend that fails instantly look like the fastest one available.
-	latency    float64
-	latencyN   int64
-	ttft       float64
-	ttftN      int64
+	latency  float64
+	latencyN int64
+	ttft     float64
+	ttftN    int64
 }
 
 func (b *bucket) reset(start time.Time) {

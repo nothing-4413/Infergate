@@ -80,6 +80,11 @@ func main() {
 		logger.Error("server stopped", "err", err)
 		os.Exit(1)
 	}
+	// The cache is closed after the listener has stopped, so no request can
+	// still be holding a Redis connection from its pool.
+	if err := srv.CloseCache(); err != nil {
+		logger.Warn("cache close failed", "err", err)
+	}
 	logger.Info("stopped cleanly")
 	// Give the log line above a chance to reach the console before exit.
 	time.Sleep(10 * time.Millisecond)

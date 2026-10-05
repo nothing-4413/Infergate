@@ -1,0 +1,128 @@
+# InferGate M2 configuration — semantic cache on a single local backend.
+#
+# The smallest stack that shows the whole M2 story: one in-repo mock upstream,
+# one gateway, the cache in process memory. No Redis, no API key, no network.
+#
+#   go run ./cmd/mockupstream -listen :9200 -name local
+#   go run ./cmd/infergate   -config configs/cache-local.yaml
+#
+# Then send the same question twice and watch X-InferGate-Cache go
+# miss -> hit-exact, and a paraphrase of it go miss -> hit-semantic:
+#
+#   curl -s -D - -o /dev/null http://127.0.0.1:8082/v1/chat/completions \
+#     -H 'content-type: application/json' \
+#     -d '{"model":"mock-gpt","messages":[{"role":"user","content":"summarise the design document"}]}'
+
+server:
+  listen: ":8082"
+  read_header_timeout: "10s"
+  idle_timeout: "90s"
+  upstream_timeout: "10s"
+  shutdown_timeout: "5s"
+  max_body_bytes: 8388608
+  max_idle_conns_per_host: 256
+
+log:
+  level: "info"
+  format: "text"
+
+routing:
+  strategy: "priority"
+  default_capabilities:
+    - "chat"
+
+health:
+  window: "30s"
+  buckets: 6
+  min_requests: 4
+  failure_ratio: 0.5
+  open_duration: "10s"
+  half_open_probes: 1
+  max_failures_per_request: 2
+  retry_backoff: "20ms"
+
+upstreams:
+  - name: "local"
+    kind: "openai"
+    base_url: "http://127.0.0.1:9200"
+    api_key: ""
+    models:
+      - "/"
+    capabilities:
+      - "chat"
+    priority: 1
+    weight: 1
+
+cache:
+  # Off by default in the code, on here: this file exists to demonstrate it.
+  #
+  # Turning a cache on changes what a caller can observe -- an upstream that
+  # would have been called is not called, and the answer may be minutes old --
+  # so it is an explicit operator decision rather than something an upgrade
+  # switches on.
+  enabled: true
+
+  # "memory" is per-process. It is the right default for one replica and the
+  # wrong one for a fleet: configs/cache-redis.yaml is the shared variant.
+  store: "memory"
+
+  # Cosine similarity a stored prompt must reach to answer a DIFFERENT prompt.
+  # 0.86 is measured, not guessed: see cmd/measure-m2, the M2 section of
+  # docs/DESIGN.md and the M2 block of docs/RESUME.md. Zero false hits on the
+  # 26-pair labelled corpus; at 0.84 three near misses slip through --
+  # nm-en-2 ("admin console" vs "user console"), nm-en-7 ("router" vs
+  # "breaker") and nm-en-8 ("cache entry for tenant alpha" vs "tenant beta",
+  # where a wrong hit is data loss) -- and at 0.90 true paraphrases collapse
+  # from 8/13 to 6/13. A wrong answer is worse than a miss.
+  threshold: 0.86
+
+  # Anchored at creation and NOT refreshed by hits: refreshing on hit means one
+  # hot question can keep an answer alive forever.
+  ttl: "15m"
+
+  max_entries_per_scope: 256
+
+  # Below this many characters a prompt is not worth the embedding cost, and
+  # "hi" matching "hi" from another caller is not the cache being useful.
+  min_prompt_chars: 12
+
+  # Sampling requests (temperature > 0, top_p < 1) are matched EXACTLY only:
+  # an identical retry is the same sampling call and should not be re-sampled,
+  # but a paraphrase must never be answered with a sample meant for someone
+  # else's wording. Set true to allow semantic matching for them too.
+  allow_nondeterministic: false
+
+  # Tool requests are matched EXACTLY only: two paraphrases of the same
+  # question can legitimately choose different tools.
+  allow_tools: false
+
+  embedding:
+    # "hashing" is the offline lexical embedder: deterministic, dependency-free
+    # and identical across replicas, with a documented ceiling (it cannot tell
+    # "reset my password" from "reset my username" at any threshold). Point
+    # provider at "http" and give it a real model to raise the ceiling.
+    provider: "hashing"
+    dims: 512
+    timeout: "5s"
+
+    # Used only when provider is "http" (an OpenAI-compatible /embeddings).
+    # base_url: "http://127.0.0.1:11434/v1"
+    # model: "nomic-embed-text"
+    # api_key: "${EMBED_API_KEY}"
+
+  redis:
+    addr: "127.0.0.1:6379"
+    prefix: "ig:cache"
+    pool_size: 16
+    dial_timeout: "2s"
+    read_timeout: "2s"
+    write_timeout: "2s"
+
+pricing:
+  default:
+    in: 1.0
+    out: 3.0
+  models:
+    mock-gpt:
+      in: 1.0
+      out: 3.0

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/infergate/infergate/internal/breaker"
+	"github.com/infergate/infergate/internal/cache"
 	"github.com/infergate/infergate/internal/config"
 	"github.com/infergate/infergate/internal/metrics"
 	"github.com/infergate/infergate/internal/router"
@@ -43,6 +44,10 @@ type failoverOptions struct {
 	maxAttempts int
 	// health overrides the whole HealthConfig when non-zero.
 	health config.HealthConfig
+	// cache, when set, is installed on the proxy (M2 tests reuse this fleet so
+	// that a cache hit is proven against the real router and breakers, not
+	// against a stub that would never have been called anyway).
+	cache *cache.Cache
 }
 
 func testHealthConfig() config.HealthConfig {
@@ -151,6 +156,7 @@ func newFailoverProxy(t *testing.T, opts failoverOptions, rec metrics.Sink) (*Pr
 		Breakers:        breakers,
 		MaxAttempts:     maxAttempts,
 		RetryBackoff:    cfg.Health.RetryBackoff.Duration(),
+		Cache:           opts.cache,
 	}), breakers
 }
 
@@ -555,9 +561,9 @@ func TestCapabilityHeaderExcludesABackend(t *testing.T) {
 	withTools := jsonBackend(t, http.StatusOK, chatCompletionBody)
 
 	cfg := failoverOptions{
-		primary:             withoutTools.URL,
-		backup:              withTools.URL,
-		backupCapabilities:  []string{"tools"},
+		primary:            withoutTools.URL,
+		backup:             withTools.URL,
+		backupCapabilities: []string{"tools"},
 	}
 	p, _ := newFailoverProxy(t, cfg, metrics.Nop{})
 

@@ -9,14 +9,14 @@ import (
 // mapping inside a block sequence. They are semantically identical, and the
 // parser must not care which one a human or an editor produced:
 //
-//	- name: a          # dash and key on one line
-//	  kind: openai     #   continuation indented past the dash  <- the common style
+//   - name: a          # dash and key on one line
+//     kind: openai     #   continuation indented past the dash  <- the common style
 //
-//	-                 # bare dash
-//	  name: a
+//   - # bare dash
+//     name: a
 //
-//	-   name: a       # key indented further past the dash
-//	    kind: openai
+//   - name: a       # key indented further past the dash
+//     kind: openai
 //
 // The first style is the one a hand-written config almost always uses, and it
 // was rejected with "unexpected indentation 4 in sequence, expected 2" because

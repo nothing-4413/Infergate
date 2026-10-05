@@ -1,0 +1,198 @@
+{
+    "source":  "internal/evalset/evalset.go",
+    "parsed_at":  "2026-10-05T15:27:54",
+    "cases":  26,
+    "should_hit":  13,
+    "should_not_hit":  13,
+    "kinds":  {
+                  "identical":  3,
+                  "paraphrase":  10,
+                  "near-miss":  10,
+                  "unrelated":  3
+              },
+    "workload":  "per should-hit pair: A (expect miss), A again (expect exact hit), B (expect semantic hit); per should-not-hit pair: A, then B (must not hit)",
+    "pairs":  [
+                  {
+                      "id":  "id-en-1",
+                      "kind":  "identical",
+                      "should_hit":  true,
+                      "a":  "how do I reset my password",
+                      "b":  "how do I reset my password"
+                  },
+                  {
+                      "id":  "id-en-2",
+                      "kind":  "identical",
+                      "should_hit":  true,
+                      "a":  "Explain the sliding window breaker used by the gateway, including how the half-open state is entered.",
+                      "b":  "Explain the sliding window breaker used by the gateway, including how the half-open state is entered."
+                  },
+                  {
+                      "id":  "id-zh-1",
+                      "kind":  "identical",
+                      "should_hit":  true,
+                      "a":  "如何重置我的密码",
+                      "b":  "如何重置我的密码"
+                  },
+                  {
+                      "id":  "pp-en-1",
+                      "kind":  "paraphrase",
+                      "should_hit":  true,
+                      "a":  "how do I reset my password",
+                      "b":  "how can I reset my password"
+                  },
+                  {
+                      "id":  "pp-en-2",
+                      "kind":  "paraphrase",
+                      "should_hit":  true,
+                      "a":  "how do I reset my password for the admin console",
+                      "b":  "how can I reset my password for the admin console"
+                  },
+                  {
+                      "id":  "pp-en-3",
+                      "kind":  "paraphrase",
+                      "should_hit":  true,
+                      "a":  "what is the capital of France",
+                      "b":  "what\u0027s the capital of France"
+                  },
+                  {
+                      "id":  "pp-en-4",
+                      "kind":  "paraphrase",
+                      "should_hit":  true,
+                      "a":  "explain the token bucket algorithm",
+                      "b":  "can you explain the token bucket algorithm"
+                  },
+                  {
+                      "id":  "pp-en-5",
+                      "kind":  "paraphrase",
+                      "should_hit":  true,
+                      "a":  "summarise the design document",
+                      "b":  "please summarise the design document"
+                  },
+                  {
+                      "id":  "pp-en-6",
+                      "kind":  "paraphrase",
+                      "should_hit":  true,
+                      "a":  "write a unit test for the router",
+                      "b":  "write a unit test for the router please"
+                  },
+                  {
+                      "id":  "pp-en-7",
+                      "kind":  "paraphrase",
+                      "should_hit":  true,
+                      "a":  "what does the failover header mean",
+                      "b":  "what does the failover header mean?"
+                  },
+                  {
+                      "id":  "pp-en-8",
+                      "kind":  "paraphrase",
+                      "should_hit":  true,
+                      "a":  "list the environment variables the gateway reads",
+                      "b":  "which environment variables does the gateway read"
+                  },
+                  {
+                      "id":  "pp-zh-1",
+                      "kind":  "paraphrase",
+                      "should_hit":  true,
+                      "a":  "如何重置我的密码",
+                      "b":  "我该如何重置我的密码"
+                  },
+                  {
+                      "id":  "pp-zh-2",
+                      "kind":  "paraphrase",
+                      "should_hit":  true,
+                      "a":  "解释一下令牌桶算法",
+                      "b":  "请解释一下令牌桶算法"
+                  },
+                  {
+                      "id":  "nm-en-1",
+                      "kind":  "near-miss",
+                      "should_hit":  false,
+                      "a":  "how do I reset my password",
+                      "b":  "how do I reset my username"
+                  },
+                  {
+                      "id":  "nm-en-2",
+                      "kind":  "near-miss",
+                      "should_hit":  false,
+                      "a":  "how do I reset my password for the admin console",
+                      "b":  "how do I reset my password for the user console"
+                  },
+                  {
+                      "id":  "nm-en-3",
+                      "kind":  "near-miss",
+                      "should_hit":  false,
+                      "a":  "what is the capital of France",
+                      "b":  "what is the capital of Germany"
+                  },
+                  {
+                      "id":  "nm-en-4",
+                      "kind":  "near-miss",
+                      "should_hit":  false,
+                      "a":  "explain the token bucket algorithm",
+                      "b":  "explain the leaky bucket algorithm"
+                  },
+                  {
+                      "id":  "nm-en-5",
+                      "kind":  "near-miss",
+                      "should_hit":  false,
+                      "a":  "summarise the design document",
+                      "b":  "summarise the deployment document"
+                  },
+                  {
+                      "id":  "nm-en-6",
+                      "kind":  "near-miss",
+                      "should_hit":  false,
+                      "a":  "list the environment variables the gateway reads",
+                      "b":  "list the command line flags the gateway reads"
+                  },
+                  {
+                      "id":  "nm-en-7",
+                      "kind":  "near-miss",
+                      "should_hit":  false,
+                      "a":  "write a unit test for the router",
+                      "b":  "write a unit test for the breaker"
+                  },
+                  {
+                      "id":  "nm-en-8",
+                      "kind":  "near-miss",
+                      "should_hit":  false,
+                      "a":  "delete the cache entry for tenant alpha",
+                      "b":  "delete the cache entry for tenant beta"
+                  },
+                  {
+                      "id":  "nm-zh-1",
+                      "kind":  "near-miss",
+                      "should_hit":  false,
+                      "a":  "如何重置我的密码",
+                      "b":  "如何重置我的邮箱"
+                  },
+                  {
+                      "id":  "nm-zh-2",
+                      "kind":  "near-miss",
+                      "should_hit":  false,
+                      "a":  "北京有多少人口",
+                      "b":  "上海有多少人口"
+                  },
+                  {
+                      "id":  "un-en-1",
+                      "kind":  "unrelated",
+                      "should_hit":  false,
+                      "a":  "how do I reset my password",
+                      "b":  "what is the weather in Beijing tomorrow"
+                  },
+                  {
+                      "id":  "un-en-2",
+                      "kind":  "unrelated",
+                      "should_hit":  false,
+                      "a":  "explain the token bucket algorithm",
+                      "b":  "write a haiku about autumn"
+                  },
+                  {
+                      "id":  "un-zh-1",
+                      "kind":  "unrelated",
+                      "should_hit":  false,
+                      "a":  "如何重置我的密码",
+                      "b":  "推荐几本科幻小说"
+                  }
+              ]
+}

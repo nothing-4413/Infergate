@@ -27,9 +27,9 @@ import (
 // a single backend can be healthy for one call and broken for the next; that is
 // what lets a test exercise a breaker's transition without restarting anything.
 const (
-	HeaderStatus  = "X-Mock-Status"   // reply with this HTTP status instead
-	HeaderDelay   = "X-Mock-Delay"    // sleep this long before answering
-	HeaderTTFB    = "X-Mock-TTFB"     // sleep this long before the first stream frame
+	HeaderStatus  = "X-Mock-Status"    // reply with this HTTP status instead
+	HeaderDelay   = "X-Mock-Delay"     // sleep this long before answering
+	HeaderTTFB    = "X-Mock-TTFB"      // sleep this long before the first stream frame
 	HeaderOmitEnd = "X-Mock-Omit-Done" // stream without the [DONE] sentinel
 )
 

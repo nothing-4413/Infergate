@@ -1,0 +1,1330 @@
+{
+    "generated_at":  "2026-10-05T15:28:50",
+    "host":  "LLX / Intel64 Family 6 Model 183 Stepping 1, GenuineIntel / 5.1.26100.9444",
+    "duration_s":  64.7,
+    "milestone":  "M2 - semantic cache",
+    "method":  {
+                   "requests":  800,
+                   "warmup":  100,
+                   "rounds":  3,
+                   "concurrency":  [
+                                       "8",
+                                       "32"
+                                   ],
+                   "client":  "bin\\loadtest.exe (cmd/loadtest) -url mode",
+                   "corpus_client":  "curl.exe (Windows PowerShell 5.1), one POST per labelled prompt",
+                   "upstream":  "in-repo mock (cmd/mockupstream) on :19510 - local, free and dependency-free, so a cache-ON/cache-OFF throughput delta measures gateway work removed, not a provider latency saving",
+                   "gateway_cache_on":  ":18290",
+                   "gateway_cache_off":  ":18291",
+                   "store":  "memory",
+                   "embedder":  "hashing-512/512",
+                   "threshold":  0.86,
+                   "min_prompt_chars":  1,
+                   "configs":  "configs\\cache-local.yaml instantiated into tmp\\m2-cache-on.yaml, tmp\\m2-cache-off.yaml and tmp\\m2-cache-on-shipped.yaml by literal substitution; no repository file is modified",
+                   "ports_unused":  "mini-redis :19389 was not started: these measurements use the in-process memory store, and the Redis store path is covered by cmd/verify-m2",
+                   "rounds_note":  "this host drifts round to round, so the two arms are interleaved and medians over 3 rounds are reported, never a single pass",
+                   "load_body":  "the load client replays ONE fixed 5-character prompt (\"hello\"); a semantic cache cannot be measured with a single repeated request, which is why sections A and C drive the labelled corpus instead"
+               },
+    "corpus":  {
+                   "source":  "internal/evalset/evalset.go",
+                   "parsed_at":  "2026-10-05T15:27:54",
+                   "cases":  26,
+                   "should_hit":  13,
+                   "should_not_hit":  13,
+                   "kinds":  {
+                                 "identical":  3,
+                                 "paraphrase":  10,
+                                 "near-miss":  10,
+                                 "unrelated":  3
+                             },
+                   "workload":  "per should-hit pair: A (expect miss), A again (expect exact hit), B (expect semantic hit); per should-not-hit pair: A, then B (must not hit)",
+                   "pairs":  [
+                                 {
+                                     "id":  "id-en-1",
+                                     "kind":  "identical",
+                                     "should_hit":  true,
+                                     "a":  "how do I reset my password",
+                                     "b":  "how do I reset my password"
+                                 },
+                                 {
+                                     "id":  "id-en-2",
+                                     "kind":  "identical",
+                                     "should_hit":  true,
+                                     "a":  "Explain the sliding window breaker used by the gateway, including how the half-open state is entered.",
+                                     "b":  "Explain the sliding window breaker used by the gateway, including how the half-open state is entered."
+                                 },
+                                 {
+                                     "id":  "id-zh-1",
+                                     "kind":  "identical",
+                                     "should_hit":  true,
+                                     "a":  "如何重置我的密码",
+                                     "b":  "如何重置我的密码"
+                                 },
+                                 {
+                                     "id":  "pp-en-1",
+                                     "kind":  "paraphrase",
+                                     "should_hit":  true,
+                                     "a":  "how do I reset my password",
+                                     "b":  "how can I reset my password"
+                                 },
+                                 {
+                                     "id":  "pp-en-2",
+                                     "kind":  "paraphrase",
+                                     "should_hit":  true,
+                                     "a":  "how do I reset my password for the admin console",
+                                     "b":  "how can I reset my password for the admin console"
+                                 },
+                                 {
+                                     "id":  "pp-en-3",
+                                     "kind":  "paraphrase",
+                                     "should_hit":  true,
+                                     "a":  "what is the capital of France",
+                                     "b":  "what\u0027s the capital of France"
+                                 },
+                                 {
+                                     "id":  "pp-en-4",
+                                     "kind":  "paraphrase",
+                                     "should_hit":  true,
+                                     "a":  "explain the token bucket algorithm",
+                                     "b":  "can you explain the token bucket algorithm"
+                                 },
+                                 {
+                                     "id":  "pp-en-5",
+                                     "kind":  "paraphrase",
+                                     "should_hit":  true,
+                                     "a":  "summarise the design document",
+                                     "b":  "please summarise the design document"
+                                 },
+                                 {
+                                     "id":  "pp-en-6",
+                                     "kind":  "paraphrase",
+                                     "should_hit":  true,
+                                     "a":  "write a unit test for the router",
+                                     "b":  "write a unit test for the router please"
+                                 },
+                                 {
+                                     "id":  "pp-en-7",
+                                     "kind":  "paraphrase",
+                                     "should_hit":  true,
+                                     "a":  "what does the failover header mean",
+                                     "b":  "what does the failover header mean?"
+                                 },
+                                 {
+                                     "id":  "pp-en-8",
+                                     "kind":  "paraphrase",
+                                     "should_hit":  true,
+                                     "a":  "list the environment variables the gateway reads",
+                                     "b":  "which environment variables does the gateway read"
+                                 },
+                                 {
+                                     "id":  "pp-zh-1",
+                                     "kind":  "paraphrase",
+                                     "should_hit":  true,
+                                     "a":  "如何重置我的密码",
+                                     "b":  "我该如何重置我的密码"
+                                 },
+                                 {
+                                     "id":  "pp-zh-2",
+                                     "kind":  "paraphrase",
+                                     "should_hit":  true,
+                                     "a":  "解释一下令牌桶算法",
+                                     "b":  "请解释一下令牌桶算法"
+                                 },
+                                 {
+                                     "id":  "nm-en-1",
+                                     "kind":  "near-miss",
+                                     "should_hit":  false,
+                                     "a":  "how do I reset my password",
+                                     "b":  "how do I reset my username"
+                                 },
+                                 {
+                                     "id":  "nm-en-2",
+                                     "kind":  "near-miss",
+                                     "should_hit":  false,
+                                     "a":  "how do I reset my password for the admin console",
+                                     "b":  "how do I reset my password for the user console"
+                                 },
+                                 {
+                                     "id":  "nm-en-3",
+                                     "kind":  "near-miss",
+                                     "should_hit":  false,
+                                     "a":  "what is the capital of France",
+                                     "b":  "what is the capital of Germany"
+                                 },
+                                 {
+                                     "id":  "nm-en-4",
+                                     "kind":  "near-miss",
+                                     "should_hit":  false,
+                                     "a":  "explain the token bucket algorithm",
+                                     "b":  "explain the leaky bucket algorithm"
+                                 },
+                                 {
+                                     "id":  "nm-en-5",
+                                     "kind":  "near-miss",
+                                     "should_hit":  false,
+                                     "a":  "summarise the design document",
+                                     "b":  "summarise the deployment document"
+                                 },
+                                 {
+                                     "id":  "nm-en-6",
+                                     "kind":  "near-miss",
+                                     "should_hit":  false,
+                                     "a":  "list the environment variables the gateway reads",
+                                     "b":  "list the command line flags the gateway reads"
+                                 },
+                                 {
+                                     "id":  "nm-en-7",
+                                     "kind":  "near-miss",
+                                     "should_hit":  false,
+                                     "a":  "write a unit test for the router",
+                                     "b":  "write a unit test for the breaker"
+                                 },
+                                 {
+                                     "id":  "nm-en-8",
+                                     "kind":  "near-miss",
+                                     "should_hit":  false,
+                                     "a":  "delete the cache entry for tenant alpha",
+                                     "b":  "delete the cache entry for tenant beta"
+                                 },
+                                 {
+                                     "id":  "nm-zh-1",
+                                     "kind":  "near-miss",
+                                     "should_hit":  false,
+                                     "a":  "如何重置我的密码",
+                                     "b":  "如何重置我的邮箱"
+                                 },
+                                 {
+                                     "id":  "nm-zh-2",
+                                     "kind":  "near-miss",
+                                     "should_hit":  false,
+                                     "a":  "北京有多少人口",
+                                     "b":  "上海有多少人口"
+                                 },
+                                 {
+                                     "id":  "un-en-1",
+                                     "kind":  "unrelated",
+                                     "should_hit":  false,
+                                     "a":  "how do I reset my password",
+                                     "b":  "what is the weather in Beijing tomorrow"
+                                 },
+                                 {
+                                     "id":  "un-en-2",
+                                     "kind":  "unrelated",
+                                     "should_hit":  false,
+                                     "a":  "explain the token bucket algorithm",
+                                     "b":  "write a haiku about autumn"
+                                 },
+                                 {
+                                     "id":  "un-zh-1",
+                                     "kind":  "unrelated",
+                                     "should_hit":  false,
+                                     "a":  "如何重置我的密码",
+                                     "b":  "推荐几本科幻小说"
+                                 }
+                             ]
+               },
+    "hit_rate":  {
+                     "labelled_workload":  "A, A, B per should-hit pair (39 requests) + A, B per should-not-hit pair (26 requests) = 65 requests",
+                     "requests":  39,
+                     "exact_hits":  18,
+                     "semantic_hits":  5,
+                     "hits":  23,
+                     "misses":  16,
+                     "skips":  0,
+                     "hit_rate":  0.5897,
+                     "hit_rate_definition":  "cache hits (exact + semantic) / requests sent to should-hit pairs (A, A, B per pair)",
+                     "pairs_matched":  13,
+                     "pairs_total":  13,
+                     "pair_hit_rate":  1,
+                     "matched_ids":  [
+                                         "id-en-1",
+                                         "id-en-2",
+                                         "id-zh-1",
+                                         "pp-en-1",
+                                         "pp-en-2",
+                                         "pp-en-3",
+                                         "pp-en-4",
+                                         "pp-en-5",
+                                         "pp-en-6",
+                                         "pp-en-7",
+                                         "pp-en-8",
+                                         "pp-zh-1",
+                                         "pp-zh-2"
+                                     ],
+                     "should_not_hit_requests":  26,
+                     "false_hits":  0,
+                     "false_hit_ids":  [
+
+                                       ],
+                     "by_kind":  {
+                                     "identical":  {
+                                                       "requests":  9,
+                                                       "exact_hits":  6,
+                                                       "semantic_hits":  0,
+                                                       "misses":  3,
+                                                       "skips":  0
+                                                   },
+                                     "paraphrase":  {
+                                                        "requests":  30,
+                                                        "exact_hits":  12,
+                                                        "semantic_hits":  5,
+                                                        "misses":  13,
+                                                        "skips":  0
+                                                    },
+                                     "near-miss":  {
+                                                       "requests":  20,
+                                                       "false_hits":  0,
+                                                       "prime_exact":  8,
+                                                       "prime_misses":  2
+                                                   },
+                                     "unrelated":  {
+                                                       "requests":  6,
+                                                       "false_hits":  0,
+                                                       "prime_exact":  3,
+                                                       "prime_misses":  0
+                                                   }
+                                 },
+                     "admin_cache_delta":  {
+                                               "lookups":  65,
+                                               "hits":  34,
+                                               "exact_hits":  29,
+                                               "semantic_hits":  5,
+                                               "misses":  31,
+                                               "stores":  31,
+                                               "store_errors":  0,
+                                               "lookup_errors":  0,
+                                               "stale_evictions":  0,
+                                               "collapsed":  0,
+                                               "saved_prompt_tokens":  319,
+                                               "saved_completion_tokens":  285
+                                           },
+                     "upstream_calls_seen_by_mock":  31,
+                     "upstream_calls_note":  "counted in the mock upstream process log (msg=\"chat request\"); a cache hit performs no upstream call, so this must equal the miss count",
+                     "store":  "memory",
+                     "embedding":  "hashing-512/512",
+                     "threshold":  0.86,
+                     "min_prompt_chars":  1,
+                     "shipped_config_variant":  {
+                                                    "label":  "corpus with the shipped min_prompt_chars 12",
+                                                    "store":  "memory",
+                                                    "embedding":  "hashing-512/512",
+                                                    "threshold":  0.86,
+                                                    "min_prompt_chars":  12,
+                                                    "requests":  39,
+                                                    "exact_hits":  13,
+                                                    "semantic_hits":  3,
+                                                    "hits":  16,
+                                                    "misses":  14,
+                                                    "skips":  9,
+                                                    "non_cache_outcomes":  0,
+                                                    "hit_rate":  0.4103,
+                                                    "hit_rate_definition":  "cache hits (exact + semantic) / requests sent to should-hit pairs (A, A, B per pair)",
+                                                    "pairs_matched":  10,
+                                                    "pairs_total":  13,
+                                                    "pair_hit_rate":  0.7692,
+                                                    "matched_ids":  [
+                                                                        "id-en-1",
+                                                                        "id-en-2",
+                                                                        "pp-en-1",
+                                                                        "pp-en-2",
+                                                                        "pp-en-3",
+                                                                        "pp-en-4",
+                                                                        "pp-en-5",
+                                                                        "pp-en-6",
+                                                                        "pp-en-7",
+                                                                        "pp-en-8"
+                                                                    ],
+                                                    "should_not_hit_requests":  26,
+                                                    "false_hits":  0,
+                                                    "false_hit_ids":  [
+
+                                                                      ],
+                                                    "by_kind":  {
+                                                                    "identical":  {
+                                                                                      "requests":  9,
+                                                                                      "exact_hits":  4,
+                                                                                      "semantic_hits":  0,
+                                                                                      "misses":  2,
+                                                                                      "skips":  3
+                                                                                  },
+                                                                    "paraphrase":  {
+                                                                                       "requests":  30,
+                                                                                       "exact_hits":  9,
+                                                                                       "semantic_hits":  3,
+                                                                                       "misses":  12,
+                                                                                       "skips":  6
+                                                                                   },
+                                                                    "near-miss":  {
+                                                                                      "requests":  20,
+                                                                                      "false_hits":  0,
+                                                                                      "prime_exact":  7,
+                                                                                      "prime_misses":  1
+                                                                                  },
+                                                                    "unrelated":  {
+                                                                                      "requests":  6,
+                                                                                      "false_hits":  0,
+                                                                                      "prime_exact":  2,
+                                                                                      "prime_misses":  0
+                                                                                  }
+                                                                },
+                                                    "admin_cache_delta":  {
+                                                                              "lookups":  50,
+                                                                              "hits":  25,
+                                                                              "exact_hits":  22,
+                                                                              "semantic_hits":  3,
+                                                                              "misses":  25,
+                                                                              "stores":  25,
+                                                                              "store_errors":  0,
+                                                                              "lookup_errors":  0,
+                                                                              "stale_evictions":  0,
+                                                                              "collapsed":  0,
+                                                                              "saved_prompt_tokens":  274,
+                                                                              "saved_completion_tokens":  249
+                                                                          },
+                                                    "upstream_calls_seen_by_mock":  40,
+                                                    "upstream_calls_note":  "counted in the mock upstream process log (msg=\"chat request\"); a cache hit performs no upstream call, so this must equal the miss count"
+                                                },
+                     "config_note":  "the shipped configs/cache-local.yaml has min_prompt_chars: 12, which skips 6 of the 26 pairs (every CJK pair is 7-8 characters) and would make the hit-rate and false-hit numbers measure the length gate instead of the semantic matcher. The headline run therefore uses min_prompt_chars: 1 in a generated tmp config; the same workload at the shipped value is reported in shipped_config_variant. Nothing in configs/ is modified."
+                 },
+    "tokens":  {
+                   "saved_prompt_tokens":  319,
+                   "saved_completion_tokens":  285,
+                   "saved_total_tokens":  604,
+                   "source":  "GET /admin/cache stats delta across the labelled workload (min_prompt_chars 1 run)",
+                   "hits":  34,
+                   "exact_hits":  29,
+                   "semantic_hits":  5,
+                   "misses":  31,
+                   "stores":  31,
+                   "lookups":  65,
+                   "mean_uncached_prompt_tokens_per_request":  9.962,
+                   "mean_uncached_completion_tokens_per_request":  8.962,
+                   "usage_source":  "usage block of the real responses from the cache-OFF gateway for the A and B of every should-hit pair",
+                   "mock_usage_note":  "the in-repo mock defines prompt_tokens = whitespace-separated words per message + 4, and completion_tokens = whitespace-separated words of its answer"
+               },
+    "cost":  {
+                 "unit":  "USD per 1,000,000 tokens (internal/gateway/pricing.go: const pricingUnitTokens = 1_000_000; CostUSD = (prompt*in + completion*out)/1e6)",
+                 "unit_confirmed":  "internal/gateway/pricing.go",
+                 "price_model":  "mock-gpt",
+                 "price_in_per_1m_usd":  1,
+                 "price_out_per_1m_usd":  3,
+                 "pricing_parsed_from_config":  true,
+                 "workload_requests":  39,
+                 "cost_workload_with_cache_usd":  0.000624,
+                 "cost_workload_without_cache_usd":  0.001431,
+                 "cost_saved_usd":  0.001174,
+                 "cost_saved_usd_from_misses":  0.000807,
+                 "cost_cross_check_delta_usd":  -0.000367,
+                 "cost_per_1k_requests_without_cache":  0.036692,
+                 "cost_per_1k_requests_with_cache":  0.016,
+                 "reduction_usd_per_1k":  0.020692,
+                 "reduction_percent":  56.39,
+                 "extrapolation":  "the measured workload cost divided by its measured request count, scaled to 1000 requests; no real provider was billed",
+                 "misses":  [
+                                {
+                                    "id":  "id-en-1",
+                                    "kind":  "identical",
+                                    "letter":  "A1",
+                                    "prompt_tokens":  10,
+                                    "completion_tokens":  9,
+                                    "cost_usd":  3.7E-05
+                                },
+                                {
+                                    "id":  "id-en-2",
+                                    "kind":  "identical",
+                                    "letter":  "A1",
+                                    "prompt_tokens":  20,
+                                    "completion_tokens":  19,
+                                    "cost_usd":  7.7E-05
+                                },
+                                {
+                                    "id":  "id-zh-1",
+                                    "kind":  "identical",
+                                    "letter":  "A1",
+                                    "prompt_tokens":  5,
+                                    "completion_tokens":  4,
+                                    "cost_usd":  1.7E-05
+                                },
+                                {
+                                    "id":  "pp-en-1",
+                                    "kind":  "paraphrase",
+                                    "letter":  "B",
+                                    "prompt_tokens":  10,
+                                    "completion_tokens":  9,
+                                    "cost_usd":  3.7E-05
+                                },
+                                {
+                                    "id":  "pp-en-2",
+                                    "kind":  "paraphrase",
+                                    "letter":  "A1",
+                                    "prompt_tokens":  14,
+                                    "completion_tokens":  13,
+                                    "cost_usd":  5.3E-05
+                                },
+                                {
+                                    "id":  "pp-en-2",
+                                    "kind":  "paraphrase",
+                                    "letter":  "B",
+                                    "prompt_tokens":  14,
+                                    "completion_tokens":  13,
+                                    "cost_usd":  5.3E-05
+                                },
+                                {
+                                    "id":  "pp-en-3",
+                                    "kind":  "paraphrase",
+                                    "letter":  "A1",
+                                    "prompt_tokens":  10,
+                                    "completion_tokens":  9,
+                                    "cost_usd":  3.7E-05
+                                },
+                                {
+                                    "id":  "pp-en-3",
+                                    "kind":  "paraphrase",
+                                    "letter":  "B",
+                                    "prompt_tokens":  9,
+                                    "completion_tokens":  8,
+                                    "cost_usd":  3.3E-05
+                                },
+                                {
+                                    "id":  "pp-en-4",
+                                    "kind":  "paraphrase",
+                                    "letter":  "A1",
+                                    "prompt_tokens":  9,
+                                    "completion_tokens":  8,
+                                    "cost_usd":  3.3E-05
+                                },
+                                {
+                                    "id":  "pp-en-4",
+                                    "kind":  "paraphrase",
+                                    "letter":  "B",
+                                    "prompt_tokens":  11,
+                                    "completion_tokens":  10,
+                                    "cost_usd":  4.1E-05
+                                },
+                                {
+                                    "id":  "pp-en-5",
+                                    "kind":  "paraphrase",
+                                    "letter":  "A1",
+                                    "prompt_tokens":  8,
+                                    "completion_tokens":  7,
+                                    "cost_usd":  2.9E-05
+                                },
+                                {
+                                    "id":  "pp-en-6",
+                                    "kind":  "paraphrase",
+                                    "letter":  "A1",
+                                    "prompt_tokens":  11,
+                                    "completion_tokens":  10,
+                                    "cost_usd":  4.1E-05
+                                },
+                                {
+                                    "id":  "pp-en-7",
+                                    "kind":  "paraphrase",
+                                    "letter":  "A1",
+                                    "prompt_tokens":  10,
+                                    "completion_tokens":  9,
+                                    "cost_usd":  3.7E-05
+                                },
+                                {
+                                    "id":  "pp-en-8",
+                                    "kind":  "paraphrase",
+                                    "letter":  "A1",
+                                    "prompt_tokens":  11,
+                                    "completion_tokens":  10,
+                                    "cost_usd":  4.1E-05
+                                },
+                                {
+                                    "id":  "pp-en-8",
+                                    "kind":  "paraphrase",
+                                    "letter":  "B",
+                                    "prompt_tokens":  11,
+                                    "completion_tokens":  10,
+                                    "cost_usd":  4.1E-05
+                                },
+                                {
+                                    "id":  "pp-zh-2",
+                                    "kind":  "paraphrase",
+                                    "letter":  "A1",
+                                    "prompt_tokens":  5,
+                                    "completion_tokens":  4,
+                                    "cost_usd":  1.7E-05
+                                }
+                            ]
+             },
+    "latency":  {
+                    "client":  "bin\\loadtest.exe -url http://127.0.0.1:PORT -c 8,32 -n 800 -warmup 100 -out docs\\baseline\\m2-load-\u003con|off\u003e-r\u003cround\u003e.json",
+                    "rounds":  3,
+                    "interleaving":  "round r: flush the cache-ON cache, run the load against cache-ON, then against cache-OFF - so drift is shared by both arms instead of being attributed to the cache",
+                    "load_body":  "the load client replays ONE fixed chat body: {\"model\":\"mock-gpt\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]} (and the same with \"stream\":true)",
+                    "rows":  [
+                                 {
+                                     "Scenario":  "cache-on",
+                                     "Workload":  "non-stream",
+                                     "Concurrency":  8,
+                                     "QPS":  8209.3,
+                                     "QPSMin":  4410.8,
+                                     "QPSMax":  8332.6,
+                                     "P95_ms":  2.003,
+                                     "P99_ms":  2.513,
+                                     "Errors":  0,
+                                     "P95Min_ms":  1.626,
+                                     "P95Max_ms":  3.502,
+                                     "P99Min_ms":  2.004,
+                                     "P99Max_ms":  4.996
+                                 },
+                                 {
+                                     "Scenario":  "cache-on",
+                                     "Workload":  "non-stream",
+                                     "Concurrency":  32,
+                                     "QPS":  8791.3,
+                                     "QPSMin":  6480.6,
+                                     "QPSMax":  9480.8,
+                                     "P95_ms":  7.495,
+                                     "P99_ms":  11,
+                                     "Errors":  0,
+                                     "P95Min_ms":  7.01,
+                                     "P95Max_ms":  11.539,
+                                     "P99Min_ms":  8.498,
+                                     "P99Max_ms":  14.896
+                                 },
+                                 {
+                                     "Scenario":  "cache-on",
+                                     "Workload":  "stream",
+                                     "Concurrency":  8,
+                                     "QPS":  2238.2,
+                                     "QPSMin":  2124.3,
+                                     "QPSMax":  2304.1,
+                                     "P95_ms":  5.497,
+                                     "P99_ms":  6.002,
+                                     "Errors":  0,
+                                     "P95Min_ms":  5.002,
+                                     "P95Max_ms":  5.51,
+                                     "P99Min_ms":  5.65,
+                                     "P99Max_ms":  6.166
+                                 },
+                                 {
+                                     "Scenario":  "cache-on",
+                                     "Workload":  "stream",
+                                     "Concurrency":  32,
+                                     "QPS":  2397.6,
+                                     "QPSMin":  2050.6,
+                                     "QPSMax":  2469,
+                                     "P95_ms":  20.028,
+                                     "P99_ms":  24.122,
+                                     "Errors":  0,
+                                     "P95Min_ms":  18.095,
+                                     "P95Max_ms":  22.998,
+                                     "P99Min_ms":  20.022,
+                                     "P99Max_ms":  25.522
+                                 },
+                                 {
+                                     "Scenario":  "cache-off",
+                                     "Workload":  "non-stream",
+                                     "Concurrency":  8,
+                                     "QPS":  1861.8,
+                                     "QPSMin":  1808.1,
+                                     "QPSMax":  2222.4,
+                                     "P95_ms":  5.503,
+                                     "P99_ms":  7.053,
+                                     "Errors":  0,
+                                     "P95Min_ms":  4.512,
+                                     "P95Max_ms":  6.503,
+                                     "P99Min_ms":  6.017,
+                                     "P99Max_ms":  7.513
+                                 },
+                                 {
+                                     "Scenario":  "cache-off",
+                                     "Workload":  "non-stream",
+                                     "Concurrency":  32,
+                                     "QPS":  1865.5,
+                                     "QPSMin":  1806.2,
+                                     "QPSMax":  2050.4,
+                                     "P95_ms":  20.043,
+                                     "P99_ms":  26.656,
+                                     "Errors":  0,
+                                     "P95Min_ms":  17.501,
+                                     "P95Max_ms":  20.672,
+                                     "P99Min_ms":  22.995,
+                                     "P99Max_ms":  28.28
+                                 },
+                                 {
+                                     "Scenario":  "cache-off",
+                                     "Workload":  "stream",
+                                     "Concurrency":  8,
+                                     "QPS":  1227.6,
+                                     "QPSMin":  1099.8,
+                                     "QPSMax":  1247.8,
+                                     "P95_ms":  9.501,
+                                     "P99_ms":  11.002,
+                                     "Errors":  0,
+                                     "P95Min_ms":  8.998,
+                                     "P95Max_ms":  10.03,
+                                     "P99Min_ms":  9.55,
+                                     "P99Max_ms":  11.597
+                                 },
+                                 {
+                                     "Scenario":  "cache-off",
+                                     "Workload":  "stream",
+                                     "Concurrency":  32,
+                                     "QPS":  1347,
+                                     "QPSMin":  751.9,
+                                     "QPSMax":  1373.1,
+                                     "P95_ms":  28.531,
+                                     "P99_ms":  33.573,
+                                     "Errors":  0,
+                                     "P95Min_ms":  28.03,
+                                     "P95Max_ms":  62.16,
+                                     "P99Min_ms":  31.545,
+                                     "P99Max_ms":  68.687
+                                 }
+                             ],
+                    "cache_stats_by_round":  [
+                                                 {
+                                                     "round":  1,
+                                                     "scenario":  "cache-on",
+                                                     "wall_s":  1.411,
+                                                     "lookups":  3600,
+                                                     "hits":  3598,
+                                                     "exact_hits":  3598,
+                                                     "semantic_hits":  0,
+                                                     "misses":  2,
+                                                     "stores":  2,
+                                                     "saved_prompt_tokens":  17990,
+                                                     "saved_completion_tokens":  14392,
+                                                     "upstream_calls_observed":  2
+                                                 },
+                                                 {
+                                                     "round":  1,
+                                                     "scenario":  "cache-off",
+                                                     "wall_s":  3.802,
+                                                     "lookups":  0,
+                                                     "hits":  0,
+                                                     "exact_hits":  0,
+                                                     "semantic_hits":  0,
+                                                     "misses":  0,
+                                                     "stores":  0,
+                                                     "saved_prompt_tokens":  0,
+                                                     "saved_completion_tokens":  0,
+                                                     "upstream_calls_observed":  -1
+                                                 },
+                                                 {
+                                                     "round":  2,
+                                                     "scenario":  "cache-on",
+                                                     "wall_s":  1.364,
+                                                     "lookups":  3600,
+                                                     "hits":  3598,
+                                                     "exact_hits":  3598,
+                                                     "semantic_hits":  0,
+                                                     "misses":  2,
+                                                     "stores":  2,
+                                                     "saved_prompt_tokens":  17990,
+                                                     "saved_completion_tokens":  14392,
+                                                     "upstream_calls_observed":  2
+                                                 },
+                                                 {
+                                                     "round":  2,
+                                                     "scenario":  "cache-off",
+                                                     "wall_s":  3.295,
+                                                     "lookups":  0,
+                                                     "hits":  0,
+                                                     "exact_hits":  0,
+                                                     "semantic_hits":  0,
+                                                     "misses":  0,
+                                                     "stores":  0,
+                                                     "saved_prompt_tokens":  0,
+                                                     "saved_completion_tokens":  0,
+                                                     "upstream_calls_observed":  -1
+                                                 },
+                                                 {
+                                                     "round":  3,
+                                                     "scenario":  "cache-on",
+                                                     "wall_s":  1.729,
+                                                     "lookups":  3600,
+                                                     "hits":  3598,
+                                                     "exact_hits":  3598,
+                                                     "semantic_hits":  0,
+                                                     "misses":  2,
+                                                     "stores":  2,
+                                                     "saved_prompt_tokens":  17990,
+                                                     "saved_completion_tokens":  14392,
+                                                     "upstream_calls_observed":  2
+                                                 },
+                                                 {
+                                                     "round":  3,
+                                                     "scenario":  "cache-off",
+                                                     "wall_s":  3.425,
+                                                     "lookups":  0,
+                                                     "hits":  0,
+                                                     "exact_hits":  0,
+                                                     "semantic_hits":  0,
+                                                     "misses":  0,
+                                                     "stores":  0,
+                                                     "saved_prompt_tokens":  0,
+                                                     "saved_completion_tokens":  0,
+                                                     "upstream_calls_observed":  -1
+                                                 }
+                                             ],
+                    "gateway_stats":  {
+                                          "cache_on_pure_hit":  {
+                                                                    "source":  "/stats taken after round 1 on a gateway whose only traffic is that one load round; the warmup (100 requests) primes the cache, so all 800 measured requests are hits",
+                                                                    "stats":  {
+                                                                                  "source":  "GET /stats",
+                                                                                  "count":  "3600",
+                                                                                  "p50":  "1.0132ms",
+                                                                                  "p90":  "4.0296ms",
+                                                                                  "p95":  "5.5028ms",
+                                                                                  "p99":  "8.9375ms",
+                                                                                  "max":  "16.778ms",
+                                                                                  "p95_ms":  5.5028,
+                                                                                  "p99_ms":  8.9375
+                                                                              }
+                                                                },
+                                          "cache_off_pure_miss":  {
+                                                                      "source":  "/stats taken after round 1 on a fresh cache-OFF gateway: no cache at all, every request goes upstream",
+                                                                      "stats":  {
+                                                                                    "source":  "GET /stats",
+                                                                                    "count":  "3626",
+                                                                                    "p50":  "5.5327ms",
+                                                                                    "p90":  "38.5686ms",
+                                                                                    "p95":  "47.3147ms",
+                                                                                    "p99":  "58.2559ms",
+                                                                                    "max":  "98.2483ms",
+                                                                                    "p95_ms":  47.3147,
+                                                                                    "p99_ms":  58.2559
+                                                                                }
+                                                                  }
+                                      },
+                    "note":  "the upstream is the in-repo mock (local, free), so the cache-ON/cache-OFF throughput gap measures gateway work removed (no HTTP round trip, no JSON decode/encode of a provider response), NOT a provider latency saving. The decisive numbers are the cached-path P95 and upstream_calls_observed == misses."
+                },
+    "shield":  {
+                   "primed_prompts":  26,
+                   "primed_http_200":  26,
+                   "primed_non_200":  0,
+                   "primed_hits_while_up":  10,
+                   "primed_requests_that_missed":  16,
+                   "primed_stores_expected":  16,
+                   "primed_stores_landed":  16,
+                   "primed_entries_in_scope":  16,
+                   "primed_landed":  true,
+                   "primed_note":  "priming runs with the provider UP: one request per prompt, every miss stores, so primed_stores_landed is read from the /admin/cache stores delta and polled until it reaches primed_stores_expected",
+                   "mock_pid_killed":  67220,
+                   "provider_confirmed_down":  true,
+                   "probe_status_after_kill":  "000",
+                   "replay_requests":  26,
+                   "served_200":  26,
+                   "served_exact_200":  21,
+                   "served_semantic_200":  5,
+                   "replay_misses":  0,
+                   "replay_skips":  0,
+                   "non_200":  0,
+                   "five_xx":  0,
+                   "five_xx_assertion_passed":  true,
+                   "served_all_primed_assertion_passed":  true,
+                   "shield_assertion_passed":  true,
+                   "control_not_200_assertion_passed":  true,
+                   "claim":  "requests answered with HTTP 200 while the provider process was dead: they were served from the cache, with no upstream call possible",
+                   "control_status":  502,
+                   "control_cache":  "miss",
+                   "control_note":  "an unprimed prompt must NOT be answered while the provider process is dead; this is what separates \"the cache served it\" from \"the provider was never down\"",
+                   "mock_restarted":  true,
+                   "mock_restart_pid":  68556
+               },
+    "sweep":  {
+                  "command":  ".\\tools\\go.cmd run ./cmd/measure-m2 -json -out tmp\\m2-sweep.json",
+                  "exit_code":  0,
+                  "embedder":  "hashing-512(dims=512)",
+                  "dims":  512,
+                  "cases":  26,
+                  "thresholds":  [
+                                     {
+                                         "threshold":  0.6,
+                                         "true_hits":  12,
+                                         "true_total":  13,
+                                         "hit_rate":  0.9231,
+                                         "false_hits":  8,
+                                         "false_total":  13,
+                                         "false_hit_rate":  0.6154,
+                                         "missed_ids":  [
+                                                            "pp-en-8"
+                                                        ],
+                                         "false_hit_ids":  [
+                                                               "nm-en-7",
+                                                               "nm-en-8",
+                                                               "nm-en-2",
+                                                               "nm-en-1",
+                                                               "nm-en-3",
+                                                               "nm-en-4",
+                                                               "nm-zh-1",
+                                                               "nm-zh-2"
+                                                           ]
+                                     },
+                                     {
+                                         "threshold":  0.65,
+                                         "true_hits":  12,
+                                         "true_total":  13,
+                                         "hit_rate":  0.9231,
+                                         "false_hits":  7,
+                                         "false_total":  13,
+                                         "false_hit_rate":  0.5385,
+                                         "missed_ids":  [
+                                                            "pp-en-8"
+                                                        ],
+                                         "false_hit_ids":  [
+                                                               "nm-en-7",
+                                                               "nm-en-8",
+                                                               "nm-en-2",
+                                                               "nm-en-1",
+                                                               "nm-en-3",
+                                                               "nm-en-4",
+                                                               "nm-zh-1"
+                                                           ]
+                                     },
+                                     {
+                                         "threshold":  0.7,
+                                         "true_hits":  12,
+                                         "true_total":  13,
+                                         "hit_rate":  0.9231,
+                                         "false_hits":  7,
+                                         "false_total":  13,
+                                         "false_hit_rate":  0.5385,
+                                         "missed_ids":  [
+                                                            "pp-en-8"
+                                                        ],
+                                         "false_hit_ids":  [
+                                                               "nm-en-7",
+                                                               "nm-en-8",
+                                                               "nm-en-2",
+                                                               "nm-en-1",
+                                                               "nm-en-3",
+                                                               "nm-en-4",
+                                                               "nm-zh-1"
+                                                           ]
+                                     },
+                                     {
+                                         "threshold":  0.75,
+                                         "true_hits":  10,
+                                         "true_total":  13,
+                                         "hit_rate":  0.7692,
+                                         "false_hits":  5,
+                                         "false_total":  13,
+                                         "false_hit_rate":  0.3846,
+                                         "missed_ids":  [
+                                                            "pp-en-1",
+                                                            "pp-en-3",
+                                                            "pp-en-8"
+                                                        ],
+                                         "false_hit_ids":  [
+                                                               "nm-en-7",
+                                                               "nm-en-8",
+                                                               "nm-en-2",
+                                                               "nm-en-1",
+                                                               "nm-en-3"
+                                                           ]
+                                     },
+                                     {
+                                         "threshold":  0.8,
+                                         "true_hits":  10,
+                                         "true_total":  13,
+                                         "hit_rate":  0.7692,
+                                         "false_hits":  5,
+                                         "false_total":  13,
+                                         "false_hit_rate":  0.3846,
+                                         "missed_ids":  [
+                                                            "pp-en-1",
+                                                            "pp-en-3",
+                                                            "pp-en-8"
+                                                        ],
+                                         "false_hit_ids":  [
+                                                               "nm-en-7",
+                                                               "nm-en-8",
+                                                               "nm-en-2",
+                                                               "nm-en-1",
+                                                               "nm-en-3"
+                                                           ]
+                                     },
+                                     {
+                                         "threshold":  0.82,
+                                         "true_hits":  10,
+                                         "true_total":  13,
+                                         "hit_rate":  0.7692,
+                                         "false_hits":  3,
+                                         "false_total":  13,
+                                         "false_hit_rate":  0.2308,
+                                         "missed_ids":  [
+                                                            "pp-en-1",
+                                                            "pp-en-3",
+                                                            "pp-en-8"
+                                                        ],
+                                         "false_hit_ids":  [
+                                                               "nm-en-7",
+                                                               "nm-en-8",
+                                                               "nm-en-2"
+                                                           ]
+                                     },
+                                     {
+                                         "threshold":  0.84,
+                                         "true_hits":  10,
+                                         "true_total":  13,
+                                         "hit_rate":  0.7692,
+                                         "false_hits":  3,
+                                         "false_total":  13,
+                                         "false_hit_rate":  0.2308,
+                                         "missed_ids":  [
+                                                            "pp-en-1",
+                                                            "pp-en-3",
+                                                            "pp-en-8"
+                                                        ],
+                                         "false_hit_ids":  [
+                                                               "nm-en-7",
+                                                               "nm-en-8",
+                                                               "nm-en-2"
+                                                           ]
+                                     },
+                                     {
+                                         "threshold":  0.86,
+                                         "true_hits":  8,
+                                         "true_total":  13,
+                                         "hit_rate":  0.6154,
+                                         "false_hits":  0,
+                                         "false_total":  13,
+                                         "false_hit_rate":  0,
+                                         "missed_ids":  [
+                                                            "pp-en-4",
+                                                            "pp-en-2",
+                                                            "pp-en-1",
+                                                            "pp-en-3",
+                                                            "pp-en-8"
+                                                        ],
+                                         "false_hit_ids":  [
+                                                               null
+                                                           ]
+                                     },
+                                     {
+                                         "threshold":  0.88,
+                                         "true_hits":  8,
+                                         "true_total":  13,
+                                         "hit_rate":  0.6154,
+                                         "false_hits":  0,
+                                         "false_total":  13,
+                                         "false_hit_rate":  0,
+                                         "missed_ids":  [
+                                                            "pp-en-4",
+                                                            "pp-en-2",
+                                                            "pp-en-1",
+                                                            "pp-en-3",
+                                                            "pp-en-8"
+                                                        ],
+                                         "false_hit_ids":  [
+                                                               null
+                                                           ]
+                                     },
+                                     {
+                                         "threshold":  0.9,
+                                         "true_hits":  6,
+                                         "true_total":  13,
+                                         "hit_rate":  0.4615,
+                                         "false_hits":  0,
+                                         "false_total":  13,
+                                         "false_hit_rate":  0,
+                                         "missed_ids":  [
+                                                            "pp-zh-1",
+                                                            "pp-en-5",
+                                                            "pp-en-4",
+                                                            "pp-en-2",
+                                                            "pp-en-1",
+                                                            "pp-en-3",
+                                                            "pp-en-8"
+                                                        ],
+                                         "false_hit_ids":  [
+                                                               null
+                                                           ]
+                                     },
+                                     {
+                                         "threshold":  0.91,
+                                         "true_hits":  6,
+                                         "true_total":  13,
+                                         "hit_rate":  0.4615,
+                                         "false_hits":  0,
+                                         "false_total":  13,
+                                         "false_hit_rate":  0,
+                                         "missed_ids":  [
+                                                            "pp-zh-1",
+                                                            "pp-en-5",
+                                                            "pp-en-4",
+                                                            "pp-en-2",
+                                                            "pp-en-1",
+                                                            "pp-en-3",
+                                                            "pp-en-8"
+                                                        ],
+                                         "false_hit_ids":  [
+                                                               null
+                                                           ]
+                                     },
+                                     {
+                                         "threshold":  0.92,
+                                         "true_hits":  6,
+                                         "true_total":  13,
+                                         "hit_rate":  0.4615,
+                                         "false_hits":  0,
+                                         "false_total":  13,
+                                         "false_hit_rate":  0,
+                                         "missed_ids":  [
+                                                            "pp-zh-1",
+                                                            "pp-en-5",
+                                                            "pp-en-4",
+                                                            "pp-en-2",
+                                                            "pp-en-1",
+                                                            "pp-en-3",
+                                                            "pp-en-8"
+                                                        ],
+                                         "false_hit_ids":  [
+                                                               null
+                                                           ]
+                                     },
+                                     {
+                                         "threshold":  0.93,
+                                         "true_hits":  6,
+                                         "true_total":  13,
+                                         "hit_rate":  0.4615,
+                                         "false_hits":  0,
+                                         "false_total":  13,
+                                         "false_hit_rate":  0,
+                                         "missed_ids":  [
+                                                            "pp-zh-1",
+                                                            "pp-en-5",
+                                                            "pp-en-4",
+                                                            "pp-en-2",
+                                                            "pp-en-1",
+                                                            "pp-en-3",
+                                                            "pp-en-8"
+                                                        ],
+                                         "false_hit_ids":  [
+                                                               null
+                                                           ]
+                                     },
+                                     {
+                                         "threshold":  0.94,
+                                         "true_hits":  4,
+                                         "true_total":  13,
+                                         "hit_rate":  0.3077,
+                                         "false_hits":  0,
+                                         "false_total":  13,
+                                         "false_hit_rate":  0,
+                                         "missed_ids":  [
+                                                            "pp-zh-2",
+                                                            "pp-en-6",
+                                                            "pp-zh-1",
+                                                            "pp-en-5",
+                                                            "pp-en-4",
+                                                            "pp-en-2",
+                                                            "pp-en-1",
+                                                            "pp-en-3",
+                                                            "pp-en-8"
+                                                        ],
+                                         "false_hit_ids":  [
+                                                               null
+                                                           ]
+                                     },
+                                     {
+                                         "threshold":  0.95,
+                                         "true_hits":  4,
+                                         "true_total":  13,
+                                         "hit_rate":  0.3077,
+                                         "false_hits":  0,
+                                         "false_total":  13,
+                                         "false_hit_rate":  0,
+                                         "missed_ids":  [
+                                                            "pp-zh-2",
+                                                            "pp-en-6",
+                                                            "pp-zh-1",
+                                                            "pp-en-5",
+                                                            "pp-en-4",
+                                                            "pp-en-2",
+                                                            "pp-en-1",
+                                                            "pp-en-3",
+                                                            "pp-en-8"
+                                                        ],
+                                         "false_hit_ids":  [
+                                                               null
+                                                           ]
+                                     },
+                                     {
+                                         "threshold":  0.96,
+                                         "true_hits":  4,
+                                         "true_total":  13,
+                                         "hit_rate":  0.3077,
+                                         "false_hits":  0,
+                                         "false_total":  13,
+                                         "false_hit_rate":  0,
+                                         "missed_ids":  [
+                                                            "pp-zh-2",
+                                                            "pp-en-6",
+                                                            "pp-zh-1",
+                                                            "pp-en-5",
+                                                            "pp-en-4",
+                                                            "pp-en-2",
+                                                            "pp-en-1",
+                                                            "pp-en-3",
+                                                            "pp-en-8"
+                                                        ],
+                                         "false_hit_ids":  [
+                                                               null
+                                                           ]
+                                     },
+                                     {
+                                         "threshold":  0.97,
+                                         "true_hits":  4,
+                                         "true_total":  13,
+                                         "hit_rate":  0.3077,
+                                         "false_hits":  0,
+                                         "false_total":  13,
+                                         "false_hit_rate":  0,
+                                         "missed_ids":  [
+                                                            "pp-zh-2",
+                                                            "pp-en-6",
+                                                            "pp-zh-1",
+                                                            "pp-en-5",
+                                                            "pp-en-4",
+                                                            "pp-en-2",
+                                                            "pp-en-1",
+                                                            "pp-en-3",
+                                                            "pp-en-8"
+                                                        ],
+                                         "false_hit_ids":  [
+                                                               null
+                                                           ]
+                                     },
+                                     {
+                                         "threshold":  0.98,
+                                         "true_hits":  4,
+                                         "true_total":  13,
+                                         "hit_rate":  0.3077,
+                                         "false_hits":  0,
+                                         "false_total":  13,
+                                         "false_hit_rate":  0,
+                                         "missed_ids":  [
+                                                            "pp-zh-2",
+                                                            "pp-en-6",
+                                                            "pp-zh-1",
+                                                            "pp-en-5",
+                                                            "pp-en-4",
+                                                            "pp-en-2",
+                                                            "pp-en-1",
+                                                            "pp-en-3",
+                                                            "pp-en-8"
+                                                        ],
+                                         "false_hit_ids":  [
+                                                               null
+                                                           ]
+                                     },
+                                     {
+                                         "threshold":  0.99,
+                                         "true_hits":  4,
+                                         "true_total":  13,
+                                         "hit_rate":  0.3077,
+                                         "false_hits":  0,
+                                         "false_total":  13,
+                                         "false_hit_rate":  0,
+                                         "missed_ids":  [
+                                                            "pp-zh-2",
+                                                            "pp-en-6",
+                                                            "pp-zh-1",
+                                                            "pp-en-5",
+                                                            "pp-en-4",
+                                                            "pp-en-2",
+                                                            "pp-en-1",
+                                                            "pp-en-3",
+                                                            "pp-en-8"
+                                                        ],
+                                         "false_hit_ids":  [
+                                                               null
+                                                           ]
+                                     }
+                                 ],
+                  "shipped_threshold":  0.86,
+                  "shipped_threshold_row":  {
+                                                "threshold":  0.86,
+                                                "true_hits":  8,
+                                                "true_total":  13,
+                                                "hit_rate":  0.6154,
+                                                "false_hits":  0,
+                                                "false_total":  13,
+                                                "false_hit_rate":  0,
+                                                "missed_ids":  [
+                                                                   "pp-en-4",
+                                                                   "pp-en-2",
+                                                                   "pp-en-1",
+                                                                   "pp-en-3",
+                                                                   "pp-en-8"
+                                                               ],
+                                                "false_hit_ids":  [
+                                                                      null
+                                                                  ]
+                                            },
+                  "recommendation":  {
+                                         "max_false_hits":  0,
+                                         "threshold":  0.88,
+                                         "true_hits":  8,
+                                         "true_total":  13,
+                                         "hit_rate":  0.6154,
+                                         "false_hits":  0,
+                                         "false_total":  13,
+                                         "false_hit_rate":  0
+                                     },
+                  "recommendation_by_budget":  {
+                                                   "max_false_hits_0":  {
+                                                                            "threshold":  0.88,
+                                                                            "true_hits":  8,
+                                                                            "true_total":  13,
+                                                                            "hit_rate":  0.6154,
+                                                                            "false_hits":  0,
+                                                                            "false_total":  13,
+                                                                            "false_hit_rate":  0
+                                                                        },
+                                                   "max_false_hits_1":  {
+                                                                            "threshold":  0.88,
+                                                                            "true_hits":  8,
+                                                                            "true_total":  13,
+                                                                            "hit_rate":  0.6154,
+                                                                            "false_hits":  0,
+                                                                            "false_total":  13,
+                                                                            "false_hit_rate":  0
+                                                                        },
+                                                   "max_false_hits_2":  {
+                                                                            "threshold":  0.88,
+                                                                            "true_hits":  8,
+                                                                            "true_total":  13,
+                                                                            "hit_rate":  0.6154,
+                                                                            "false_hits":  0,
+                                                                            "false_total":  13,
+                                                                            "false_hit_rate":  0
+                                                                        },
+                                                   "max_false_hits_3":  {
+                                                                            "threshold":  0.84,
+                                                                            "true_hits":  10,
+                                                                            "true_total":  13,
+                                                                            "hit_rate":  0.7692,
+                                                                            "false_hits":  3,
+                                                                            "false_total":  13,
+                                                                            "false_hit_rate":  0.2308
+                                                                        }
+                                               },
+                  "recommendation_reported_by_tool":  0.88,
+                  "recommendation_matches_tool":  true,
+                  "per_pair_similarity":  [
+
+                                          ],
+                  "per_pair_note":  "cosine similarity per labelled pair as printed by the hashing embedder (sorted descending by the tool)",
+                  "live_check":  "hit_rate (the labelled workload through the real gateway) at this threshold: recorded above in hit_rate"
+              },
+    "false_hits":  0,
+    "limitations":  [
+                        "The upstream is the in-repo mock: it is local and free, so cache-ON vs cache-OFF throughput is a gateway-overhead measurement, not a provider latency saving. The decisive cached-path facts are the P95 and that a hit performs no upstream call at all (upstream_calls_observed == misses).",
+                        "A hit is answered from the stored body; its P95 is therefore the cache lookup plus a replay, which is what a real deployment would save the provider round trip of.",
+                        "Cost figures use the config price book (USD per 1,000,000 tokens) and are extrapolated from the measured workload to 1000 requests; no provider was billed.",
+                        "The labelled-corpus numbers use a generated config with min_prompt_chars: 1 (the shipped file says 12, which skips 6 of the 26 pairs). Both runs are reported; nothing in configs/ was edited.",
+                        "Three interleaved rounds give a range, not a confidence interval: the host showed ",
+                        47.1,
+                        "% worst-case spread between rounds."
+                    ]
+}

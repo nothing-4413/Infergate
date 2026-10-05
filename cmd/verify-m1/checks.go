@@ -24,7 +24,6 @@ const (
 // fleet resolve it through model patterns rather than an exact match.
 var routerBody = `{"model":"mock-router","messages":[{"role":"user","content":"hi"}]}`
 
-
 // checkPriorityAndFailover: with priority ordering the FIRST eligible backend is
 // tried, and a 5xx takes the gateway to the next candidate instead of surfacing
 // the failure -- unless the failing backend is the only one, in which case the

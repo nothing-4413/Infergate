@@ -26,11 +26,11 @@ type ErrorDetail struct {
 // Error type identifiers. The "infergate_" prefix keeps gateway-local classes
 // from colliding with provider error types such as "invalid_request_error".
 const (
-	TypeBadRequest  = "infergate_bad_request"
-	TypeNoUpstream  = "infergate_no_upstream"
-	TypeBadGateway  = "infergate_upstream_unavailable"
-	TypeTimeout     = "infergate_upstream_timeout"
-	TypeInternal    = "infergate_internal_error"
+	TypeBadRequest   = "infergate_bad_request"
+	TypeNoUpstream   = "infergate_no_upstream"
+	TypeBadGateway   = "infergate_upstream_unavailable"
+	TypeTimeout      = "infergate_upstream_timeout"
+	TypeInternal     = "infergate_internal_error"
 	TypeBodyTooLarge = "infergate_request_too_large"
 )
 

@@ -1,0 +1,104 @@
+# InferGate M2 configuration — semantic cache shared through Redis.
+#
+# Same cache policy as configs/cache-local.yaml; the difference is that the
+# entries live in Redis, so two gateway replicas behind a load balancer answer
+# from ONE cache instead of warming two private ones.
+#
+# Any RESP2 server will do. On this host there is no Docker daemon and no Redis
+# installed, so the in-repo subset server is used for verification:
+#
+#   go run ./cmd/miniredis    -listen :6399
+#   go run ./cmd/mockupstream -listen :9201 -name local
+#   go run ./cmd/infergate    -config configs/cache-redis.yaml
+#
+# In production the line below is the only change:
+#
+#   docker compose up -d redis        # then point addr at redis:6379
+#
+# The Redis path is NOT a different cache: it is the same internal/cache policy
+# behind a different Store, and internal/cache/cache_test.go runs the SAME
+# conformance suite against both. What Redis changes is where the entries live
+# and how they are evicted -- Redis cannot report read order, so the Redis store
+# evicts FIFO by creation time while the memory store is a true LRU. That
+# divergence is deliberate and is asserted in the tests: a cache that is wrong
+# about recency is worse than one that is honest about age.
+
+server:
+  listen: ":8083"
+  read_header_timeout: "10s"
+  idle_timeout: "90s"
+  upstream_timeout: "10s"
+  shutdown_timeout: "5s"
+  max_body_bytes: 8388608
+  max_idle_conns_per_host: 256
+
+log:
+  level: "info"
+  format: "text"
+
+routing:
+  strategy: "priority"
+  default_capabilities:
+    - "chat"
+
+health:
+  window: "30s"
+  buckets: 6
+  min_requests: 4
+  failure_ratio: 0.5
+  open_duration: "10s"
+  half_open_probes: 1
+  max_failures_per_request: 2
+  retry_backoff: "20ms"
+
+upstreams:
+  - name: "local"
+    kind: "openai"
+    base_url: "http://127.0.0.1:9201"
+    api_key: ""
+    models:
+      - "/"
+    capabilities:
+      - "chat"
+    priority: 1
+    weight: 1
+
+cache:
+  enabled: true
+  store: "redis"
+  threshold: 0.86
+  ttl: "15m"
+  max_entries_per_scope: 256
+  min_prompt_chars: 12
+  allow_nondeterministic: false
+  allow_tools: false
+
+  embedding:
+    provider: "hashing"
+    dims: 512
+    timeout: "5s"
+
+  redis:
+    # cmd/miniredis listens on :6399 by default so it can never shadow a real
+    # Redis on this host. Swap this one line for the production address.
+    addr: "127.0.0.1:6399"
+    db: 0
+    prefix: "ig:cache"
+    pool_size: 16
+
+    # Short on purpose: a slow cache must become a miss, not latency. The
+    # gateway has an answer to fetch; waiting on a cache is never worth it.
+    dial_timeout: "2s"
+    read_timeout: "2s"
+    write_timeout: "2s"
+
+    # password: "${REDIS_PASSWORD}"
+
+pricing:
+  default:
+    in: 1.0
+    out: 3.0
+  models:
+    mock-gpt:
+      in: 1.0
+      out: 3.0
