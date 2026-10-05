@@ -1,0 +1,239 @@
+# InferGate M6 configuration - an agent platform behind one gateway.
+#
+# This is the production-shaped counterpart to configs/agent-local.yaml: real
+# providers, real price book, the M6 surfaces switched on for a Python agent
+# runtime (Warden) that uses native function calling and retries tool calls.
+#
+# It is documentation as much as configuration: every knob below carries the
+# reason it exists, so an operator tunes it deliberately rather than by
+# imitation.
+#
+# The loader ABORTS on an undefined ${VAR}, so export the keys this file names
+# before starting the gateway. The three backends are examples - replace them,
+# keep the shape.
+
+server:
+  listen: ":8090"
+  read_header_timeout: "10s"
+  idle_timeout: "90s"
+  # PER ATTEMPT, not per request: a request that fails over spends this again for
+  # every candidate it tries, so the worst case is
+  # upstream_timeout * health.max_failures_per_request. An agent runtime with its
+  # own 30s ceiling should see this stay well below it.
+  upstream_timeout: "20s"
+  shutdown_timeout: "10s"
+  # An agent conversation is not a single message: a long tool result can be
+  # megabytes. Raise this only with the memory cost in mind, and prefer to make
+  # the agent summarise.
+  max_body_bytes: 16777216
+  max_idle_conns_per_host: 256
+
+log:
+  # info writes one line per request. Measured in M5, that line cost about 18%
+  # QPS and 4ms P95 on this host at 32 concurrent callers: use error for load,
+  # info for diagnosis. Both must work; do not ship with logging off.
+  level: "info"
+  format: "text"
+
+routing:
+  # priority: the cheapest per-token backend first. The weights below only
+  # matter on an even priority.
+  strategy: "priority"
+  weights:
+    # Cost dominates because that is the axis an operator steers on; latency and
+    # reliability are tie-breakers, and a small priority term keeps the declared
+    # order stable when two backends are otherwise equal.
+    cost: 3
+    latency: 1
+    reliability: 2
+    priority: 1
+  # A request that names no capability is treated as chat, which is what an
+  # OpenAI-compatible client sends.
+  default_capabilities:
+    - "chat"
+  # Empty: a request for a model nobody serves is an error, not a silent
+  # rewrite. Set a model here only if the deployment prefers a substitute.
+  fallback_model: ""
+
+health:
+  # The breaker's window is a rolling bucket array, not an EWMA: an operator
+  # reading /admin/breakers sees the same numbers the decision used.
+  window: "30s"
+  buckets: 6
+  # A backend needs this many observations in the window before its failure
+  # ratio is allowed to trip anything: one failure at a cold start must not
+  # take a healthy provider out.
+  min_requests: 10
+  failure_ratio: 0.5
+  # Long enough for a provider incident to be noticed by a human, short enough
+  # that recovery needs no restart. Half-open probes are the only traffic an
+  # OPEN backend receives.
+  open_duration: "15s"
+  half_open_probes: 2
+  # How many candidates ONE request may try. This is the caller's latency
+  # budget expressed as a retry budget: every extra candidate multiplies the
+  # worst-case time and the worst-case spend.
+  max_failures_per_request: 2
+  retry_backoff: "50ms"
+
+upstreams:
+  # Frontier provider: the agent's hard reasoning, and the only backend here
+  # that declares vision.
+  - name: "openai"
+    kind: "openai"
+    base_url: "https://api.openai.com"
+    api_key: "${OPENAI_API_KEY}"
+    models:
+      - "gpt-4o"
+      - "gpt-4o-mini"
+    capabilities:
+      - "chat"
+      - "tools"
+      - "vision"
+      - "json"
+    priority: 1
+    weight: 1
+
+  # Second provider with the same capabilities and a different failure domain.
+  # Two independent vendors is the point: a routing table with two entries that
+  # share an outage is one entry.
+  - name: "deepseek"
+    kind: "openai"
+    base_url: "https://api.deepseek.com"
+    api_key: "${DEEPSEEK_API_KEY}"
+    models:
+      - "deepseek-chat"
+      - "deepseek-reasoner"
+    capabilities:
+      - "chat"
+      - "tools"
+    priority: 2
+    weight: 1
+
+  # Self-hosted vLLM: last in priority, unlimited in tokens, and the only
+  # backend with no API key. A catch-all ("/") so an agent pinned to a model the
+  # hosted providers do not serve still has somewhere to land.
+  - name: "local-vllm"
+    kind: "openai"
+    base_url: "http://127.0.0.1:8000"
+    api_key: ""
+    models:
+      - "/"
+    capabilities:
+      - "chat"
+    priority: 9
+    weight: 1
+
+# What the wire cannot tell an agent: how much context a model has. An agent
+# deciding whether to compress its history reads this from /v1/capabilities
+# rather than guessing and being truncated by the provider.
+models:
+  gpt-4o:
+    context_window: 128000
+    max_output_tokens: 16384
+    capabilities: ["chat", "tools", "vision", "json"]
+    notes: "default frontier model for tool-calling turns"
+  gpt-4o-mini:
+    context_window: 128000
+    max_output_tokens: 16384
+    capabilities: ["chat", "tools", "json"]
+    notes: "cheap turns: classification, extraction, routing"
+  deepseek-chat:
+    context_window: 64000
+    max_output_tokens: 8192
+    capabilities: ["chat", "tools"]
+    notes: "failover for tool calling; no vision"
+  deepseek-reasoner:
+    context_window: 64000
+    max_output_tokens: 8192
+    capabilities: ["chat"]
+    notes: "reasoning only: it does not accept tools, so an agent loop must not be pinned here"
+  gpt-oss-120b:
+    context_window: 131072
+    max_output_tokens: 32768
+    capabilities: ["chat"]
+    notes: "the self-hosted default when the hosted providers are unhealthy"
+
+# ---------------------------------------------------------------------------
+# M6: idempotent replay
+# ---------------------------------------------------------------------------
+# The reason this exists on an agent platform: an agent turn is a tool call with
+# side effects on the far side of a socket. When the connection dies after the
+# provider billed a generation, the runtime retries - and without replay the
+# retry pays again and may produce a DIFFERENT tool call, which the runtime
+# cannot correlate with the result it is holding.
+idempotency:
+  enabled: true
+  # Outlast the runtime's retry budget; do not outlast the conversation. An
+  # agent's retry window is seconds to minutes, so a long TTL buys nothing and
+  # risks serving a stale tool call.
+  ttl: "5m"
+  # Entries hold response bodies: this is a memory ceiling. 4096 entries of a
+  # few KB is single-digit MB, which is the reason the default is modest rather
+  # than "as many as fit".
+  capacity: 4096
+  # A tool result echoed into an answer can be large. Past this the answer is
+  # served and not remembered, which /admin/idempotency reports as oversize.
+  max_response_bytes: 2097152
+
+# ---------------------------------------------------------------------------
+# M6: the per-session ledger
+# ---------------------------------------------------------------------------
+# The header is the runtime's conversation id (Warden sends one per agent
+# thread). One header, two effects: the same session key can carry a token
+# budget, and the ledger reports what each conversation cost.
+sessions:
+  enabled: true
+  # One entry per live conversation. Sized to the number of concurrent agent
+  # threads, not to the number of users: an ended conversation is evicted by TTL.
+  capacity: 8192
+  # A conversation that has been idle this long has ended, and keeping it is a
+  # leak with a friendly name. The janitor sweeps once a minute, so the real
+  # bound is this plus a minute.
+  ttl: "1h"
+  recent_per_session: 16
+
+pricing:
+  # The ledger's cost column, and the quota cost dimension, are computed from
+  # THIS book - never from a provider invoice a gateway cannot see. A model with
+  # no entry falls back to `default`, so a zero default silently disables every
+  # cost budget.
+  default:
+    in: 1.0
+    out: 3.0
+  models:
+    gpt-4o:
+      in: 2.5
+      out: 10.0
+    gpt-4o-mini:
+      in: 0.15
+      out: 0.6
+    deepseek-chat:
+      in: 0.27
+      out: 1.1
+    deepseek-reasoner:
+      in: 0.55
+      out: 2.19
+
+# ---------------------------------------------------------------------------
+# M6: tracing
+# ---------------------------------------------------------------------------
+# A replay is invisible in aggregate metrics: the request count goes up by one
+# and no provider was called. The span is where "this turn was served from the
+# replay store, originally request <id>" is recorded, alongside the session and
+# tenant, so an invoice question can be answered after the fact.
+tracing:
+  enabled: true
+  # A bounded ring buffer: traces are a diagnostic, not a ledger, so dropping
+  # the oldest is better than unbounded growth. /admin/traces reports the drops.
+  capacity: 4096
+  # Only applies to requests that bring no inbound traceparent; one that does
+  # is followed with its own sampling bit.
+  sample_ratio: 1.0
+  # Set a path to keep evidence when no collector is running.
+  jsonl_path: ""
+  otlp:
+    endpoint: ""
+    timeout: "5s"
+    service_name: "infergate"
+    headers: {}

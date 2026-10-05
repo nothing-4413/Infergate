@@ -916,3 +916,170 @@ tracing 的成本里。
 导出器是异步的（量的是"建 span + 入队"而不是同步写），`sample_ratio 1.0`（最坏情况而非采样部署），
 抓取负载是上界，固定请求数意味着机器越快相位越短（本次 c=8 的非流式相位约 0.5s）。它证明的是
 **测量方法与相对关系**，不是容量承诺。
+
+## 13. M6：幂等重放、会话账本与能力发现
+
+目标：让"重试"不再等于"重新计费"，让"这段对话花了多少"成为一个能查的事实，并让 Agent 在发请求
+之前知道自己能用什么。
+
+### 13.1 位置：在准入之后、缓存之前
+
+`idempotencyBegin`（`internal/gateway/idempotency.go:30`）夹在配额准入与缓存之间，两侧都是承重的：
+
+- 放在准入**之后**：重放和缓存命中一样是调用方发起的请求，照样占用每分钟请求配额、但不消耗上游
+  token，所以结算走 `Usage{Requests: 1}`（`idempotency.go:124-125`）。反过来放，一个超预算的租户
+  可以靠重放继续拿答案，配额就成了摆设。
+- 放在缓存**之前**：重放比缓存命中是**更强**的断言——调用方问的是"我自己那次操作的结果"，不是
+  "有没有人问过类似的问题"。顺序反了，一个带 key 的重试会先被语义缓存接走，"这次是重放"这件事
+  在账目里就消失了。
+- 非生成类路径带 key 时不报错，而是忽略并在响应上回 `X-InferGate-Idempotent-Store: skip`
+  （`idempotency.go:46-52`）：一个给每个请求都盖 key 的客户端不该因此挂掉，但也不能让它以为自己
+  受了保护——所以这个忽略是**可见**的。
+
+### 13.2 身份：key 由调用方给，作用域是租户，指纹是请求本身
+
+`KeyOf` 规范化 key，scope 取租户（没有租户头就是 `anonymous`），指纹是
+`requestHash(method, path, body)` = `sha256(method \0 path \0 body)` 的前 16 字节
+（`idempotency.go:272-280`）。method 与 path 进哈希是必要的：同一段 body POST 到 `/v1/embeddings`
+和 `/v1/chat/completions` 不是同一个操作。
+
+于是每个带 key 的请求有四种归宿：Proceed（我做这次活）、Replay（已经有人做完了）、ConflictBody
+（同一个 key 换了 body）、ConflictInFlight（同一个 key 还在飞）。两种冲突都是立刻 409
+（`infergate_idempotency_conflict` / `infergate_idempotency_in_flight`，后者带 `Retry-After: 1`），
+**不排队也不并发第二次生成**——在途冲突回 409 而不是等待，正是这个 store 的意义：调用方稍后用同一个
+key 重试就能拿到第一次的答案，而上游总共只被要了一次生成。
+
+Proceed 时立刻回两个头（`idempotency.go:73-74`）：回显 key，并把 `X-InferGate-Idempotent-Replay`
+显式设成 `false`。让调用方能区分"这次是我干的活"与"你拿到的是上一次的答案"，而不是从"头不存在"
+去推断——后者在一个只读了流的前几个字节的客户端上必然猜错。
+
+### 13.3 记忆什么、不记忆什么
+
+- **可重放性由 `replayableResponse` 判定**（`idempotency.go:261-266`）：2xx 与 4xx 是确定性答案；
+  5xx、超时、被取消的流一律 `Abort` 并释放占用——把一次瞬时失败钉死在一个 key 上，等于把这个操作
+  永久变成失败，而调用方的重试恰恰是必须被允许再试一次的那个场景。
+- **写入发生在响应写出之后**：`idempotencyComplete` 由 `serve()` 的 deferred recorder 调用
+  （`internal/gateway/proxy.go:429`），所以再慢的 store 也不会拖慢一个答案。
+- **超限的答案照常送达、只是不被记住**。`captureWriter` 是 tee 不是缓冲：每个字节立刻到客户端、
+  `Flush` 转发、`Unwrap` 让 `http.ResponseController` 还能拿到 Hijacker；副本上限是
+  `max_response_bytes + 1`，多出来的那一字节就是"答案没装下"的信号（`idempotency.go:75-78`、
+  `300-335`）。为了一个可能永不到来的重试把一个无界答案留在内存里，是网关自己制造事故的方式。
+- **重放把记录的字节原样写出**（`idempotency.go:122-180`）。记录下来的**流式**响应作为一整段 body
+  送出：转录就是答案，重新给它编一遍帧时序等于凭空发明一个上游从未有过的生成速度。`storedHeaders`
+  会去掉 `Content-Length` / `Transfer-Encoding`（chunked 生成的框架在重放里并不存在）以及
+  `X-InferGate-Idempotent-Store`，其余（Content-Type、上游自定义头）原样保留。
+
+### 13.4 会话账本：同一个头承载会话与配额
+
+`X-InferGate-Session` 一次归属、两处受益：M3 的配额可以按会话记，`/admin/sessions` 又能回答
+"这段对话花了多少"。`Ledger.Record`（`internal/sessions/ledger.go:234`）在一个空 id 处分叉：空/全空白
+只加 `no_session_id` 并且**不建会话**（"没带会话"与"有一个叫空字符串的会话"是两件事）；否则累计
+requests / ok / failed、token 三态、按**实际服务的模型**定价的成本（`pricing.CostUSD(rec.model, …)`）、
+模型与上游的 rollup，并把 `Recent` 裁到 `recent_per_session`。
+
+- **会话的四个汇总（requests / cost / tokens）在 `/metrics` 里是 gauge 不是 counter**
+  （`internal/server/m6.go:326` 起）：容量淘汰会让它下降，而 Prometheus 的 counter 不允许下降——
+  把它写成 counter 才是"面板说谎"的经典做法。
+- **M6 的指标族刻意不带租户标签**：租户来自调用方可控的请求头，把它做成标签就是让任何人往指标基数里
+  注入任意维度。
+- **TTL 只报事实，不赌清扫**：janitor 按 `SweepInterval`（默认 1 分钟）清扫，`List`/`Get` 不做过期
+  过滤。所以 `/admin/sessions` 报 `ttl` 与每条的 `expires_at`，而"真的会被清掉"由单测证明，而不是
+  让验收器睡 150ms 去赌一次清扫恰好发生。
+
+### 13.5 能力发现：探测故意绕过所有策略
+
+`GET /v1/capabilities` 是纯计算、无 I/O（`internal/gateway/capabilities.go`）：模型集合是上游
+`ModelPatterns()` 与配置 `models` 块的并集，能力是"服务该模型的后端声明的能力"与"模型自身声明的能力"
+的并集，`available` 只在所有服务它的后端都熔断时才是 false。这条接口的存在理由很具体：**模型有多少
+上下文，协议本身不会告诉 Agent**，而 Agent 决定要不要压缩历史时必须知道。
+
+`POST /v1/capabilities/probe` 反过来**故意绕过缓存、配额、熔断与重试**（`capabilities.go:373`
+`probeOne`）：探测是诊断流量，不是客户流量。让它去消耗租户预算、或者被一个 open 的熔断器拦掉，就把
+"这个后端到底行不行"偷换成了"现在允许我问吗"。分类口径（`classifyProbe`）：401/403 = unauthorized、
+408/429 与 ≥500 = indeterminate、其余 ≥400 = rejected、2xx/3xx = accepted（`stream` 还额外要求
+`text/event-stream`）。返回的 `accepted` 只声明"后端没有拒绝这个请求形状"，**不是**对答案质量的说法
+（响应里的 `note` 原文写明了这一点）。一个只声明 `models: ["/"]` 的 catch-all 后端在没给 `model` 参数时
+报告 `skipped` 与理由，而不是替它编一个模型名。
+
+**多轮上下文压缩的边界**：网关不重写、不截断、也不摘要调用方的历史——它无法知道哪几轮是承重的，
+而"猜错哪一轮可以丢"的代价是静默的错误答案，比 4xx 贵得多。网关只做两件事：把预算公布出来
+（`context_window` / `max_output_tokens`），以及说明这个模型现在由哪些后端在服务、是否可用。压缩的
+判断与执行留在 Agent 侧（Warden），因为它才知道这一轮的任务目标。
+
+### 13.6 顺手修掉的缺陷：`Idempotency-Key` 会被透传给上游
+
+第一版验收器发现上游**真的收到了** `Idempotency-Key`：`copyHeaders` 只丢 hop-by-hop 与
+`x-infergate-` 前缀的头。这不是卫生问题，而是跨租户串答案：上游若用自己的幂等实现按这个头去重，
+两个租户凑巧撞上同一个 key 字符串（共享模板里的 UUID、`"retry-1"`、一个日期），第二个租户会拿到
+第一个租户的答案——key 在这里是按租户分作用域的，到了别处就不是了。现在
+`isGatewayHeader`（`internal/gateway/headers.go:270`）把它一并拦下，并由
+`TestGatewayHeadersDoNotReachProviders` 双向钉死：出站丢 key、`X-InferGate-*`、Connection 列出的头
+与 hop-by-hop，保留 Authorization / Content-Type / 普通自定义头；入站方向仍保留
+`X-Ratelimit-Remaining` 这类上游回传头。
+
+### 13.7 验证：两个门 + 一份测量
+
+- `cmd/verify-m6`（Go，**381** 条断言，CI 门禁）：在进程内起真实 server 与真实上游，六段——幂等重放、
+  什么不会被记住、幂等管理面与指标、会话账本、声明式能力面与活体探测、一次完整的 Agent 工具调用对话
+  （工具调用 → 工具结果 → 回答，以及重放与冲突各自如何入账）。
+- `scripts/verify-m6.ps1`（curl，**149** 条断言）：真进程 + 真 curl，上游是仓库内**脚本化** mock
+  （`cmd/mockupstream -script`），并用 mock 自己的 `GET /calls` 作外部证人——"两次客户端尝试、上游只被
+  调用一次"这句话由上游数出来，而不是由网关自己声称。
+- `scripts/measure-m6.ps1`：M6 的代价与收益（下节），原始数据落在
+  `docs/baseline/m6-summary.json`。
+
+### 13.8 测量：代价与收益
+
+`scripts/measure-m6.ps1` 用四个臂回答四个不同的问题，且产物只有在**自身的检查全过**时才写进
+`docs/baseline/m6-summary.json`（否则写到 `tmp\m6-summary.json` 并以非零码退出——一次坏运行永远
+覆盖不了基线）：
+
+- **A 代价**：两个真实网关跑同一个 mock，唯一差别是 M6 开关（幂等 store + 会话账本 + trace），
+  `cmd/loadtest` 以 c=8/32、每相位 1500 请求 + 300 预热、3 轮取中位驱动。请求**不带**
+  `Idempotency-Key`、也不带会话头：`cmd/loadtest` 没有自定义头参数，而这恰好是**无 key 路径**，
+  不是退化路径——`idempotencyBegin` 直接返回且不做查表、不做插入，账本只把这个请求记成"未识别"。
+  所以 A 臂量到的是 M6 接线**每请求固定成本**（recorder、trace 记录、账本计数），不是"存下一条答案"
+  的成本；后者的成本是 C 臂的载荷字节与 B 臂的耗时。拿重放去美化延迟不是这一臂要做的事。
+- **B 收益**：一轮真实生成 vs 一轮重放，用 curl 自己的 `%{time_total}` 打 20 对，并用 mock 的
+  `GET /calls` 证明重放**没有**再打上游，同时报出省下的 token 与美元（按 `pricing` 折算，
+  不是账单）。
+- **C 存储**：容量 256 下逐个泵入 300 个不同的 key，`stored` 必须被封顶、淘汰数必须能解释差额。
+  字节数分成两笔诚实的账：**载荷下界**是"重放一个已存 key、量出网关原样送回多少字节"，即 store
+  确定持有的部分；**RSS 增量**是旁证，但它含分配器松量，在这台机器上 256 条的working set 甚至可能
+  低到让增量为负（Go 会把内存还给操作系统），所以增量为负时该臂**不主张**任何"每条答案字节数"。
+- **D 正确性**：16 个**同时**发出的同 key 请求只应产生一次生成（其余拿到 409 in-flight 或 200 重放），
+  上游恰好被问一次。为了让 16 个客户端真的重叠，上游延迟用 mock 的 `X-Mock-Delay` 拉到 300ms——
+  否则 1ms 的答案会在第 16 个客户端到达前就关闭窗口，那测的是到达顺序，不是缓存外的在途保护。
+
+**实测（i9-14900HX / 32 逻辑核，单机回环，两个真网关进程 + 仓库内 mock，`log.level: error`，
+3 轮取中位，每相位 1500 请求 + 300 预热；`scripts/measure-m6.ps1` 9 项检查、58 条断言（收尾后产物
+共记 67 条）全过、0 条失败，产物 `docs/baseline/m6-summary.json`，本次运行 400.7s）**
+
+| 负载 | c | m6-off QPS | m6-on QPS | ΔQPS | off p95 | on p95 | Δp95 | off p99 | on p99 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 非流式 | 8 | 1915.1 | 2051.8 | +7.14% | 6.562 ms | 5.748 ms | −12.41% | 7.588 ms | 7.757 ms |
+| 非流式 | 32 | 2411.4 | 2249.6 | −6.71% | 16.211 ms | 18.080 ms | +11.53% | 18.530 ms | 21.896 ms |
+| 流式 | 8 | 119.5 | 119.8 | +0.24% | 70.226 ms | 70.128 ms | −0.14% | 73.445 ms | 73.114 ms |
+| 流式 | 32 | 483.3 | 477.5 | −1.20% | 69.376 ms | 72.837 ms | +4.99% | 82.078 ms | 90.555 ms |
+
+- **c=8 的符号不可引用**：同一条命令的另一次全量运行给的是 **−5.96%**（这次 +7.14%），而且**对照臂
+  自己**的三轮就跨 **1888–4194 QPS**——中位数旁边那两次是快轮，对照臂的中位因此被压低。这台机器在
+  c=8 上分辨不出 M6 的成本（与 §12 的"绝对值不可跨运行引用"是同一个原因）。
+- **c=32 非流式才是可复现的信号**：两次运行都给 p95 **+11.5%**（+11.53% / +11.78%），QPS −6.71% /
+  −15.13%（同号，量级不稳）。M6 的每请求接线（trace 记录 + recorder + 账本计数）在 32 并发下开始
+  可测，代价是十几毫秒 P95 里的一两毫秒。
+- **流式 ≈ 0**：mock 每词睡 15ms，相位被上游填满（p50 66.5 → 66.3ms），网关侧成本被淹没。
+- **内存**：RSS 31.1 → 36.0 MiB（另一次 30.4 → 35.5），即 **+4.9~5.1 MiB**；A 臂不带 key，所以这
+  5 MiB 里没有一条被记住的答案，是 trace 环与账本的成本。
+- **B 臂（收益）**：20 对真实生成 / 重放，重放**没有一次**打到上游（mock `/calls` 不动），单轮省
+  6 prompt + 5 completion token ≈ **$0.000021**（20 轮共 220 token / $0.00042，按 `pricing` 折算）。
+  墙上时间只快 **1.267×**（4.5 vs 5.7 ms）——这一臂要证明的不是"重放更快"，而是"上游没被调用"；
+  fresh 那一列被 mock 的 15ms/词限速支配，所以延迟差不是网关的功劳（脚本把它写进了 limitations）。
+- **C 臂（存储）**：300 个不同 key 泵进容量 256 → `stored` 封顶 256、`evicted` 44（`stats.stored` 320、
+  `stats.lookups` 340、`evicted_total` 44），上游恰好被问了 300 次（每个 key 一次）；256 条答案的
+  **载荷下界**是 256 × 285 B = **71.3 KiB**。RSS 增量是 **−4.05 MiB**（flush 后不回涨），所以这一臂
+  **不主张**"每条答案多少字节"：把负数除以 256 条会印出"存一条答案省 14 KB"，而第一版脚本正是这么做的。
+- **D 臂（正确性）**：16 个同时到达的同 key 请求（上游窗口 300ms）→ **1 个 200 新答案 + 15 个 409
+  in-flight**、0 个重放，mock `/calls` 恰好 **+1**。重叠不是造的：窗口由 mock 的 `X-Mock-Delay`
+  拉开，否则 1ms 的答案会在第 16 个客户端到达前就关窗。
+

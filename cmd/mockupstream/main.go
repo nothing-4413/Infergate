@@ -14,15 +14,18 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -35,10 +38,29 @@ func main() {
 	// and by the acceptance script; set it to 0 for load tests, where a 15ms
 	// sleep per token would measure the mock rather than the gateway.
 	tokenDelay := flag.Duration("token-delay", 15*time.Millisecond, "delay between streamed content frames (0 for load tests)")
+	// Scripted mode. Empty (the default) leaves this binary byte-for-byte what
+	// the M0-M5 gates curl; a path turns it into a deterministic tool-calling
+	// model so an M6 agent run can be exercised offline.
+	scriptPath := flag.String("script", "", "path to a JSON script file that makes responses deterministic (empty = today's behaviour)")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	srv := &server{name: *name, ttfb: *ttfb, tokenDelay: *tokenDelay, log: logger}
+
+	var sc *script
+	if *scriptPath != "" {
+		loaded, err := loadScript(*scriptPath)
+		if err != nil {
+			// Refusing to start is the point: a mock that serves the wrong
+			// answer because its script was unreadable would turn an agent-run
+			// failure into a mystery instead of a startup error.
+			logger.Error("scripted mode unavailable", "err", err)
+			os.Exit(2)
+		}
+		sc = loaded
+		logger.Info("scripted mode enabled", "script", *scriptPath, "rules", len(sc.Rules), "has_default", sc.Default != nil)
+	}
+
+	srv := &server{name: *name, ttfb: *ttfb, tokenDelay: *tokenDelay, log: logger, script: sc}
 
 	mux := http.NewServeMux()
 	// Both path shapes are registered on purpose. When a gateway fronts this
@@ -52,6 +74,11 @@ func main() {
 	mux.HandleFunc("/v1/chat/completions", srv.chat)
 	mux.HandleFunc("/embeddings", srv.embeddings)
 	mux.HandleFunc("/v1/embeddings", srv.embeddings)
+	// The counter endpoint. It is how a gate proves an idempotent replay caused
+	// ZERO extra upstream calls: nothing else can witness a request that was
+	// answered and thrown away.
+	mux.HandleFunc("/calls", srv.callsHandler)
+	mux.HandleFunc("/stats/calls", srv.statsCallsHandler)
 
 	httpSrv := &http.Server{
 		Addr:              *listen,
@@ -80,6 +107,23 @@ type server struct {
 	ttfb       time.Duration
 	tokenDelay time.Duration
 	log        *slog.Logger
+	// script is nil unless -script was given, in which case the chat path
+	// consults it before answering. Everything else in this file is unaware of
+	// scripted mode.
+	script *script
+	// mux is the route table this server is mounted on. Tests build one and
+	// drive the real handlers through it instead of starting the process.
+	mux *http.ServeMux
+
+	// Counters behind GET /calls. They are updated once per chat request, after
+	// the response is written, so the number is "requests really handled".
+	callCount        atomic.Int64
+	turn             atomic.Int64
+	toolCallsEmitted atomic.Int64
+	dropped          atomic.Int64
+	failed           atomic.Int64
+	byPath           countSink
+	byRule           countSink
 }
 
 func (s *server) healthz(w http.ResponseWriter, r *http.Request) {
@@ -106,6 +150,83 @@ func (s *server) embeddings(w http.ResponseWriter, r *http.Request) {
 		},
 		"usage": map[string]any{"prompt_tokens": 3, "total_tokens": 3},
 	})
+}
+
+// countOpts identifies which chat request is being answered. It is filled in
+// before the response starts so the counter can be attributed to the script
+// rule (or the built-in default) that produced the answer.
+type countOpts struct {
+	path string
+	rule string
+}
+
+// countingWriter wraps the response writer for chat requests and updates the
+// /calls counters once the response has been produced. Doing this in one place
+// instead of at the end of each response path is what makes the counters
+// trustworthy: a gate uses them to prove that an idempotent replay caused zero
+// extra upstream calls, so a path that forgot to count would be a false pass.
+type countingWriter struct {
+	http.ResponseWriter
+	server   *server
+	opts     countOpts
+	code     int
+	written  bool
+	dropped  bool
+	toolCall int
+}
+
+// wantsDrop lets answerScripted mark a hijacked connection as a deliberate
+// drop; without the flag a drop would be indistinguishable from a handler that
+// simply wrote nothing.
+func (w *countingWriter) wantsDrop() { w.dropped = true }
+
+// countToolCalls records how many tool calls the answer carried, which is what
+// a gate asserts stayed at zero across an idempotent replay.
+func (w *countingWriter) countToolCalls(n int) { w.toolCall += n }
+
+func (w *countingWriter) WriteHeader(status int) {
+	if !w.written {
+		w.written = true
+		w.code = status
+	}
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *countingWriter) Write(b []byte) (int, error) {
+	if !w.written {
+		w.written = true
+		w.code = http.StatusOK
+	}
+	return w.ResponseWriter.Write(b)
+}
+
+// Flush keeps Server-Sent Events streaming through the wrapper: without it the
+// flushed frames would buffer and the stream would stop being incremental.
+func (w *countingWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Hijack keeps the drop path able to abandon the connection instead of
+// answering with a status.
+func (w *countingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, http.ErrNotSupported
+	}
+	return h.Hijack()
+}
+
+// record is called with the writer's final state; it counts one served chat
+// request (and, when the script emitted tool calls, those too).
+func (w *countingWriter) record() {
+	// A chat request that produced nothing at all is not a served request.
+	if !w.written && !w.dropped {
+		return
+	}
+	failed := w.written && w.code >= http.StatusBadRequest
+	w.server.record(w.opts.path, w.opts.rule, w.toolCall, w.dropped, failed)
 }
 
 // chatRequest is the subset of the OpenAI chat body the mock reasons about.
@@ -158,16 +279,80 @@ func (s *server) chat(w http.ResponseWriter, r *http.Request) {
 		"model", req.Model, "stream", req.Stream, "messages", len(req.Messages),
 		"tools", len(req.Tools) > 0, "path", r.URL.Path)
 
-	if req.Stream {
-		s.streamChat(w, r, req)
-		return
+	// Scripted mode, when enabled, picks the answer for this request. Selection
+	// happens after the log line above so the log keeps the same shape as the
+	// non-scripted one, and after the counting writer exists so a scripted
+	// answer is counted exactly like a built-in one.
+	var match *scriptMatch
+	if s.script != nil {
+		m := s.script.selectResponse(req, req.Stream, r.URL.Path, s.nextTurn())
+		match = &m
 	}
-	s.wholeChat(w, req)
+
+	// Every chat answer -- scripted or built in -- is served through a counting
+	// writer so the /calls counters are exact by construction: the counter is
+	// incremented once the response is actually written, on every return path.
+	// Incrementing inside each response path instead would need a matching
+	// increment in six places, and the one that gets forgotten would make an
+	// idempotent replay look as if it had really called upstream.
+	opts := countOpts{path: r.URL.Path}
+	if match != nil {
+		opts.rule = match.RuleName
+		if match.Rule != nil {
+			opts.rule = match.Rule.Name
+		}
+	}
+	cw := &countingWriter{ResponseWriter: w, server: s, opts: opts}
+	// Counting from a defer means the /calls numbers are derived from what was
+	// actually written, so a new return path cannot silently stop counting.
+	defer cw.record()
+
+	// A scripted response is written here. A legacy match (script present but no
+	// rule and no default) leaves match.Respond nil and falls through to the
+	// built-in answer below, which keeps today's content byte-for-byte. So does
+	// the success path of a scripted answer: answering "how" is this function's
+	// job, not answerScripted's, which only handles failure and drop.
+	if match != nil && !match.Legacy {
+		m := *match
+		s.log.Info("script match", "rule", m.RuleName, "turn", m.Turn, "legacy_default", m.Legacy)
+		if s.answerScripted(cw, r, req, m) {
+			return
+		}
+	}
+
+	if req.Stream {
+		s.streamChat(cw, r, req, match)
+	} else {
+		s.wholeChat(cw, req, match)
+	}
 }
 
 // wholeChat answers with a single JSON completion, the non-streaming shape.
-func (s *server) wholeChat(w http.ResponseWriter, req chatRequest) {
-	completion := completionFor(req)
+// match is the scripted response to honour, or nil in today's behaviour.
+func (s *server) wholeChat(w http.ResponseWriter, req chatRequest, match *scriptMatch) {
+	var content string
+	var calls []map[string]any
+	finishReason := "stop"
+	usage := map[string]any{
+		"prompt_tokens":     tokenCount(req),
+		"completion_tokens": len(strings.Fields(completionFor(req))),
+		"total_tokens":      tokenCount(req) + len(strings.Fields(completionFor(req))),
+	}
+	if match != nil && !match.Legacy {
+		content, calls, finishReason = match.respond(req)
+		usage = match.usageFor(req, content, len(calls))
+	} else {
+		content = completionFor(req)
+	}
+
+	message := map[string]any{"role": "assistant", "content": content}
+	if len(calls) > 0 {
+		message["tool_calls"] = calls
+		if c, ok := w.(interface{ countToolCalls(int) }); ok {
+			c.countToolCalls(len(calls))
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":      "chatcmpl-mock-1",
 		"object":  "chat.completion",
@@ -175,22 +360,19 @@ func (s *server) wholeChat(w http.ResponseWriter, req chatRequest) {
 		"model":   req.Model,
 		"choices": []map[string]any{{
 			"index":         0,
-			"message":       map[string]any{"role": "assistant", "content": completion},
-			"finish_reason": "stop",
+			"message":       message,
+			"finish_reason": finishReason,
 		}},
 		// usage on the non-streaming path is the whole point of M3: the gateway
 		// must read the provider's numbers rather than estimate from text.
-		"usage": map[string]any{
-			"prompt_tokens":     tokenCount(req),
-			"completion_tokens": len(strings.Fields(completion)),
-			"total_tokens":      tokenCount(req) + len(strings.Fields(completion)),
-		},
+		"usage": usage,
 	})
 }
 
 // streamChat writes a real SSE response: one flushed chunk per token-sized
-// delta, then a usage frame, then the [DONE] sentinel.
-func (s *server) streamChat(w http.ResponseWriter, r *http.Request, req chatRequest) {
+// delta, then a usage frame, then the [DONE] sentinel. match is the scripted
+// response to honour, or nil in today's behaviour.
+func (s *server) streamChat(w http.ResponseWriter, r *http.Request, req chatRequest, match *scriptMatch) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
@@ -228,28 +410,24 @@ func (s *server) streamChat(w http.ResponseWriter, r *http.Request, req chatRequ
 		}
 	}
 
-	id := "chatcmpl-mock-stream"
-	send := func(delta map[string]any, finish any) bool {
-		chunk := map[string]any{
-			"id":      id,
-			"object":  "chat.completion.chunk",
-			"created": time.Now().Unix(),
-			"model":   req.Model,
-			"choices": []map[string]any{{
-				"index":         0,
-				"delta":         delta,
-				"finish_reason": finish,
-			}},
-		}
-		payload, err := json.Marshal(chunk)
-		if err != nil {
-			return false
-		}
-		if _, err := fmt.Fprintf(w, "data: %s\n\n", payload); err != nil {
-			return false
-		}
-		flusher.Flush()
-		return true
+	send := chunkSender(w, flusher, req.Model, "chatcmpl-mock-stream")
+
+	// Tool-call mode: the argument arrives fragmented across frames, which is
+	// the case that breaks naive proxies. A client must accumulate
+	// choices[0].delta.tool_calls[0].function.arguments by index.
+	//
+	// Only the non-scripted path uses the fragmented shape: a script declares
+	// whole tool calls, and those are emitted in one opening frame (see
+	// streamScripted) because a scripted call is meant to be read back verbatim
+	// by the agent runtime, not to stress a proxy's buffering.
+	if match == nil && len(req.Tools) > 0 {
+		s.streamToolCall(w, r, req, send)
+		return
+	}
+
+	if match != nil && !match.Legacy {
+		s.streamScripted(w, r, req, *match, send)
+		return
 	}
 
 	// Opening role frame with EMPTY content, exactly as OpenAI emits it. The
@@ -260,17 +438,8 @@ func (s *server) streamChat(w http.ResponseWriter, r *http.Request, req chatRequ
 		return
 	}
 
-	// Tool-call mode: the argument arrives fragmented across frames, which is
-	// the case that breaks naive proxies. A client must accumulate
-	// choices[0].delta.tool_calls[0].function.arguments by index.
-	if len(req.Tools) > 0 {
-		if s.streamToolCall(w, r, req, send) {
-			return
-		}
-		return
-	}
-
-	for _, word := range strings.Fields(completionFor(req)) {
+	content := completionFor(req)
+	for _, word := range strings.Fields(content) {
 		select {
 		case <-r.Context().Done():
 			// The client vanished. A well-behaved backend stops generating here
@@ -297,39 +466,141 @@ func (s *server) streamChat(w http.ResponseWriter, r *http.Request, req chatRequ
 	// Usage arrives only in the final frame on the real API. Accounting that
 	// ignores the tail of the stream therefore reports zero cost, which is the
 	// bug this frame exists to catch.
-	usage := map[string]any{
-		"id":      id,
-		"object":  "chat.completion.chunk",
-		"created": time.Now().Unix(),
-		"model":   req.Model,
-		"choices": []any{},
-		"usage": map[string]any{
-			"prompt_tokens":     tokenCount(req),
-			"completion_tokens": len(strings.Fields(completionFor(req))),
-			"total_tokens":      tokenCount(req) + len(strings.Fields(completionFor(req))),
-			"prompt_tokens_details": map[string]any{
-				"cached_tokens": 0,
-			},
+	prompt := tokenCount(req)
+	completion := len(strings.Fields(content))
+	writeUsageAndDone(w, r, req.Model, "chatcmpl-mock-stream", map[string]any{
+		"prompt_tokens":     prompt,
+		"completion_tokens": completion,
+		"total_tokens":      prompt + completion,
+		"prompt_tokens_details": map[string]any{
+			"cached_tokens": 0,
 		},
+	})
+}
+
+// streamScripted writes the SSE form of a scripted response.
+//
+// The frame shape is deliberately identical to the non-scripted one, because
+// the gateway's stream handling must not need a second code path for a scripted
+// upstream:
+//
+//	data: {...,"choices":[{"index":0,"delta":{"role":"assistant","content":"",
+//	       "tool_calls":[{...whole call...}]},"finish_reason":null}]}   <- opening
+//	data: {...,"delta":{"content":"<word> "}}                          <- one per word
+//	data: {...,"delta":{},"finish_reason":"tool_calls"|"stop"}          <- finish
+//	data: {...,"choices":[],"usage":{...}}                              <- usage
+//	data: [DONE]
+//
+// A scripted tool call is emitted WHOLE in the opening frame's delta
+// (id/type/function.name/function.arguments all at once) rather than fragmented
+// the way the non-scripted tool-call path emits it. The script declares a
+// complete call, and the agent runtime is supposed to read it back verbatim; a
+// scripted stream exists to prove the runtime's tool loop works, not to prove a
+// proxy can reassemble fragments (the non-scripted path already proves that).
+func (s *server) streamScripted(w http.ResponseWriter, r *http.Request, req chatRequest, match scriptMatch, send func(map[string]any, any) bool) {
+	content, calls, finishReason := match.respond(req)
+
+	opening := map[string]any{"role": "assistant", "content": ""}
+	if len(calls) > 0 {
+		opening["tool_calls"] = calls
+		if c, ok := w.(interface{ countToolCalls(int) }); ok {
+			c.countToolCalls(len(calls))
+		}
 	}
-	if payload, err := json.Marshal(usage); err == nil {
-		fmt.Fprintf(w, "data: %s\n\n", payload)
-		flusher.Flush()
+	if !send(opening, nil) {
+		return
 	}
 
+	for _, word := range strings.Fields(content) {
+		select {
+		case <-r.Context().Done():
+			s.log.Info("client disconnected mid-stream")
+			return
+		default:
+		}
+		if !send(map[string]any{"content": word + " "}, nil) {
+			return
+		}
+		if s.tokenDelay > 0 {
+			time.Sleep(s.tokenDelay)
+		}
+	}
+
+	if !send(map[string]any{}, finishReason) {
+		return
+	}
+	writeUsageAndDone(w, r, req.Model, "chatcmpl-mock-stream", match.usageFor(req, content, len(calls)))
+}
+
+// writeUsageAndDone writes the tail of every SSE answer: the usage frame, then
+// the [DONE] sentinel unless the caller asked for a stream that truncates.
+//
+// Both the scripted and the non-scripted stream share it so the two paths cannot
+// drift apart: a gateway that handles one must handle the other identically,
+// which is the whole reason scripted mode reuses today's frame shape.
+func writeUsageAndDone(w http.ResponseWriter, r *http.Request, model, id string, usage map[string]any) {
+	flusher, _ := w.(http.Flusher)
+	if payload, err := json.Marshal(chunkUsageFrame(model, id, usage)); err == nil {
+		fmt.Fprintf(w, "data: %s\n\n", payload)
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
 	// A mock asked to omit [DONE] reproduces a real integration hazard: some
 	// OpenAI-compatible servers close the stream without the sentinel and naive
 	// clients hang until their own timeout. The gateway must synthesise it.
-	if r.Header.Get("X-Mock-Omit-Done") == "" {
-		fmt.Fprint(w, "data: [DONE]\n\n")
+	if r.Header.Get("X-Mock-Omit-Done") != "" {
+		return
+	}
+	fmt.Fprint(w, "data: [DONE]\n\n")
+	if flusher != nil {
 		flusher.Flush()
+	}
+}
+
+// chunkSender builds the closure that writes one chat.completion.chunk frame.
+func chunkSender(w http.ResponseWriter, flusher http.Flusher, model, id string) func(map[string]any, any) bool {
+	return func(delta map[string]any, finish any) bool {
+		chunk := map[string]any{
+			"id":      id,
+			"object":  "chat.completion.chunk",
+			"created": time.Now().Unix(),
+			"model":   model,
+			"choices": []map[string]any{{
+				"index":         0,
+				"delta":         delta,
+				"finish_reason": finish,
+			}},
+		}
+		payload, err := json.Marshal(chunk)
+		if err != nil {
+			return false
+		}
+		if _, err := fmt.Fprintf(w, "data: %s\n\n", payload); err != nil {
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+}
+
+// chunkUsageFrame is the tail frame that carries usage with an empty choices
+// list, which is where the real API puts it.
+func chunkUsageFrame(model, id string, usage map[string]any) map[string]any {
+	return map[string]any{
+		"id":      id,
+		"object":  "chat.completion.chunk",
+		"created": time.Now().Unix(),
+		"model":   model,
+		"choices": []any{},
+		"usage":   usage,
 	}
 }
 
 // streamToolCall emits a fragmented tool call. Arguments are split mid-JSON on
 // purpose: a client that parses each delta independently sees invalid JSON and
 // must buffer by index instead.
-func (s *server) streamToolCall(w http.ResponseWriter, r *http.Request, req chatRequest, send func(map[string]any, any) bool) bool {
+func (s *server) streamToolCall(w http.ResponseWriter, r *http.Request, req chatRequest, send func(map[string]any, any) bool) {
 	id := "call_mock_1"
 	fragments := []string{`{"city":"Bei`, `jing","units":"met`, `ric"}`}
 	frames := []map[string]any{
@@ -354,16 +625,16 @@ func (s *server) streamToolCall(w http.ResponseWriter, r *http.Request, req chat
 	for _, delta := range frames {
 		select {
 		case <-r.Context().Done():
-			return true
+			return
 		default:
 		}
 		if !send(delta, nil) {
-			return true
+			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	if !send(map[string]any{}, "tool_calls") {
-		return true
+		return
 	}
 	if r.Header.Get("X-Mock-Omit-Done") == "" {
 		fmt.Fprint(w, "data: [DONE]\n\n")
@@ -371,18 +642,12 @@ func (s *server) streamToolCall(w http.ResponseWriter, r *http.Request, req chat
 			f.Flush()
 		}
 	}
-	return true
 }
 
 // completionFor produces a deterministic answer that depends on the question,
 // so a test can assert causality rather than just "some text came back".
 func completionFor(req chatRequest) string {
-	last := ""
-	for _, m := range req.Messages {
-		if m.Role == "user" {
-			last = m.Content
-		}
-	}
+	last := lastUserContent(req.Messages)
 	if last == "" {
 		last = "nothing"
 	}

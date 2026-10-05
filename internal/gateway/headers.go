@@ -117,7 +117,69 @@ const (
 	// which is why the number is always sent with a hit rather than left for
 	// the caller to infer from the body.
 	HeaderCacheAge = "X-InferGate-Cache-Age"
+
+	// HeaderIdempotencyKey is the caller's own name for one logical operation,
+	// and is the spelling the OpenAI and Stripe SDKs already use. It is a
+	// REQUEST header and is never forwarded upstream: the key is a contract
+	// between the caller and InferGate, and letting a provider apply its own
+	// deduplication to it would make the second request either a provider-
+	// scoped replay or a provider-scoped conflict, neither of which the caller
+	// asked for.
+	HeaderIdempotencyKey = "Idempotency-Key"
+
+	// HeaderIdempotentReplay reports "true" when the answer was replayed from
+	// the idempotency store and "false" when this request actually did the
+	// work. It is response-only and always sent on a keyed request, because a
+	// caller that retries after a timeout must be able to tell "my first
+	// attempt did land" from "my retry generated a second answer".
+	HeaderIdempotentReplay = "X-InferGate-Idempotent-Replay"
+
+	// HeaderIdempotentOrigin names the request id that originally produced a
+	// replayed answer. HeaderRequestID keeps reporting THIS request, so one
+	// header always matches the log line, and the caller still has the id of
+	// the request that did the work and therefore holds the trace.
+	HeaderIdempotentOrigin = "X-InferGate-Idempotent-Origin"
+
+	// HeaderIdempotentUpstream names the backend that originally produced a
+	// replayed answer, since HeaderUpstreamName reports "replay" on that path.
+	HeaderIdempotentUpstream = "X-InferGate-Idempotent-Upstream"
+
+	// HeaderIdempotentAge reports how long ago the replayed answer was
+	// produced, in whole milliseconds, for the same reason HeaderCacheAge
+	// exists.
+	HeaderIdempotentAge = "X-InferGate-Idempotent-Age"
+
+	// HeaderIdempotentStore reports why a keyed request will not be replayable,
+	// in the one case that is knowable before the answer exists: "skip", for a
+	// path that has no replayable response.
+	//
+	// The outcome of the store itself -- "stored" or "oversize" -- is NOT a
+	// header, and that is a design decision rather than an omission: whether a
+	// completed response fits the store is known only after the body has been
+	// sent, and a header set at that point would be dropped on the floor by
+	// net/http. Inventing a trailer to carry it would force chunked framing on
+	// every keyed response, which is a bigger change to what a caller sees than
+	// the information is worth. It is recorded in the request log and on the
+	// root span instead, where an operator diagnosing "why did my retry run
+	// twice" is already looking.
+	HeaderIdempotentStore = "X-InferGate-Idempotent-Store"
 )
+
+// Values of HeaderIdempotentReplay and HeaderIdempotentStore.
+const (
+	idempotentTrue  = "true"
+	idempotentFalse = "false"
+
+	idempotentStored   = "stored"
+	idempotentOversize = "oversize"
+	idempotentSkip     = "skip"
+)
+
+// idempotencyUpstream labels a replayed request in the per-request metrics and
+// logs, for the same reason cacheStatusUpstream exists: the backend that
+// originally produced the answer is not the one that served this request, and
+// attributing a replay to it would credit it with traffic that never arrived.
+const idempotencyUpstream = "replay"
 
 // Values of HeaderCache in the request direction.
 const (
@@ -206,5 +268,19 @@ func isHopByHop(name string) bool {
 }
 
 func isGatewayHeader(name string) bool {
+	// Idempotency-Key is the caller's name for one logical operation, and the
+	// gateway ACTS on it: it claims the key, one request does the work, and every
+	// later request with that key is answered from the store. That makes it
+	// control traffic, not payload, so it stops here.
+	//
+	// The reason it must not travel is not tidiness. A provider that implements
+	// its own idempotency on this same header would dedupe across tenants: two
+	// tenants of this gateway that happen to pick the same key string (a UUID
+	// from a shared template, "retry-1", a date) would be served the FIRST
+	// tenant's answer. The key is scoped to a tenant here and would silently not
+	// be scoped anywhere else.
+	if strings.EqualFold(name, HeaderIdempotencyKey) {
+		return true
+	}
 	return strings.HasPrefix(strings.ToLower(name), "x-infergate-")
 }

@@ -10,12 +10,12 @@
 
 GO ?= tools/go.cmd
 
-.PHONY: all build vet test verify verify-curl verify-m1 verify-m1-curl verify-m2 verify-m2-curl measure-m2 verify-m3 verify-m3-curl measure-m3 verify-m4 verify-m4-curl measure-m4 verify-m5 verify-m5-curl measure-m5 loadtest diag run-mock run-gateway run-fleet run-cache run-cache-redis run-miniredis run-quota run-quota-redis run-miniredis-quota run-tiered run-observability clean help
+.PHONY: all build vet test verify verify-curl verify-m1 verify-m1-curl verify-m2 verify-m2-curl measure-m2 verify-m3 verify-m3-curl measure-m3 verify-m4 verify-m4-curl measure-m4 verify-m5 verify-m5-curl measure-m5 verify-m6 verify-m6-curl measure-m6 loadtest diag run-mock run-gateway run-fleet run-cache run-cache-redis run-miniredis run-quota run-quota-redis run-miniredis-quota run-tiered run-observability run-agent clean help
 
 all: build vet test
 
 help:
-	@echo "targets: build vet test verify verify-curl verify-m1 verify-m1-curl verify-m2 verify-m2-curl measure-m2 verify-m3 verify-m3-curl measure-m3 verify-m4 verify-m4-curl measure-m4 verify-m5 verify-m5-curl measure-m5 loadtest diag run-mock run-gateway run-fleet run-cache run-cache-redis run-miniredis run-quota run-quota-redis run-miniredis-quota run-tiered run-observability clean"
+	@echo "targets: build vet test verify verify-curl verify-m1 verify-m1-curl verify-m2 verify-m2-curl measure-m2 verify-m3 verify-m3-curl measure-m3 verify-m4 verify-m4-curl measure-m4 verify-m5 verify-m5-curl measure-m5 verify-m6 verify-m6-curl measure-m6 loadtest diag run-mock run-gateway run-fleet run-cache run-cache-redis run-miniredis run-quota run-quota-redis run-miniredis-quota run-tiered run-observability run-agent clean"
 
 ## build: compile every package and emit the two binaries.
 build:
@@ -169,6 +169,38 @@ verify-m5-curl:
 ## docs/baseline/m5-summary.json.
 measure-m5:
 	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/measure-m5.ps1
+
+## verify-m6: idempotent replay, the per-session ledger, capability discovery and
+## an agent's tool-calling conversation end to end (381 assertions, the M6 CI
+## gate).  The claims that matter are negative -- the provider was NOT called a
+## second time, the replayed body is byte-identical, a second tenant does NOT see
+## the first tenant's conversation -- so the gate asserts on the store's own
+## counters and on the trace of the replayed request, not just on the response.
+verify-m6:
+	$(GO) run ./cmd/verify-m6
+
+## verify-m6-curl: the same claims through the real binary and real curl.exe over
+## a real scripted upstream process, with the mock's /calls counter as the
+## external witness that a replay caused zero extra provider calls.  149
+## assertions (over 5,000 curl-level assertions across the seven gates).
+verify-m6-curl:
+	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-m6.ps1
+
+## measure-m6: what the M6 features cost and what they buy -- throughput and tail
+## latency with idempotency+sessions+tracing off versus on, the latency and tokens
+## a replayed turn saves against a fresh one, the store's bytes per entry at its
+## configured capacity, and the provider calls one key produces under concurrency.
+## Writes docs/baseline/m6-summary.json.
+measure-m6:
+	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/measure-m6.ps1
+
+## run-agent: the M6 sample (configs/agent-local.yaml) on 127.0.0.1:18909, an
+## agent platform behind one gateway with replay, the session ledger and tracing
+## on.  Start the scripted upstream first (the -script file is optional: without
+## it the mock answers a fixed sentence):
+##   $(GO) run ./cmd/mockupstream -listen 127.0.0.1:19910 -name scripted-mock -script tmp/m6-script.json
+run-agent:
+	$(GO) run ./cmd/infergate -config configs/agent-local.yaml
 
 ## run-tiered: the M4 sample (configs/tiered-local.yaml) on :8080, local tier
 ## served by vLLM inside WSL on :8000 and cloud tier by a mock on :9100.

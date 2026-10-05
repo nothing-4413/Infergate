@@ -238,10 +238,10 @@ func (p *Proxy) settleQuota(ctx context.Context, rec *record) {
 	defer cancel()
 
 	switch {
-	case rec.servedFromCache:
+	case rec.servedFromCache, rec.servedFromReplay:
 		// A replayed answer costs the provider nothing, so only the request
-		// count settles. This is why admission sits before the cache: a hit is
-		// free but it is not invisible.
+		// count settles. This is why admission sits before the cache and before
+		// the idempotency store: a hit is free but it is not invisible.
 		p.finishQuota(sctx, rec, quota.Usage{Requests: 1})
 	case rec.attempts == 0:
 		// Nothing reached a provider - an unroutable model, a body the gateway

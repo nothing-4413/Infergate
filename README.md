@@ -857,6 +857,86 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\measure-m4.ps1  # 
 **0** 条失败断言（72 条在写产物前记录，12 条收尾断言在其后执行，标准输出共 84 条）。设计取舍与全部
 口径见 `docs/DESIGN.md` §12。
 
+### 3.15 M6 验收与实测：幂等重放、会话账本与能力发现
+
+**做了什么**
+
+- **幂等重放**：调用方给 `Idempotency-Key`，网关用"租户作用域 + 请求指纹"（`method \0 path \0 body`
+  的 SHA-256 前 16 字节，method 与 path 必须进哈希——同一段 body 发到 `/v1/embeddings` 与
+  `/v1/chat/completions` 不是同一个操作）认领一个逻辑操作，每个带 key 的请求只有四种归宿：
+  Proceed / Replay / 409 `infergate_idempotency_conflict`（同 key 换 body）/ 409
+  `infergate_idempotency_in_flight` + `Retry-After: 1`（同 key 还在飞）。**只有 2xx 与 4xx 才可重放**，
+  5xx / 超时 / 被取消的流一律释放占用——把一次瞬时失败钉死在一个 key 上，等于把这个操作永久变成失败。
+  写入发生在响应**写出之后**（`serve()` 的 deferred recorder），所以再慢的 store 也不会拖慢一个答案；
+  响应副本是 tee 不是缓冲（字节立刻到客户端、`Flush` 转发、`Unwrap` 让 `ResponseController` 还能拿到
+  Hijacker），上限 `max_response_bytes + 1`，超限的答案**照常送达、只是不被记住**。重放把记录的字节
+  原样送出，记录下来的流式响应作为一整段 body 交付（转录就是答案，重编帧时序等于凭空发明一个上游从未
+  有过的生成速度）。
+- **会话账本**：`X-InferGate-Session` 一次归属、两处受益——M3 的配额可以按会话记，`/admin/sessions`
+  又能回答"这段对话花了多少"（requests/ok/failed、prompt/completion/cached token、按**实际服务的模型**
+  定价的成本、模型与上游 rollup、最近 N 条请求）。空 id 只加 `no_session_id` 并且**不建会话**；
+  TTL 由 janitor 按 `SweepInterval`（默认 1 分钟）清扫，管理面只报事实（`ttl` 与每条的 `expires_at`），
+  "真的会被清掉"由单测证明，而不是让验收器睡一觉去赌一次清扫。会话的四个汇总在 `/metrics` 里是
+  **gauge 不是 counter**（容量淘汰会让它下降，Prometheus 的 counter 不允许下降），并且刻意**不带租户
+  标签**——租户来自调用方可控的请求头，做成标签就是让人往指标基数里注入任意维度。
+- **能力发现**：`GET /v1/capabilities` 纯计算、无 I/O，回答"哪些模型存在、上下文窗口与最大输出多少、
+  声明了哪些能力、哪些后端在服务它、现在是否可用"——协议本身不会告诉 Agent 一个模型能装多少上下文，
+  而 Agent 决定要不要压缩历史时必须知道。`POST /v1/capabilities/probe` 反过来**故意绕过缓存、配额、
+  熔断与重试**：探测是诊断流量而不是客户流量，让它去消耗租户预算、或被一个 open 的熔断器拦掉，就把
+  "这个后端到底行不行"偷换成了"现在允许我问吗"。回答的 `accepted` 只声明"后端没有拒绝这个请求形状"，
+  不是对答案质量的说法，响应里的 `note` 原文写明了这一点；一个只声明 `models: ["/"]` 的 catch-all
+  后端在没给 `model` 参数时报 `skipped` 与理由，而不是替它编一个模型名。
+- **顺手修掉的缺陷**：第一版验收器发现上游**真的收到了** `Idempotency-Key`（`copyHeaders` 只丢
+  hop-by-hop 与 `x-infergate-` 前缀）。这不是卫生问题而是跨租户串答案：上游若用自己的幂等实现按这个头
+  去重，两个租户凑巧撞上同一个 key 字符串就会拿到对方的答案。现在 `isGatewayHeader` 把它一并拦下，
+  并由 `TestGatewayHeadersDoNotReachProviders` 双向钉死（出站丢 key / `X-InferGate-*` / Connection
+  列出的头 / hop-by-hop，保留 Authorization、Content-Type 与普通自定义头；入站仍保留
+  `X-Ratelimit-Remaining` 这类上游回传头）。
+- **Warden（Python Agent 平台）侧接入**：客户端把 Warden 自己的会话/线程 id 作为
+  `X-InferGate-Session`、租户作为 `X-InferGate-Tenant`，并为每个**逻辑轮次**生成可复现的
+  `Idempotency-Key`（重试同一个 key）；`409 ..._in_flight` 按 `Retry-After` 重试、`409 ..._conflict`
+  当作 key 派生 bug 直接失败、看到 `X-InferGate-Idempotent-Replay: true` 视为成功并记录；
+  遇到不支持这些头的网关（或无这些头）自动退化成普通请求；启动时惰性拉一次 `/v1/capabilities`
+  缓存上下文窗口。
+
+**实测（i9-14900HX / 32 逻辑核，单机回环，两个真网关进程 + 仓库内 mock，`log.level: error`，
+3 轮取中位，每相位 1500 请求 + 300 预热；原始数据 `docs/baseline/m6-summary.json`，
+`scripts/measure-m6.ps1` 9 项检查 / 0 条失败断言）**
+
+| 负载 | c | m6-off QPS | m6-on QPS | ΔQPS | off / on P95 ms | ΔP95 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 非流式 | 8 | 1915.1 | 2051.8 | +7.14% | 6.562 / 5.748 | −12.41% |
+| 非流式 | 32 | 2411.4 | 2249.6 | −6.71% | 16.211 / 18.080 | +11.53% |
+| 流式 | 8 | 119.5 | 119.8 | +0.24% | 70.226 / 70.128 | −0.14% |
+| 流式 | 32 | 483.3 | 477.5 | −1.20% | 69.376 / 72.837 | +4.99% |
+
+收益与容量（同一份产物）：**重放 20 对**里重放没有一次打到上游（mock `/calls` 不动），单轮省
+6 + 5 token ≈ **$0.000021**（20 轮共 120 + 100 token = $0.00042，按 `pricing` 折算），重放 P50
+**4.5ms** vs 真实生成 P50 **5.7ms**（1.27×）；**300 个不同 key 泵进容量 256** → `stored` 封顶 256、
+`evicted` 44（`stats.stored` 320），256 条答案的载荷下界 **71.3 KiB**（256 × 285 B），RSS 增量
+**−4.05 MiB**；**16 个同时到达的同 key 请求** → 1 个 200 新答案 + 15 个 409 in-flight、0 个重放，
+上游恰好被问一次。
+
+怎么读这几行：
+
+- **c=8 的符号不可引用**：同一条命令的另一次全量运行给的是 **−5.96%**（这次 +7.14%），且对照臂自己
+  三轮就跨 **1888–4194 QPS**——中位数旁边那两次是快轮，把对照臂的中位压低了。这台机器在 c=8 上分辨
+  不出 M6 的成本。
+- **c=32 非流式是唯一跨运行复现的信号**：两次运行都给 P95 **+11.5%**（+11.53% / +11.78%），QPS
+  −6.71% / −15.13%（同号、量级不稳）。
+- **流式看不出来**：mock 每词睡 15ms 把相位填满（P50 66.5 → 66.3ms），网关侧成本被淹没。
+- **内存 +4.9~5.1 MiB**（31.1 → 36.0 / 30.4 → 35.5 MiB）：A 臂不带 key，所以这 5 MiB 里没有一条被
+  记住的答案，是 trace 环与账本的成本；重放只快 1.27× 也不该被引用成"重放很快"——那一列被 mock 的
+  限速支配，这一臂要证明的是**上游没被调用**。
+- 这份基线**不是**容量承诺：后端是仓库内 mock、单机回环、`log.level: error`；A 臂（`cmd\loadtest`）
+  根本没有自定义头参数，所以它量的是 M6 接线的每请求固定成本，不是"存下一条答案"的成本。
+
+
+验收：Go `cmd/verify-m6` **381** 条断言 + 真实进程 curl `scripts/verify-m6.ps1` **149** 条断言
+（上游是仓库内可脚本化的 `cmd/mockupstream`，并用它自己的 `GET /calls` 作外部证人——"两次客户端尝试、
+上游只被调用一次"这句话由上游数出来，不是由网关自己声称）+ `scripts/measure-m6.ps1` 的检查全部通过。
+设计取舍与全部口径见 `docs/DESIGN.md` §13。
+
 ---
 
 ## 4. 本机工具链说明（为什么有 `tools/go.cmd`）
@@ -890,7 +970,7 @@ schannel 取不到凭证，所以验收脚本只打本机回环地址。
 | M3 | Token 配额与成本治理：预算、超限降级、计量对账 | **完成** |
 | M4 | vLLM 本地推理服务化 + 量化对比（FP16 / AWQ / GPTQ）+ 分层路由 | **完成** |
 | M5 | 可观测完善 + 压测基线（QPS / P95 / 首字延迟 / 缓存命中率 / trace 回放） | **完成** |
-| M6 | 与 Warden 打通：工具调用、会话、成本归因 | 计划中 |
+| M6 | 与 Warden 打通：幂等重放（不重复计费）+ 会话账本（成本归因）+ 能力发现 | **完成** |
 
 非目标：不做前端控制台、不做计费系统、不做模型训练。
 

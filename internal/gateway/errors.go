@@ -44,6 +44,19 @@ const (
 	// separately so an operator can tell a broken Redis from an exhausted
 	// tenant.
 	TypeQuotaStore = "infergate_quota_unavailable"
+
+	// TypeIdempotencyConflict is a reused Idempotency-Key sent with a
+	// DIFFERENT request body (HTTP 409). Replaying the recorded answer here
+	// would answer a question the caller did not ask; the key has to be
+	// treated as a mistake rather than as a hit.
+	TypeIdempotencyConflict = "infergate_idempotency_conflict"
+
+	// TypeIdempotencyInFlight is a second request arriving while the first one
+	// with the same key is still running (HTTP 409). It is a distinct type
+	// because the remedy is different: retry the same key shortly and the
+	// first attempt's answer will be replayed, whereas a body conflict needs a
+	// new key.
+	TypeIdempotencyInFlight = "infergate_idempotency_in_flight"
 )
 
 // writeError emits an OpenAI-shaped error response.

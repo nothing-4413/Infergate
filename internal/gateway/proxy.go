@@ -17,9 +17,11 @@ import (
 
 	"github.com/infergate/infergate/internal/breaker"
 	"github.com/infergate/infergate/internal/cache"
+	"github.com/infergate/infergate/internal/idempotency"
 	"github.com/infergate/infergate/internal/metrics"
 	"github.com/infergate/infergate/internal/quota"
 	"github.com/infergate/infergate/internal/router"
+	"github.com/infergate/infergate/internal/sessions"
 	"github.com/infergate/infergate/internal/tracing"
 	"github.com/infergate/infergate/internal/upstream"
 )
@@ -89,6 +91,22 @@ type Proxy struct {
 	// is the default: the trace store retains request metadata in memory, so it
 	// is a decision an operator makes rather than a cost every deployment pays.
 	tracer *Tracer
+
+	// idempotency remembers a completed answer against the caller's
+	// Idempotency-Key, so a client that retries after a timeout does not pay
+	// for a second generation. Nil means the header is ignored, which is the
+	// M0-M5 behaviour.
+	idempotency *idempotency.Store
+
+	// sessions is the M6 per-conversation ledger. Nil means no conversation
+	// rollup is kept; the request log and the traces are unaffected.
+	sessions *sessions.Ledger
+
+	// models is the operator's per-model metadata. It is immutable after
+	// construction like every other field here, and an empty map is the normal
+	// case: the capability endpoint then reports only what the upstreams
+	// declared.
+	models map[string]ModelInfo
 }
 
 // Options configures a Proxy.
@@ -151,6 +169,20 @@ type Options struct {
 
 	// Tracer records per-request traces. Nil disables tracing.
 	Tracer *Tracer
+
+	// Idempotency replays a completed answer for a repeated Idempotency-Key.
+	// Nil means the header is ignored.
+	Idempotency *idempotency.Store
+
+	// Sessions accumulates per-conversation totals, keyed by tenant and by the
+	// caller's X-InferGate-Session. Nil means no ledger is kept.
+	Sessions *sessions.Ledger
+
+	// Models is per-model metadata the wire does not carry: how large the
+	// context is, how much it can emit, which capability tags the model itself
+	// supports, and whatever the operator wants to record about it. It is read
+	// only by the capability endpoint, never on the request path.
+	Models map[string]ModelInfo
 }
 
 // New builds a Proxy.
@@ -182,6 +214,9 @@ func New(opts Options) *Proxy {
 		quotaCharsPerToken:    opts.QuotaCharsPerToken,
 		quotaCompletionTokens: opts.QuotaCompletionTokens,
 		tracer:                opts.Tracer,
+		idempotency:           opts.Idempotency,
+		sessions:              opts.Sessions,
+		models:                opts.Models,
 	}
 	p.maxAttempts = opts.MaxAttempts
 	if p.maxAttempts < 1 {
@@ -289,6 +324,31 @@ type record struct {
 	// no provider tokens.
 	servedFromCache bool
 
+	// idemKey is the caller's Idempotency-Key, already normalised, and is empty
+	// when the request carried none. idemScope is the namespace it was claimed
+	// in, idemHash fingerprints the request body, and idemClaimed records that
+	// THIS request owns the claim and must therefore complete or abort it.
+	idemKey     string
+	idemScope   string
+	idemHash    string
+	idemClaimed bool
+
+	// idemDecision is the verdict for the log and the trace ("proceed",
+	// "replay", "stored", "aborted", "conflict_body", "in_flight", "skip"),
+	// idemReason explains a conflict or a refused store, and idemStore is the
+	// value reported in X-InferGate-Idempotent-Store.
+	idemDecision string
+	idemReason   string
+	idemStore    string
+
+	// idemHeaders and idemBody are the captured response, kept only when this
+	// request holds a claim and only up to the store's size cap.
+	idemCapture *captureWriter
+
+	// servedFromReplay records that the answer came from the idempotency store.
+	// Its quota meaning matches servedFromCache: a slot, no provider tokens.
+	servedFromReplay bool
+
 	// trace is the in-flight trace for this request. Nil when tracing is
 	// disabled or the request was sampled out.
 	trace *requestTrace
@@ -362,6 +422,17 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// after the metrics, so a slow exporter cannot delay an answer. The
 		// events below are what make a trace readable without the log line: the
 		// verdicts that explain the outcome, recorded where they are known.
+		// M6: the replay store is settled before the trace is closed, after the
+		// response is on the wire: a store that is slow, full or unavailable
+		// must not delay the answer it is trying to remember, and the trace
+		// should record what the store decided.
+		p.idempotencyComplete(rec)
+		if rec.idemKey != "" {
+			rec.trace.addEvent("idempotency."+rec.idemDecision, map[string]any{
+				"key":    rec.idemKey,
+				"reason": rec.idemReason,
+			})
+		}
 		if rec.cacheStatus != "" {
 			rec.trace.addEvent("cache."+rec.cacheStatus, map[string]any{
 				"reason": rec.cacheReason,
@@ -381,6 +452,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 		rec.trace.finish(rec)
+
+		// M6: the conversation rollup is updated last, so it carries the final
+		// status, the measured latency and the attempt count.
+		p.recordSession(r, rec)
 
 		level := slog.LevelInfo
 		switch rec.outcome {
@@ -458,6 +533,15 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if len(rec.tried) > 1 {
 			attrs = append(attrs, slog.String("tried", strings.Join(rec.tried, " -> ")))
 		}
+		if rec.idemKey != "" {
+			attrs = append(attrs, slog.String("idempotency", rec.idemDecision))
+			if rec.idemStore != "" {
+				attrs = append(attrs, slog.String("idempotency_store", rec.idemStore))
+			}
+			if rec.idemReason != "" {
+				attrs = append(attrs, slog.String("idempotency_reason", rec.idemReason))
+			}
+		}
 		p.log.Log(r.Context(), level, "request", attrs...)
 	}()
 
@@ -506,6 +590,18 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, rec *record) {
 	rec.explicitModel = parsed.Model
 	rec.stream = parsed.Stream && isStreamPath(r.URL.Path)
 
+	// Identity is resolved once, for every request, rather than lazily inside
+	// the subsystems that need it. The tenant is what isolates cached answers
+	// and budgets, and the session is the conversation the ledger rolls up, so
+	// both must be known before the first subsystem runs - and the log line
+	// should name them even on a deployment with no cache and no budget.
+	if rec.tenant == "" {
+		rec.tenant = tenantFor(r)
+	}
+	if rec.session == "" {
+		rec.session = strings.TrimSpace(r.Header.Get(HeaderSession))
+	}
+
 	// M3: admission runs BEFORE the cache lookup, and the order is load-bearing
 	// in both directions. A cache hit is free but it is not invisible: it
 	// consumes a per-minute slot and it belongs in the tenant's report, so the
@@ -523,6 +619,17 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, rec *record) {
 			return
 		}
 		rec.model = parsed.Model
+	}
+
+	// M6: the idempotency claim is taken after admission and before the cache.
+	// After admission, because a replay is a request the caller really made and
+	// it consumes a per-minute slot just as a cache hit does; before the cache,
+	// because replaying the caller's OWN finished operation is a stronger
+	// statement than returning a similar question's answer.
+	var done bool
+	w, done = p.idempotencyBegin(w, r, rec, body)
+	if done {
+		return
 	}
 
 	// M2: the cache answers before routing is even considered, because a hit

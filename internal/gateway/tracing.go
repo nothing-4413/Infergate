@@ -296,6 +296,21 @@ func (rt *requestTrace) finish(rec *record) {
 			attrs["cache_reason"] = rec.cacheReason
 		}
 	}
+	if rec.idemKey != "" {
+		// The key itself is recorded: an agent that retried after a crash is
+		// diagnosed by finding both attempts under one key, and the trace is
+		// where an operator looks for that. The decision distinguishes the
+		// attempt that did the work from the one that was answered from the
+		// store.
+		attrs["idempotency_key"] = rec.idemKey
+		attrs["idempotency"] = rec.idemDecision
+		if rec.idemStore != "" {
+			attrs["idempotency_store"] = rec.idemStore
+		}
+		if rec.idemReason != "" {
+			attrs["idempotency_reason"] = rec.idemReason
+		}
+	}
 	if len(rec.tried) > 1 {
 		attrs["tried"] = rec.tried
 	}

@@ -16,9 +16,11 @@ import (
 	"github.com/infergate/infergate/internal/cache"
 	"github.com/infergate/infergate/internal/config"
 	"github.com/infergate/infergate/internal/gateway"
+	"github.com/infergate/infergate/internal/idempotency"
 	"github.com/infergate/infergate/internal/metrics"
 	"github.com/infergate/infergate/internal/quota"
 	"github.com/infergate/infergate/internal/router"
+	"github.com/infergate/infergate/internal/sessions"
 	"github.com/infergate/infergate/internal/upstream"
 )
 
@@ -48,6 +50,12 @@ type Server struct {
 	// /admin/traces and /admin/tracing can report the configuration even when
 	// tracing is off.
 	trace *tracePlane
+
+	// M6 state. Both exist even when disabled so the admin surfaces can report
+	// what is configured; only an enabled one is handed to the proxy, so a
+	// disabled one costs nothing per request.
+	idempotency *idempotency.Store
+	sessions    *sessions.Ledger
 
 	http    *http.Server
 	started time.Time
@@ -148,6 +156,20 @@ func NewServer(cfg *config.Config, logger logAdapter) (*Server, error) {
 		return nil, err
 	}
 
+	// M6: the replay store and the session ledger. Like the cache and the
+	// budget, both are built before the proxy because the proxy is handed them
+	// at construction, and a nil store is what makes replay free when it is off.
+	idempotencyStore := buildIdempotency(cfg, logger)
+	sessionLedger := buildSessions(cfg, logger)
+	var proxyIdempotency *idempotency.Store
+	if cfg.Idempotency.Enabled {
+		proxyIdempotency = idempotencyStore
+	}
+	var proxySessions *sessions.Ledger
+	if cfg.Sessions.Enabled {
+		proxySessions = sessionLedger
+	}
+
 	proxy := gateway.New(gateway.Options{
 		Upstreams:       registry,
 		Pricing:         priceBook,
@@ -166,6 +188,9 @@ func NewServer(cfg *config.Config, logger logAdapter) (*Server, error) {
 		QuotaCharsPerToken:    cfg.Quota.EstimateCharsPerToken,
 		QuotaCompletionTokens: cfg.Quota.EstimateCompletionTokens,
 		Tracer:                traceplane.tracer,
+		Idempotency:           proxyIdempotency,
+		Sessions:              proxySessions,
+		Models:                modelInfo(cfg),
 	})
 
 	s := &Server{
@@ -180,7 +205,11 @@ func NewServer(cfg *config.Config, logger logAdapter) (*Server, error) {
 		quota:      quotaManager,
 		quotaStore: quotaStore,
 		trace:      traceplane,
-		started:    time.Now(),
+		// The admin surfaces read these whether or not replay and the ledger
+		// are on, so they are the un-narrowed handles.
+		idempotency: idempotencyStore,
+		sessions:    sessionLedger,
+		started:     time.Now(),
 	}
 
 	mux := http.NewServeMux()
@@ -199,6 +228,16 @@ func NewServer(cfg *config.Config, logger logAdapter) (*Server, error) {
 	mux.HandleFunc("GET /admin/traces", s.handleTraces)
 	mux.HandleFunc("GET /admin/traces/{id}", s.handleTraceByID)
 	mux.HandleFunc("GET /admin/tracing", s.handleTracingConfig)
+	mux.HandleFunc("GET /admin/idempotency", s.handleIdempotency)
+	mux.HandleFunc("POST /admin/idempotency/flush", s.handleIdempotencyFlush)
+	mux.HandleFunc("GET /admin/sessions", s.handleSessions)
+	mux.HandleFunc("POST /admin/sessions/flush", s.handleSessionsFlush)
+	mux.HandleFunc("GET /admin/sessions/{id}", s.handleSessionByID)
+	// M6 capability discovery. /v1/capabilities is a gateway-owned endpoint on
+	// the otherwise proxied /v1 surface, which is why it is registered here
+	// rather than relayed: no provider serves it.
+	mux.HandleFunc("GET /v1/capabilities", s.handleCapabilities)
+	mux.HandleFunc("POST /v1/capabilities/probe", s.handleCapabilityProbe)
 
 	// Everything else is the OpenAI-compatible surface. The catch-all must not
 	// swallow the exact routes above: Go's ServeMux prefers the more specific
@@ -761,6 +800,11 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(&b, "infergate_quota_overshoot_cost_micros_total %d\n", qs.OvershootCostMicro)
 		fmt.Fprintf(&b, "infergate_quota_released_cost_micros_total %d\n", qs.ReleasedCostMicro)
 	}
+
+	// M6 replay and session counters. The host/miss split answers "is anyone
+	// actually sending an idempotency key", and the in-flight gauge is what
+	// distinguishes a stuck request from a stream of conflicts.
+	writeM6Metrics(&b, s.idempotency, s.sessions)
 
 	// ---------------------------------------------------------------------
 	// Process facts, not request facts.

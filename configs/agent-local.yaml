@@ -1,0 +1,157 @@
+# InferGate M6 configuration - the agent platform surfaces, on one local backend.
+#
+# The whole M6 story with nothing external: one in-repo mock upstream, one
+# gateway, replay and the session ledger in process memory.
+#
+# The upstream is meant to run with a SCRIPT, so that the model answers
+# deterministically (turn one asks for a tool, any turn carrying a tool result
+# echoes it back). GET /calls on the mock is an external witness of how many
+# times the provider was really asked - which is the only way to prove that a
+# replay cost nothing:
+#
+#   .\tools\go.cmd build -o bin\infergate.exe .\cmd\infergate
+#   .\tools\go.cmd build -o bin\mockupstream.exe .\cmd\mockupstream
+#   .\bin\mockupstream.exe -listen 127.0.0.1:19910 -name agent-mock `
+#       -script tmp\m6-script.json -token-delay 0ms
+#   .\bin\infergate.exe -config configs\agent-local.yaml
+#
+#   curl -s -D - -o body -H 'content-type: application/json' `
+#     -H 'X-InferGate-Tenant: acme' -H 'X-InferGate-Session: conv-1' `
+#     -H 'Idempotency-Key: op-1' `
+#     -d '{"model":"mock-gpt","messages":[{"role":"user","content":"weather in Beijing"}]}' `
+#     http://127.0.0.1:18909/v1/chat/completions
+#   # ... run it twice: the second answer carries X-InferGate-Idempotent-Replay: true
+#   # and the mock's /calls counter has not moved.
+#
+#   curl -s http://127.0.0.1:18909/admin/idempotency   # what is replayable
+#   curl -s http://127.0.0.1:18909/admin/sessions      # what a conversation spent
+#   curl -s http://127.0.0.1:18909/v1/capabilities     # what the fleet can do
+#
+# scripts/verify-m6.ps1 runs exactly this stack and then takes it apart.
+
+server:
+  listen: "127.0.0.1:18909"
+  read_header_timeout: "10s"
+  idle_timeout: "90s"
+  # A per-attempt budget, not a per-request one: a request that fails over
+  # spends this much again for each candidate.
+  upstream_timeout: "10s"
+  shutdown_timeout: "5s"
+  max_body_bytes: 8388608
+  max_idle_conns_per_host: 256
+
+log:
+  level: "info"
+  format: "text"
+
+routing:
+  strategy: "priority"
+  default_capabilities:
+    - "chat"
+
+health:
+  window: "30s"
+  buckets: 6
+  min_requests: 4
+  failure_ratio: 0.5
+  # Long on purpose in a sample: a tripped backend stays out of rotation while
+  # a human reads the output, instead of racing a half-open probe.
+  open_duration: "30s"
+  half_open_probes: 1
+  max_failures_per_request: 2
+  retry_backoff: "20ms"
+
+upstreams:
+  # A catch-all backend: models ["/"] means it accepts any model name, so a
+  # curl can ask for whatever the agent runtime is pinned to. capabilites are
+  # what the PROBE can verify about it; the probe also refuses to invent a model
+  # name if none is given, which is why the model below is declared.
+  - name: "scripted-mock"
+    kind: "openai"
+    base_url: "http://127.0.0.1:19910"
+    api_key: "mock-key"
+    models:
+      - "/"
+    capabilities:
+      - "chat"
+      - "tools"
+      - "stream"
+      - "json"
+    priority: 1
+    weight: 1
+
+# Declared model metadata. Nothing on the wire reports a context window, and an
+# agent that decides how much history to keep needs it, so the operator states it
+# here and /v1/capabilities serves it back.
+models:
+  mock-gpt:
+    context_window: 128000
+    max_output_tokens: 4096
+    capabilities:
+      - "chat"
+      - "tools"
+    notes: "the model the local agent runtime is pinned to"
+
+# ---------------------------------------------------------------------------
+# M6: idempotent replay
+# ---------------------------------------------------------------------------
+# Off by default in the code and on here, because replay changes response
+# semantics: a repeated request can answer without touching a provider. That is
+# a deployment decision (an agent runtime retrying a tool call after a socket
+# timeout needs it), never something an upgrade switches on.
+idempotency:
+  enabled: true
+  # Should outlast the caller's own retry budget and no more. An agent runtime
+  # retries for seconds; ten minutes covers a queue or a restart in between
+  # without turning yesterday's answer into today's.
+  ttl: "10m"
+  # A memory budget, not a nicety: every entry holds a response body. Past this
+  # the least recently used entry is evicted (and counted in /admin/idempotency).
+  capacity: 256
+  # The largest answer worth remembering. A streamed completion can be
+  # arbitrarily large; past this size the answer is served and simply not
+  # remembered (/admin/idempotency reports it as oversize, not as a failure).
+  max_response_bytes: 1048576
+
+# ---------------------------------------------------------------------------
+# M6: the per-session ledger
+# ---------------------------------------------------------------------------
+# Answers what a token counter cannot: which conversation spent the money, on
+# what. Keyed by X-InferGate-Session, the same header a per-session budget
+# already uses, so an agent runtime passes one header and gets both.
+sessions:
+  enabled: true
+  capacity: 512
+  # A session with no traffic is a conversation that ended.
+  ttl: "30m"
+  # How much of each conversation is kept: enough to see the shape of a replay
+  # (models, statuses, tokens) without retaining every payload forever.
+  recent_per_session: 8
+
+pricing:
+  # The ledger's cost column comes from THIS price book, never from a provider
+  # invoice a gateway cannot see.
+  default:
+    in: 1.0
+    out: 3.0
+  models:
+    mock-gpt:
+      in: 1.0
+      out: 3.0
+
+# ---------------------------------------------------------------------------
+# M6: tracing, because a replay is invisible in a response header alone
+# ---------------------------------------------------------------------------
+# A span records the idempotency decision, the session id and the tenant, which
+# is what makes "the retry was a replay, not a second generation" auditable
+# after the fact.
+tracing:
+  enabled: true
+  capacity: 512
+  sample_ratio: 1.0
+  jsonl_path: ""
+  otlp:
+    endpoint: ""
+    timeout: "5s"
+    service_name: "infergate"
+    headers: {}

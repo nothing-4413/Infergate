@@ -44,6 +44,10 @@ type Config struct {
 	Cache     CacheConfig      `json:"cache"`
 	Quota     QuotaConfig      `json:"quota"`
 	Tracing   TracingConfig    `json:"tracing"`
+	// M6: what an agent runtime needs on top of a chat endpoint.
+	Idempotency IdempotencyConfig    `json:"idempotency"`
+	Sessions    SessionsConfig       `json:"sessions"`
+	Models      map[string]ModelInfo `json:"models"`
 }
 
 // HealthConfig parameterises the per-upstream circuit breaker.
@@ -677,6 +681,95 @@ type OTLPConfig struct {
 	Headers map[string]string `json:"headers"`
 }
 
+// IdempotencyConfig parameterises the replay store behind the Idempotency-Key
+// request header.
+//
+// The store exists because an agent runtime retries. A tool-calling loop that
+// loses a response to a timeout cannot tell "the call never happened" from "the
+// tool ran and the answer was lost", and the two demand opposite actions. A
+// gateway-side replay key turns the second case into a byte-identical answer
+// with no second upstream call, so the retry is safe by construction rather
+// than by the caller guessing.
+//
+// It is off by default, like the cache and the quota: a replay changes response
+// semantics (a repeated request may answer without touching a provider), and
+// that is a deployment's decision rather than a default.
+type IdempotencyConfig struct {
+	// Enabled turns replay on. While false the header is ignored and no entry
+	// is ever stored.
+	Enabled bool `json:"enabled"`
+
+	// TTL is how long a stored answer stays replayable. It should outlast the
+	// caller's own retry budget and no more: a key that lives for a day turns
+	// yesterday's answer into today's.
+	TTL Duration `json:"ttl"`
+
+	// Capacity bounds how many answers are retained. The store evicts the least
+	// recently used entry past it and counts the eviction, so the ceiling is a
+	// memory budget rather than a suggestion.
+	Capacity int `json:"capacity"`
+
+	// MaxResponseBytes is the largest answer worth storing. A stored answer is
+	// held in memory, and a streamed completion can be arbitrarily large, so a
+	// response past this size is served normally and simply not remembered
+	// (/admin/idempotency reports it as oversize, not as a failure).
+	MaxResponseBytes int64 `json:"max_response_bytes"`
+}
+
+// SessionsConfig parameterises the per-session ledger.
+//
+// The ledger answers the question a token counter cannot: which conversation
+// spent the money, and on what. It is keyed by X-InferGate-Session, which the
+// gateway already reads for per-session budgets, so nothing new is required of
+// the caller - the same header that bounds a conversation now also reports it.
+type SessionsConfig struct {
+	// Enabled turns recording on. While false /admin/sessions reports the
+	// configuration and an empty list rather than pretending no sessions exist.
+	Enabled bool `json:"enabled"`
+
+	// Capacity bounds how many sessions are retained (least recently used
+	// evicted first). A long-lived deployment accumulates one entry per
+	// conversation, so this is a memory budget, not a nicety.
+	Capacity int `json:"capacity"`
+
+	// TTL drops sessions that have been idle for longer than it. A session with
+	// no traffic is a conversation that ended, and an unbounded ledger of ended
+	// conversations is a leak with a friendly name.
+	TTL Duration `json:"ttl"`
+
+	// RecentPerSession is how many of the most recent requests each session
+	// keeps, so that a replay shows the shape of the conversation (models,
+	// statuses, token counts) without retaining every payload forever.
+	RecentPerSession int `json:"recent_per_session"`
+}
+
+// ModelInfo is the metadata about a model that the gateway cannot observe from
+// the wire.
+//
+// The context window is the one that matters: an agent deciding whether to
+// compress its history needs to know how much of the window a request already
+// occupies, and no OpenAI-compatible response reports it. Upstreams declare
+// which MODELS they serve and which CAPABILITIES they support; nothing declares
+// how large a model's context is, so an operator states it here and the
+// capability endpoint serves it back.
+type ModelInfo struct {
+	// ContextWindow is the model's total context in tokens, 0 when unknown.
+	ContextWindow int `json:"context_window"`
+
+	// MaxOutputTokens is the largest completion the model accepts, 0 when
+	// unknown.
+	MaxOutputTokens int `json:"max_output_tokens"`
+
+	// Capabilities are tags this MODEL supports, unioned with what the serving
+	// upstreams declare. It exists for the fleet whose backends are honest
+	// about serving a model and silent about what it can do.
+	Capabilities []string `json:"capabilities"`
+
+	// Notes is free text echoed by the capability endpoint, for the operator's
+	// own bookkeeping (which quantisation is deployed, who owns the key).
+	Notes string `json:"notes"`
+}
+
 // Defaults mirrors configs/infergate.yaml. Load applies them before overlaying
 // the file, so a partially specified file is still a valid configuration.
 func Defaults() Config {
@@ -794,6 +887,33 @@ func Defaults() Config {
 				Headers:     map[string]string{},
 			},
 		},
+		Idempotency: IdempotencyConfig{
+			Enabled: false,
+			// 15 minutes is the same window the cache uses, and for the same
+			// reason: it is longer than any client retry budget an operator has
+			// actually configured, and shorter than the point at which a
+			// replayed answer stops describing the world.
+			TTL:      Duration(15 * time.Minute),
+			Capacity: 2048,
+			// 1 MiB holds a large non-streamed completion many times over and a
+			// short stream once. A streamed answer past it is served and not
+			// remembered, which is a documented limit rather than a silent
+			// truncation.
+			MaxResponseBytes: 1 << 20,
+		},
+		Sessions: SessionsConfig{
+			Enabled: false,
+			// 4096 conversations is a few hundred KiB of counters: enough for
+			// every session a single machine serves in a day, and bounded so a
+			// long-lived gateway cannot grow without one.
+			Capacity: 4096,
+			// A day of idleness ends a conversation for reporting purposes. The
+			// UTC-day budgets that actually bound spend are unaffected by this:
+			// the ledger is an observability surface, not an enforcement one.
+			TTL:              Duration(24 * time.Hour),
+			RecentPerSession: 8,
+		},
+		Models: map[string]ModelInfo{},
 	}
 }
 
@@ -1277,6 +1397,72 @@ func (c *Config) Validate() error {
 	}
 	if c.Tracing.OTLP.Headers == nil {
 		c.Tracing.OTLP.Headers = map[string]string{}
+	}
+
+	// M6: idempotent replay. Zero means unset for the bounds (a capacity of 0
+	// would store nothing while the config says the feature is on), and a
+	// negative is a typo rather than an intent.
+	di := Defaults().Idempotency
+	if c.Idempotency.TTL < 0 {
+		return errors.New("idempotency.ttl: must not be negative")
+	}
+	if c.Idempotency.TTL == 0 {
+		c.Idempotency.TTL = di.TTL
+	}
+	if c.Idempotency.Capacity < 0 {
+		return errors.New("idempotency.capacity: must not be negative")
+	}
+	if c.Idempotency.Capacity == 0 {
+		c.Idempotency.Capacity = di.Capacity
+	}
+	if c.Idempotency.MaxResponseBytes < 0 {
+		return errors.New("idempotency.max_response_bytes: must not be negative")
+	}
+	if c.Idempotency.MaxResponseBytes == 0 {
+		c.Idempotency.MaxResponseBytes = di.MaxResponseBytes
+	}
+
+	ds := Defaults().Sessions
+	if c.Sessions.TTL < 0 {
+		return errors.New("sessions.ttl: must not be negative")
+	}
+	if c.Sessions.TTL == 0 {
+		c.Sessions.TTL = ds.TTL
+	}
+	if c.Sessions.Capacity < 0 {
+		return errors.New("sessions.capacity: must not be negative")
+	}
+	if c.Sessions.Capacity == 0 {
+		c.Sessions.Capacity = ds.Capacity
+	}
+	if c.Sessions.RecentPerSession < 0 {
+		return errors.New("sessions.recent_per_session: must not be negative")
+	}
+	if c.Sessions.RecentPerSession == 0 {
+		c.Sessions.RecentPerSession = ds.RecentPerSession
+	}
+
+	// Model metadata is normalised rather than merely checked: the capability
+	// endpoint compares these tags against the upstreams' own declarations, and
+	// "Tools" failing to match "tools" would silently drop a capability.
+	for name, info := range c.Models {
+		if strings.TrimSpace(name) == "" {
+			return errors.New("models: a model name must not be empty")
+		}
+		if info.ContextWindow < 0 {
+			return fmt.Errorf("models.%s.context_window: must not be negative", name)
+		}
+		if info.MaxOutputTokens < 0 {
+			return fmt.Errorf("models.%s.max_output_tokens: must not be negative", name)
+		}
+		caps := make([]string, 0, len(info.Capabilities))
+		for _, capTag := range info.Capabilities {
+			if tag := strings.ToLower(strings.TrimSpace(capTag)); tag != "" {
+				caps = append(caps, tag)
+			}
+		}
+		info.Capabilities = caps
+		c.Models[name] = info
 	}
 	return nil
 }
