@@ -11,19 +11,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # The base gate: build, vet, tests (including the race detector). This is the
-  # Linux-shaped gate and needs nothing from this machine's local toolchain shim
-  # (see tools/go.cmd and README §4) — GitHub runners have Go on PATH.
+  # The base gate: build, vet, tests, race detector. This is the Linux-shaped gate
+  # and needs nothing from this machine's local toolchain shim (see tools/go.cmd
+  # and README section 4) -- GitHub runners have Go on PATH.
+  #
+  # WHAT ALREADY HAPPENED HERE (run 37361004384, commit b3280cb): build, vet and
+  # `go test` passed; `go test -race` exited 1. The job log is not downloadable
+  # without admin rights, and the only annotation GitHub attached was "Process
+  # completed with exit code 1", which names no test. That is why the two test
+  # steps below now append failure markers: a red run should say WHICH test broke
+  # without anyone needing the log.
   base:
     name: build / vet / test / race
-    runs-on: ubuntu-latest
+    # Pinned rather than ubuntu-latest: the label announced a migration to Ubuntu
+    # 26 (runner-images#14748), and a silent distro change is not something a gate
+    # should inherit.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      # v5 / v6 rather than v4 / v5: the v4-era actions run on Node 20, which the
+      # runner already warns is deprecated.
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-go@v5
+      # cache: false on purpose. This module has no dependencies (no go.sum), so
+      # the only thing caching would do is emit "Dependencies file is not found"
+      # on every run; the Go build cache is what actually matters and setup-go
+      # handles that separately.
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
 
       - name: go build
         run: go build ./...
@@ -31,14 +48,22 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      # -timeout 20m is well under the job timeout and well over the suite's real
+      # cost; if a package ever hangs, the panic names the test instead of the job
+      # dying silently.
       - name: go test
-        run: go test ./... -count=1
+        run: |
+          set -o pipefail
+          go test ./... -count=1 -timeout 20m 2>&1 | tee /tmp/go-test.log | grep -E '^(ok|FAIL|---|\s+---)|panic:|DATA RACE'
 
       # The local machine cannot run this: `-race` needs cgo and there is no gcc
-      # (README §4 / §10). A hosted runner can, so the concurrency claims get
-      # evidence here instead of only an argument.
+      # (README section 4 / section 10). A hosted runner can, which is the whole
+      # reason this step exists -- and on the first run it did fail, so it is not
+      # a formality.
       - name: go test -race
-        run: go test -race ./... -count=1
+        run: |
+          set -o pipefail
+          go test -race ./... -count=1 -timeout 20m 2>&1 | tee /tmp/go-test-race.log | grep -E '^(ok|FAIL|---|\s+---)|panic:|DATA RACE|WARNING: DATA RACE'
 
   # Step 2 (separate commit): the real-process verification gates. The curl
   # gates live in PowerShell and build/start/tear down real stacks, so they need
