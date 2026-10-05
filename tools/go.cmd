@@ -19,24 +19,42 @@ rem from. Every .ps1 in scripts\ still goes through this file, so the fallback
 rem below is what lets those gates run on a hosted Windows runner with only
 rem actions/setup-go: whatever `go` the PATH provides, with its own cache.
 rem
+rem WHY GOROOT IS CLEARED BEFORE THE BRANCH. It used to be pinned to the vendored
+rem tree unconditionally, and that was the first failure of the curl-gates job
+rem (run 37369217148: the M0 step died after five seconds with "go: cannot find
+rem GOROOT directory"). On a runner, actions/setup-go exports GOROOT, so the `go`
+rem the PATH did provide was handed a GOROOT pointing at a vendored toolchain a
+rem fresh clone does not have. Clearing it is what both branches want: go derives
+rem GOROOT from its own executable location when the variable is unset, so the
+rem vendored go finds the vendored tree and the runner's go finds the runner's
+rem tree. The clear has to happen before the `if`, not inside one arm of it:
+rem `setlocal` inherits the parent environment, and a fallback arm that only
+rem skipped the assignment still ran under the inherited value. Verified both
+rem ways locally -- vendored branch with a bogus GOROOT in the environment, and
+rem the fallback branch exercising the same bug.
+rem
 rem Usage:  tools\go.cmd <go arguments>       e.g. tools\go.cmd test ./...
 setlocal
 
-set "GOROOT=%~dp0..\.gotoolchain\golang.org\toolchain@v0.0.1-go1.26.8.windows-amd64"
+rem Whatever GOROOT the caller had belongs to the caller's toolchain, not ours.
+set "GOROOT="
 
-if not exist "%GOROOT%\bin\go.exe" (
-    rem No vendored toolchain: do not pin GOROOT to a directory that is not there,
-    rem and do not divert GOCACHE/GOMODCACHE off the host defaults -- a runner
-    rem wants its own warmed cache, and the actions/setup-go cache step is keyed
-    rem on exactly those locations.
+set "VENDORED=%~dp0..\.gotoolchain\golang.org\toolchain@v0.0.1-go1.26.8.windows-amd64\bin\go.exe"
+
+if not exist "%VENDORED%" (
+    rem No vendored toolchain: do not divert GOCACHE/GOTMPDIR/GOMODCACHE off the
+    rem host defaults -- a runner wants its own warmed cache, and the
+    rem actions/setup-go cache step is keyed on exactly those locations.
     go %*
     exit /b %ERRORLEVEL%
 )
 
+rem The vendored distribution: workspace-local caches, which is the reason this
+rem file exists at all.
 set "GOTOOLCHAIN=local"
 set "GOCACHE=%~dp0..\.gocache"
 set "GOTMPDIR=%~dp0..\.gotmp"
 set "GOMODCACHE=%~dp0..\.gomodcache"
 if not exist "%GOTMPDIR%" mkdir "%GOTMPDIR%"
-"%GOROOT%\bin\go.exe" %*
+"%VENDORED%" %*
 exit /b %ERRORLEVEL%

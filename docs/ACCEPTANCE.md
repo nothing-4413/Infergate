@@ -16,10 +16,12 @@ M4–M6 的验收与实测段落与各自的启动方式写在一起，见 [USAG
 | M5 可观测与压测 | 420 | 203 | `baseline/m5-summary.json`（+ 24 条逐轮文件） |
 | M6 幂等/账本/能力 | 381 | 149 | `baseline/m6-summary.json` |
 | **合计** | **2353** | **1060** | |
+| 管理面鉴权（`access`，不属任何里程碑） | 41 | 44 | 无（证据是 `scripts/verify-hardening.ps1` 的输出） |
 
-表外还有一项不属于任何里程碑的改造：管理面鉴权（`access`）。它默认关闭，所以 M0–M6 的
-两条证据链一行都没有覆盖它；它的证据是 `internal/server/access_test.go` 与
-`internal/config/config_test.go` 的 Go 单测，见下方「管理面鉴权的证据边界」。
+管理面鉴权默认关闭，所以 M0–M6 的两条证据链一行都没有覆盖它。它有自己的第三条链：
+`scripts/verify-hardening.ps1`，**真进程 + 真 curl + 44 条断言**，见下方「管理面鉴权的证据边界」。
+它的数字单独列成一行而不是并进合计——把一条 2026 年才加的安全门混进里程碑总数，
+会让"1060"这个从 M0 起就写在 README 里的数字变得不可对账。
 
 两条路径相互独立：Go 门用进程内假上游跑得快、断言密度高；
 curl 门编译真二进制、拉真进程、用真 `curl.exe` 打真 socket，证的是“部署起来就是这样”。
@@ -46,18 +48,41 @@ curl 门编译真二进制、拉真进程、用真 `curl.exe` 打真 socket，�
 
 ### 管理面鉴权（`access`）的证据边界
 
+两条独立链，和里程碑一样：Go 进程内（41 条断言，`internal/server/access_test.go` +
+`internal/config/config_test.go`）与真进程 + curl（44 条，`scripts/verify-hardening.ps1`）。
+后者编译真二进制、起真网关、用真 `curl.exe`，是唯一能证明「401 真的会发出来」的那条链。
+
 | 说的事 | 证据 | 状态 |
 | --- | --- | --- |
 | 默认行为与 M0–M6 完全一致 | `internal/server/access_test.go`（`TestAccessDisabledMatchesTheM0M6Behaviour`，13 个端点逐个断言 200） | 绿 |
 | 打开后 `/admin/*` 与 `/stats` 需要令牌 | 同文件 `TestAccessEnabledProtectsTheOperationalSurface`（GET 10 路径 × 无令牌/错令牌/对令牌，POST 4 条 flush 路径） | 绿 |
-| 探针、`/metrics` 与 OpenAI 兼容面不受影响 | 同文件 `TestAccessLeavesTheProbesAndTheProxyOpen` | 绿 |
+| 探针、`/metrics` 与 OpenAI 兼容面不受影响 | 同文件 `TestAccessLeavesTheProbesAndTheProxyOpen`、`TestAccessCustomHeaderAndQueryToken` | 绿 |
 | 少带/带错令牌不可区分，且不回显凭证 | 同文件 `TestAccessRejectionShapeIsUsableAndTellsNothing` | 绿 |
 | 路径前缀按路径段匹配（`/admin` 不覆盖 `/administrator`） | 同文件 `TestAccessCoversUsesPathSegments` | 绿 |
 | 配置错误在加载期报错（启用但无令牌、`protect: ["/"]`） | `internal/config/config_test.go` 的 `TestAccessValidationErrors` | 绿 |
 | 令牌从 `${ENV}` 展开，未定义即中止 | 同文件 `TestAccessSectionParsesAndExpands` | 绿 |
-| **真进程 + curl 打一次受保护的 `/admin/*`** | 无 | **未验证**：`scripts/verify-m*.ps1` 全部以「无凭证访问管理面」为前提，加令牌会一次破掉 1060 条断言中的一部分，所以这一步**没有**加进去；上面这些性质目前只有 Go 进程内的证据 |
 
-最后一行是这一节存在的原因：把「默认关」以外的行为说成已经被端到端验证过，是这份文档最不该犯的错。
+真进程 + curl 那一条链（`scripts/verify-hardening.ps1`，44/44）额外证的是：
+
+| 说的事 | 断言 |
+| --- | --- |
+| 9 条运营路径与 4 条 flush 路径无令牌都是 401 | 段 4「all 9 operational paths…」「POST /admin/cache/flush…」 |
+| 401 带 `WWW-Authenticate: Bearer realm="infergate"`，且不回显近似令牌 | 段 4 的响应形状三条 |
+| 裸令牌 / `Basic` / 错头名 / `Bearer` 与令牌粘连四种畸形形态都被拒 | 段 4 的 malformed 循环 |
+| 两个令牌都可接受（轮换不需硬切换），授权后拿到的是真文档 | 段 5 |
+| `/healthz` `/readyz` `/metrics` `/v1/capabilities` 与 `POST /v1/chat/completions` 无凭证都 200 | 段 6（含「调用方的 provider 凭证不会被当成门令牌」） |
+| `OPTIONS` 预检不要求令牌 | 段 7 |
+| `protect` 是**替换**而非追加：只写 `/stats` 时 `/admin` 变回开放 | 段 8（另起一个网关进程验证） |
+| 自定义头逐字比对、`Authorization` 不再被采纳、query 形态默认关闭而开启后可接受 | 段 9（两个网关进程） |
+| 配置错误在**真二进制**上也是加载期退出（未定义变量、`protect: ["/"]`、启用却无令牌） | 段 2（各跑一次 `-check`，非零退出） |
+
+三点值得记住的设计原因：① 默认保护集只含 `/admin` 与 `/stats`，探针和 `/metrics` 排除在外——
+kubelet、compose healthcheck、Prometheus 抓取器都不带凭证，要求凭证会把一个能用的部署变成永远不健康的部署；
+② 少带与带错返回逐字节相同的 401，否则门就成了「猜对了多少」的探测器；
+③ 空保护集与 `protect: ["/"]` 都在加载期拒绝，因为门上的静默失效是这里唯一不能接受的失败模式。
+
+这一段在 Go 单测之外补 curl 门的原因很直接：单测走的是 `srv.Handler()`，它证明的是策略正确；
+只有真二进制 + 真 socket 能证明 401 真的会从 HTTP 层发出来、且 `WWW-Authenticate` 真的在线上。
 
 ---
 

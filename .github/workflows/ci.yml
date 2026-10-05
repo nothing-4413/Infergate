@@ -84,7 +84,7 @@ jobs:
   # 1060 assertions that the Linux job above cannot run at all, because all seven
   # of them are Windows PowerShell scripts that compile the binaries themselves,
   # start a gateway plus a mock upstream, drive them over TCP and tear both down
-  # in a finally block.
+  # in a finally block. scripts/verify-hardening.ps1 rode in the same way.
   #
   # These are the gates the repository has been claiming in its README since M0
   # while they only ever ran on the author's machine. That is exactly the kind of
@@ -100,9 +100,11 @@ jobs:
   # Each script is its own step on purpose: a red X then points at the milestone
   # that broke, and the previous ones still show they passed. Each script assigns
   # its own ports, and each stops what it started, so running them in sequence is
-  # the same thing the README's "one key acceptance" section describes.
+  # the same thing the README's "one key acceptance" section describes. The ports
+  # are all distinct across scripts; verify-hardening deliberately does not use
+  # gateway+1 for its mock, because its mock outlives the sibling gateways.
   curl-gates:
-    name: curl gates (M0-M6)
+    name: curl gates (M0-M6, operator token)
     runs-on: windows-2022
     timeout-minutes: 60
     steps:
@@ -149,6 +151,16 @@ jobs:
       - name: M6 idempotency and sessions
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m6.ps1
+        working-directory: ${{ github.workspace }}
+
+      # Last on purpose. Every gate above drives the gateway with no credentials,
+      # because the operator-token gate is off by default -- which is exactly why
+      # none of them can prove it works. This one turns it on, against a real
+      # process, and asks a real curl for a 401. It also fails fast (about 15
+      # seconds) so putting it last costs nothing when a milestone is already red.
+      - name: operator token gate
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-hardening.ps1
         working-directory: ${{ github.workspace }}
 
       # A failed gate leaves bin\ and tmp\ behind, and those logs are the only
