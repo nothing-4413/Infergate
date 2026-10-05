@@ -26,12 +26,22 @@ jobs:
   # same one-line annotation, which is what a gate that cannot be read looks like.
   #
   # What replaced it: the transcript goes to a file, scripts/ci-summarize-go-test.sh
-  # keeps the failing tests and any race report, and the result is appended to the
-  # step summary -- which IS readable over the public API (check-runs
-  # output.summary) by anyone who can read the repository. The raw transcript is
-  # uploaded as an artifact as well.
+  # keeps the failing tests and any race report, and the last step of the job PATCHes
+  # the check run with that text -- check-runs `output.summary` is the one field the
+  # public API serves to an anonymous reader. The raw transcript is uploaded as an
+  # artifact as well.
+  #
+  # Writing $GITHUB_STEP_SUMMARY was tried in between and did not work: it renders in
+  # the UI for a signed-in reader, and it does NOT populate check-runs
+  # output.summary -- the API and the job page both came back empty on the run that
+  # added it. That mistake is the one internal/repofmt/ci_wiring_test.go now forbids.
   base:
     name: build / vet / test / race
+    # checks: write is what lets the last step of this job put its failure output
+    # where an unauthenticated reader can get it. The token needs no other scope.
+    permissions:
+      contents: read
+      checks: write
     # Pinned rather than ubuntu-latest: the label announced a migration to Ubuntu
     # 26 (runner-images#14748), and a silent distro change is not something a gate
     # should inherit.
@@ -84,11 +94,12 @@ jobs:
       - name: go test
         run: |
           set -o pipefail
+          mkdir -p /tmp/ci-summary
           go test ./... -count=1 -timeout 20m 2>&1 | tee /tmp/go-test.log
 
       - name: summarize go test
         if: always()
-        run: bash scripts/ci-summarize-go-test.sh /tmp/go-test.log "$GITHUB_STEP_SUMMARY" "go test"
+        run: bash scripts/ci-summarize-go-test.sh /tmp/go-test.log /tmp/ci-summary/test.md "go test"
 
       # The local machine cannot run this: `-race` needs cgo and there is no gcc
       # (README section 4 / section 10). A hosted runner can, which is the whole
@@ -97,15 +108,34 @@ jobs:
       - name: go test -race
         run: |
           set -o pipefail
+          mkdir -p /tmp/ci-summary
           go test -race ./... -count=1 -timeout 20m 2>&1 | tee /tmp/go-test-race.log
 
       - name: summarize go test -race
         if: always()
-        run: bash scripts/ci-summarize-go-test.sh /tmp/go-test-race.log "$GITHUB_STEP_SUMMARY" "go test -race"
+        run: bash scripts/ci-summarize-go-test.sh /tmp/go-test-race.log /tmp/ci-summary/race.md "go test -race"
 
-      # The step summary is public-readable; the job log is not. Uploading the raw
-      # transcript too means the summary can stay a summary and a reader who needs
-      # the whole thing can still get it.
+      # The step summaries above render in the UI for a signed-in reader. This step
+      # is what makes the same text readable by anyone: it PATCHes the job's check
+      # run, and check-runs `output.summary` is served by the public API. Without it
+      # a red run is, once again, one annotation reading "exit code 1".
+      #
+      # ${{ job.status }} decides whether that is worth doing: on a green job the
+      # summaries only list package lines, so it prints a digest to the step log
+      # instead of overwriting a passing check run's (empty) summary.
+      #
+      # continue-on-error because this is publishing, not gating: if the check run
+      # cannot be updated, the test result is still whatever the tests said.
+      - name: Publish failure summary
+        if: always()
+        continue-on-error: true
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then mode=digest; else mode=publish; fi
+          bash scripts/ci-publish-failure-summary.sh /tmp/ci-summary "build / vet / test / race" "$mode"
+
+      # The transcript itself is not portable enough to rely on: the job log needs
+      # admin rights and an artifact needs a download. Uploading it keeps the summary
+      # free to stay a summary.
       - name: Upload test transcripts
         if: always()
         uses: actions/upload-artifact@v4

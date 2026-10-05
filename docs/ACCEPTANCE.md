@@ -51,14 +51,19 @@ curl 门编译真二进制、拉真进程、用真 `curl.exe` 打真 socket，�
 | `.\scripts\verify-m*.ps1` | 1060 条 curl 端到端断言 | **绿**：`curl gates (M0-M6, operator token)` job 在 run 37374000997 上 119 秒跑完，8 个门（M0–M6 + 管理面令牌门）全过 |
 
 两个 `go test` 步骤把整份 transcript 写进 `/tmp`，再由 `scripts/ci-summarize-go-test.sh`
-捕出失败测试与**完整的 DATA RACE 报告**，追加到 `$GITHUB_STEP_SUMMARY`；
-`if: always()` 让摘要出现在红的那一次，而不是只出现在绿的那一次。**这是刻意的**：
-首次上 CI 时 `-race` 那一步只留下了一句 “Process completed with exit code 1”，
-而 GitHub 的 job 日志需要仓库管理员权限才能下载（`GET /actions/jobs/{id}/logs` 返回 403）。
-第一版修法是把 `go test` 管进 `grep`，那样只让**有权限打开日志的人**看得见——
-第二次红的时候，注解还是那一句，于是有了现在这版。
-判据：`GET /repos/{o}/{r}/check-runs/{job_id}` 的 `output.summary` 匿名可读，
-里面应当直接写着失败的测试名或一份 race 报告。原始 transcript 另存为 `go-test-logs` artifact。
+捕出失败测试与**完整的 DATA RACE 报告**写成分片，最后由
+`scripts/ci-publish-failure-summary.sh` 用 `PATCH /check-runs/{id}` 把分片放进
+**check run 的 `output.summary`**；每一步都带 `if: always()`，所以这条路在红的那一次也走得通。
+
+为什么不是 `$GITHUB_STEP_SUMMARY`：那是文档写的方式，也确实**渲染在 UI 里**，但它
+**不会**填进 check-runs 的 `output.summary` —— 加了它的那次 run，check-run API 与
+匿名拉到的 job 页面 HTML 里都是空的（step summary 存在另一处、且不在公开 API 里）。
+job 日志（`GET /actions/jobs/{id}/logs` 需要仓库管理员权限）与 artifact 同样读不到。
+这条链试过三版：注解 → `grep` 进步骤日志 → `$GITHUB_STEP_SUMMARY`，前两版只是让
+**本来就有权限的人**看得见，第三版连匿名读者都看不见。
+
+判据：`GET /repos/{o}/{r}/check-runs/{id}` 里 `output.summary` 应当直接写着失败的测试名或一份
+race 报告；原始 transcript 另存为 `go-test-logs` artifact。
 
 ### 管理面鉴权（`access`）的证据边界
 
