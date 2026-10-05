@@ -70,6 +70,15 @@ type Request struct {
 	// X-InferGate-Upstream escape hatch: operators use it in production to
 	// drain a backend, and tests use it to make routing irrelevant.
 	Explicit string
+
+	// Messages is the request's serialised message array, kept in its raw form
+	// so the router can size the prompt without parsing it. It is only read by
+	// the "tiered" strategy.
+	Messages []byte
+
+	// MaxTokens is the completion ceiling the caller asked for, 0 when it
+	// asked for none. It is only read by the "tiered" strategy.
+	MaxTokens int
 }
 
 // PriceFunc reports the blended cost of one request for a model. The router
@@ -139,7 +148,7 @@ func (r *Router) Plan(req Request) ([]Candidate, error) {
 		}
 		return []Candidate{{
 			Target:  t,
-			Model:   modelFor(t, req.Model),
+			Model:   r.modelFor(t, req.Model),
 			Healthy: true,
 			Reason:  "pinned by X-InferGate-Upstream",
 		}}, nil
@@ -154,7 +163,7 @@ func (r *Router) Plan(req Request) ([]Candidate, error) {
 	for _, t := range targets {
 		cands = append(cands, Candidate{
 			Target:  t,
-			Model:   modelFor(t, req.Model),
+			Model:   r.modelFor(t, req.Model),
 			Healthy: r.healthy(t),
 		})
 	}
@@ -168,6 +177,8 @@ func (r *Router) Plan(req Request) ([]Candidate, error) {
 		return r.orderByLatency(cands), nil
 	case config.StrategyScore:
 		return r.orderByScore(cands, req.Model), nil
+	case config.StrategyTiered:
+		return r.orderTiered(cands, req), nil
 	default:
 		return r.orderByPriority(cands), nil
 	}
@@ -183,11 +194,16 @@ func (r *Router) eligible(req Request) []*upstream.Target {
 	out := make([]*upstream.Target, 0, len(all))
 	for _, t := range all {
 		if !t.ServesModel(req.Model) {
+			// A configured fallback_model widens eligibility to a backend that
+			// serves the fallback name but not the caller's: the request is
+			// sent to it under that name (see fallbackFor). A backend that
+			// serves neither name is still excluded.
+			//
 			// A single-backend deployment serves one quantisation and the agent
 			// framework sends an alias the gateway has never seen. M0 absorbed
 			// that case in the registry; the router must preserve it, or the
 			// most common local deployment breaks the moment M1 lands.
-			if !(t.IsCatchAll() || len(all) == 1) {
+			if r.fallbackFor(t, req.Model) == "" && !(t.IsCatchAll() || len(all) == 1) {
 				continue
 			}
 		}
@@ -218,14 +234,37 @@ func (r *Router) healthy(t *upstream.Target) bool {
 	return r.breakers.Get(t.Name).State() == breaker.StateClosed
 }
 
+// fallbackFor returns the configured fallback_model name to send to a backend,
+// or "" when the fallback does not apply.
+//
+// It applies only to a backend that declares CONCRETE model names and serves
+// neither the caller's name: that is the case routing.fallback_model exists
+// for, a provider whose catalogue uses a different vocabulary than the caller.
+// A catch-all is deliberately exempt -- it is defined by serving whatever it is
+// asked for, so rewriting it would break the deployment the catch-all pattern
+// is for -- and a backend that already serves the requested name is never
+// second-guessed.
+func (r *Router) fallbackFor(t *upstream.Target, requested string) string {
+	fb := strings.TrimSpace(r.cfg.FallbackModel)
+	if fb == "" || t.IsCatchAll() || t.ServesModel(requested) || !t.ServesModel(fb) {
+		return ""
+	}
+	return fb
+}
+
 // modelFor decides which model name to send to a backend.
 //
 // A catch-all backend receives the caller's model verbatim: it is the
 // pass-through case, and rewriting it would break a vLLM deployment that serves
 // exactly the alias the caller used. A backend that lists concrete models
 // receives the one it declared, because asking a single-model backend for a
-// name it never heard of is the most common 404 in local inference setups.
-func modelFor(t *upstream.Target, requested string) string {
+// name it never heard of is the most common 404 in local inference setups --
+// or, when routing.fallback_model is set and this backend serves that name, the
+// fallback name instead (see fallbackFor).
+func (r *Router) modelFor(t *upstream.Target, requested string) string {
+	if fb := r.fallbackFor(t, requested); fb != "" {
+		return fb
+	}
 	pat := t.ModelPatterns()
 	lowered := strings.ToLower(strings.TrimSpace(requested))
 	for _, p := range pat {
@@ -376,6 +415,120 @@ func (r *Router) orderByScore(cands []Candidate, model string) []Candidate {
 		cands[i].Reason = reasonFor(cands[i], "score")
 	}
 	return cands
+}
+
+// orderTiered ranks the tier the request was classified into ahead of the
+// other one.
+//
+// Neither tier is ever dropped from the plan. A hard request keeps the local
+// backends behind the cloud ones, because an unreachable provider is still
+// better answered by the local box than by an error; a simple request keeps the
+// cloud backends as the fallback that a local outage needs.
+//
+// Health outranks the tier, which is the one place this strategy yields to the
+// package-wide invariant that an unhealthy backend is never first. Without it,
+// a tripped local breaker would pin every simple request to a backend that is
+// known to be failing while a perfectly good cloud backend sat idle.
+func (r *Router) orderTiered(cands []Candidate, req Request) []Candidate {
+	preferred := r.tierFor(req)
+	sort.SliceStable(cands, func(i, j int) bool {
+		if cands[i].Healthy != cands[j].Healthy {
+			return cands[i].Healthy
+		}
+		ti, tj := tierRank(cands[i].Target.Tier(), preferred), tierRank(cands[j].Target.Tier(), preferred)
+		if ti != tj {
+			return ti < tj
+		}
+		// Inside a tier the ordering is the priority strategy's: priority
+		// number, then configuration order, so the whole plan stays explainable
+		// from the file.
+		return cands[i].Target.Priority() < cands[j].Target.Priority()
+	})
+	for i := range cands {
+		cands[i].Score = float64(tierRank(cands[i].Target.Tier(), preferred))
+		cands[i].Reason = tierReason(cands[i], preferred)
+	}
+	return cands
+}
+
+// tierFor classifies a request as simple (local) or hard (cloud).
+//
+// Hard means one of the things a small local model is likely to do badly: it
+// needs a capability only the cloud tier is assumed to have, it is larger than
+// the local tier is allowed to be asked for, or it asks for a longer answer
+// than the local tier is allowed to produce. Everything else is simple, which
+// is the default the strategy exists for: the cheap tier should carry the bulk
+// of the traffic.
+func (r *Router) tierFor(req Request) string {
+	tp := r.cfg.TierPolicy
+	for _, need := range req.Capabilities {
+		if containsFold(tp.CloudCapabilities, need) {
+			return config.TierCloud
+		}
+	}
+	if tp.LocalMaxPromptTokens > 0 && estimatePromptTokens(req.Messages) > tp.LocalMaxPromptTokens {
+		return config.TierCloud
+	}
+	if tp.LocalMaxCompletionTokens > 0 && req.MaxTokens > tp.LocalMaxCompletionTokens {
+		return config.TierCloud
+	}
+	return config.TierLocal
+}
+
+// estimatePromptTokens approximates a prompt's size at four characters per
+// token, over the request's serialised messages.
+//
+// It is deliberately an estimate and not a tokenizer. All it decides is which
+// side of an operator's round threshold a request falls on: being a few percent
+// out only matters for a prompt sitting exactly on the line, and that prompt is
+// one either tier could serve. A real tokenizer would mean shipping a
+// vocabulary and running it on the routing path for every request, which is a
+// dependency and a per-request cost that a coarse tier choice cannot justify.
+// Four characters per token is also the ratio the quota estimator uses
+// (config's EstimateCharsPerToken), so "a long prompt" means the same thing to
+// both decisions.
+func estimatePromptTokens(messages []byte) int {
+	return len(messages) / 4
+}
+
+// tierRank is the sort key for a candidate's tier: the preferred tier sorts
+// first, whatever it is.
+func tierRank(tier, preferred string) int {
+	if tier == preferred {
+		return 0
+	}
+	return 1
+}
+
+// containsFold reports whether list holds want, ignoring case and surrounding
+// space, which is how capability tags are matched everywhere else.
+func containsFold(list []string, want string) bool {
+	want = strings.ToLower(strings.TrimSpace(want))
+	for _, item := range list {
+		if strings.ToLower(strings.TrimSpace(item)) == want {
+			return true
+		}
+	}
+	return false
+}
+
+// tierReason renders the tiered decision in the same single-line form the other
+// strategies use. It names the candidate's own tier and the classification, so
+// one log line is enough to see why this backend was chosen without reading the
+// config back.
+func tierReason(c Candidate, preferred string) string {
+	tier := c.Target.Tier()
+	if !c.Healthy {
+		return fmt.Sprintf("strategy=tiered tier=%s reason=circuit open, only used as a last resort", tier)
+	}
+	kind := "simple"
+	if preferred == config.TierCloud {
+		kind = "hard"
+	}
+	if tier == preferred {
+		return fmt.Sprintf("strategy=tiered tier=%s reason=%s request prefers this tier", tier, kind)
+	}
+	return fmt.Sprintf("strategy=tiered tier=%s reason=%s request falls back to this tier", tier, kind)
 }
 
 // normalise maps values to 0..1 across the candidate set. Unmeasured values

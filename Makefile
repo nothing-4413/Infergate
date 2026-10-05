@@ -10,12 +10,12 @@
 
 GO ?= tools/go.cmd
 
-.PHONY: all build vet test verify verify-curl verify-m1 verify-m2 verify-m2-curl measure-m2 verify-m3 verify-m3-curl measure-m3 loadtest diag run-mock run-gateway run-fleet run-cache run-cache-redis run-miniredis run-quota run-quota-redis run-miniredis-quota clean help
+.PHONY: all build vet test verify verify-curl verify-m1 verify-m1-curl verify-m2 verify-m2-curl measure-m2 verify-m3 verify-m3-curl measure-m3 verify-m4 verify-m4-curl measure-m4 loadtest diag run-mock run-gateway run-fleet run-cache run-cache-redis run-miniredis run-quota run-quota-redis run-miniredis-quota run-tiered clean help
 
 all: build vet test
 
 help:
-	@echo "targets: build vet test verify verify-curl verify-m1 verify-m2 verify-m2-curl measure-m2 verify-m3 verify-m3-curl measure-m3 loadtest diag run-mock run-gateway run-fleet run-cache run-cache-redis run-miniredis run-quota run-quota-redis run-miniredis-quota clean"
+	@echo "targets: build vet test verify verify-curl verify-m1 verify-m1-curl verify-m2 verify-m2-curl measure-m2 verify-m3 verify-m3-curl measure-m3 verify-m4 verify-m4-curl measure-m4 loadtest diag run-mock run-gateway run-fleet run-cache run-cache-redis run-miniredis run-quota run-quota-redis run-miniredis-quota run-tiered clean"
 
 ## build: compile every package and emit the two binaries.
 build:
@@ -116,6 +116,34 @@ verify-m3-curl:
 ## Writes docs/baseline/m3-summary.json.  57 assertions of its own.
 measure-m3:
 	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/measure-m3.ps1
+
+## verify-m4: tiered local/cloud routing acceptance (877 assertions, the M4 CI
+## gate).  Classification is asserted against the router's own decisions and then
+## end to end through the assembled server, because a tier policy that is right in
+## the router but lost on the way to the proxy saves nothing.
+verify-m4:
+	$(GO) run ./cmd/verify-m4
+
+## verify-m4-curl: the same claims through the real binary and real curl.exe over
+## two mock tiers (a "local" one and a "cloud" one), so the gate needs no GPU and
+## runs anywhere.  The REAL vLLM local tier is measured by measure-m4 instead.
+## 125 assertions.
+verify-m4-curl:
+	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-m4.ps1
+
+## measure-m4: what the local tier is worth -- the fp16 vs AWQ vs GPTQ comparison
+## on the 8 GB card (latency, throughput, VRAM, and how far the quantized text
+## drifts from fp16), then a real tiered run against the real model with the split
+## and the cloud spend it displaced.  Needs vLLM inside the WSL distro.
+## Writes docs/baseline/m4-summary.json.
+measure-m4:
+	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/measure-m4.ps1
+
+## run-tiered: the M4 sample (configs/tiered-local.yaml) on :8080, local tier
+## served by vLLM inside WSL on :8000 and cloud tier by a mock on :9100.
+## Start the mock first:  $(GO) run ./cmd/mockupstream -listen :9100 -name cloud-mock
+run-tiered:
+	$(GO) run ./cmd/infergate -config configs/tiered-local.yaml
 
 ## run-quota: the M3 sample (configs/quota-local.yaml) on :8084, budgets counted
 ## in process memory.  Needs one mock in another shell:

@@ -1,0 +1,779 @@
+{
+    "generated_at":  "2026-10-05T20:56:46",
+    "host":  "LLX / Intel64 Family 6 Model 183 Stepping 1, GenuineIntel / 5.1.26100.9444",
+    "os":  "Microsoft Windows NT 10.0.26200.0",
+    "duration_s":  50.4,
+    "milestone":  "M4 - tiered local/cloud routing with a real local model",
+    "host_detail":  {
+                        "machine":  "LLX",
+                        "os":  "Microsoft Windows NT 10.0.26200.0",
+                        "processor":  "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+                        "powershell":  "5.1.26100.9444",
+                        "repo":  "C:\\Users\\20106\\Desktop\\infergate",
+                        "script":  "scripts\\measure-m4.ps1",
+                        "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\measure-m4.ps1",
+                        "duration_s":  50.4,
+                        "stamp":  "20261005-205555-101420"
+                    },
+    "gpu":  {
+                "name":  "NVIDIA GeForce RTX 4070 ...",
+                "driver_version":  "560.94",
+                "windows_nvidia_smi":  "NVIDIA GeForce RTX 4070 Laptop GPU, 560.94, 8188 MiB, 606 MiB, 14 %",
+                "windows_nvidia_smi_table":  "Mon Oct  5 20:56:06 2026       \n+-----------------------------------------------------------------------------------------+\n| NVIDIA-SMI 560.94                 Driver Version: 560.94         CUDA Version: 12.6     |\n|-----------------------------------------+------------------------+----------------------+\n| GPU  Name                  Driver-Model | Bus-Id          Disp.A | Volatile Uncorr. ECC |\n| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |\n|                                         |                        |               MIG M. |\n|=========================================+========================+======================|\n|   0  NVIDIA GeForce RTX 4070 ...  WDDM  |   00000000:01:00.0  On |                  N/A |\n| N/A   58C    P5              7W /   80W |     606MiB /   8188MiB |     18%      Default |\n|                                         |                        |                  N/A |\n+-----------------------------------------+------------------------+----------------------+\n                                                                                         \n+-----------------------------------------------------------------------------------------+\n| Processes:                                                                              |\n|  GPU   GI   CI        PID   Type   Process name                              GPU Memory |\n|        ID   ID                                                               Usage      |\n|=========================================================================================|\n|    0   N/A  N/A      2380    C+G   ...on\\154.0.4258.53\\msedgewebview2.exe      N/A      |\n|    0   N/A  N/A      2400    C+G   C:\\Windows\\System32\\NahimicSvc64.exe        N/A      |\n|    0   N/A  N/A      8736    C+G   ...crosoft\\Edge\\Application\\msedge.exe      N/A      |\n|    0   N/A  N/A      9012    C+G   ...on\\wallpaper_engine\\wallpaper32.exe      N/A      |\n|    0   N/A  N/A     10920    C+G   ...CBS_cw5n1h2txyewy\\TextInputHost.exe      N/A      |\n|    0   N/A  N/A     13712    C+G   ...on\\154.0.4258.53\\msedgewebview2.exe      N/A      |\n|    0   N/A  N/A     14360    C+G   C:\\Windows\\explorer.exe                     N/A      |\n|    0   N/A  N/A     14456    C+G   C:\\Windows\\System32\\ShellHost.exe           N/A      |\n|    0   N/A  N/A     15068    C+G   ...cw5n1h2txyewy\\CrossDeviceResume.exe      N/A      |\n|    0   N/A  N/A     15136    C+G   ...on\\154.0.4258.53\\msedgewebview2.exe      N/A      |\n|    0   N/A  N/A     16000    C+G   ...t.LockApp_cw5n1h2txyewy\\LockApp.exe      N/A      |\n|    0   N/A  N/A     16996    C+G   ...nt.CBS_cw5n1h2txyewy\\SearchHost.exe      N/A      |\n|    0   N/A  N/A     17020    C+G   ...2txyewy\\StartMenuExperienceHost.exe      N/A      |\n|    0   N/A  N/A     21512    C+G   ...on\\154.0.4258.53\\msedgewebview2.exe      N/A      |\n|    0   N/A  N/A     25316    C+G   ...5n1h2txyewy\\ShellExperienceHost.exe      N/A      |\n|    0   N/A  N/A     27068    C+G   ...in\\cef\\cef.win64\\steamwebhelper.exe      N/A      |\n|    0   N/A  N/A     27612    C+G   ...on\\154.0.4258.53\\msedgewebview2.exe      N/A      |\n|    0   N/A  N/A     29256    C+G   ...ekyb3d8bbwe\\PhoneExperienceHost.exe      N/A      |\n|    0   N/A  N/A     29728    C+G   ...s\\System32\\ApplicationFrameHost.exe      N/A      |\n|    0   N/A  N/A     29764    C+G   ...3.0_x64__w2gh52qy24etm\\Nahimic3.exe      N/A      |\n|    0   N/A  N/A     32796    C+G   ...3542\\office6\\promecefpluginhost.exe      N/A      |\n+-----------------------------------------------------------------------------------------+\n",
+                "wsl_nvidia_smi":  "NVIDIA GeForce RTX 4070 Laptop GPU, 560.94, 8188 MiB, 606 MiB, 14 %",
+                "wsl_nvidia_smi_table":  "Mon Oct  5 20:56:07 2026       \r\n+-----------------------------------------------------------------------------------------+\r\n| NVIDIA-SMI 560.35.02              Driver Version: 560.94         CUDA Version: 12.6     |\r\n|-----------------------------------------+------------------------+----------------------+\r\n| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |\r\n| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |\r\n|                                         |                        |               MIG M. |\r\n|=========================================+========================+======================|\r\n|   0  NVIDIA GeForce RTX 4070 ...    On  |   00000000:01:00.0  On |                  N/A |\r\n| N/A   58C    P5              7W /   80W |     606MiB /   8188MiB |     13%      Default |\r\n|                                         |                        |                  N/A |\r\n+-----------------------------------------+------------------------+----------------------+\r\n                                                                                         \r\n+-----------------------------------------------------------------------------------------+\r\n| Processes:                                                                              |\r\n|  GPU   GI   CI        PID   Type   Process name                              GPU Memory |\r\n|        ID   ID                                                               Usage      |\r\n|=========================================================================================|\r\n|    0   N/A  N/A        25      G   /Xwayland                                   N/A      |\r\n|    0   N/A  N/A      1845      C   /python3.12                                 N/A      |\r\n+-----------------------------------------------------------------------------------------+",
+                "vram_total_mb_note":  "nvidia-smi memory.used is TOTAL VRAM in use; the Windows desktop holds roughly 1.8 GiB of this 8188 MiB laptop GPU before any model loads, so a model footprint is always the DELTA and its noise floor is about 50 MiB"
+            },
+    "runtime":  {
+                    "wsl_distro":  "Ubuntu24",
+                    "kernel":  "5.15.167.4-microsoft-standard-WSL2",
+                    "kernel_full":  "Linux llx 5.15.167.4-microsoft-standard-WSL2 #1 SMP Tue Nov 5 00:21:55 UTC 2024 x86_64 x86_64 x86_64 GNU/Linux",
+                    "vllm":  "0.11.0",
+                    "vllm_bin":  "/opt/vllm/bin/vllm",
+                    "torch":  "2.8.0+cu128",
+                    "cuda":  "12.8",
+                    "python":  "3.12.3"
+                },
+    "method":  {
+                   "quantization":  "scripts/bench-vllm-quant.sh (real vLLM), one variant at a time, load -\u003e warmup -\u003e 12 measured streaming requests at concurrency 1 -\u003e unload; the client is scripts/bench_vllm_quant.py",
+                   "tiering":  "the SAME real vLLM serves the gateway\u0027s local tier while cmd\\mockupstream stands in for the cloud tier; a known mix of simple and hard requests goes through the gateway with curl.exe and the split is read back from GET /stats",
+                   "routing_split_source":  "GET /stats -\u003e series[] per upstream request counts, and tokens{prompt,completion}",
+                   "per_tier_latency_source":  "client-side wall clock per request, attributed by the X-InferGate-Upstream-Name response header (see tiering.latency.note)",
+                   "cost_source":  "derived from the pricing block of the config that was actually loaded plus the usage block of every response; there is no cost metric on any surface",
+                   "host_shared":  "one laptop GPU, shared with the Windows desktop, concurrency 1, a single run: these are measurements, not a benchmark suite"
+               },
+    "environment":  {
+                        "models":  {
+                                       "fp16":  {
+                                                    "dir":  "/opt/models/fp16",
+                                                    "present":  true,
+                                                    "files":  11,
+                                                    "safetensors_bytes":  3087467144,
+                                                    "config_json":  "yes",
+                                                    "runnable":  true,
+                                                    "raw":  "variant=fp16 state=present files=11 safetensors=3087467144 config_json=yes"
+                                                },
+                                       "awq":  {
+                                                   "dir":  "/opt/models/awq",
+                                                   "present":  true,
+                                                   "files":  10,
+                                                   "safetensors_bytes":  1614553840,
+                                                   "config_json":  "yes",
+                                                   "runnable":  true,
+                                                   "raw":  "variant=awq state=present files=10 safetensors=1614553840 config_json=yes"
+                                               },
+                                       "gptq":  {
+                                                    "dir":  "/opt/models/gptq",
+                                                    "present":  true,
+                                                    "files":  11,
+                                                    "safetensors_bytes":  1149862960,
+                                                    "config_json":  "yes",
+                                                    "runnable":  true,
+                                                    "raw":  "variant=gptq state=present files=11 safetensors=1149862960 config_json=yes"
+                                                }
+                                   }
+                    },
+    "quantization":  {
+                         "variants":  [
+                                          {
+                                              "variant":  "fp16",
+                                              "measured":  true,
+                                              "model":  "local-chat",
+                                              "n":  12,
+                                              "requests_attempted":  12,
+                                              "errors":  0,
+                                              "errors_source":  "tmp\\m4-quant-\u003cvariant\u003e.json field `errors` (an integer); requests[] carries error: null on all n entries and warmup_errors[] is empty",
+                                              "request_error_count":  0,
+                                              "warmup_error_count":  0,
+                                              "ttft_ms":  {
+                                                              "max":  38.629,
+                                                              "mean":  34.114,
+                                                              "min":  28.215,
+                                                              "n":  12,
+                                                              "p50":  35.182,
+                                                              "p95":  37.998
+                                                          },
+                                              "total_ms":  {
+                                                               "max":  3204.345,
+                                                               "mean":  1809.226,
+                                                               "min":  453.436,
+                                                               "n":  12,
+                                                               "p50":  1758.479,
+                                                               "p95":  3195.894
+                                                           },
+                                              "completion_chars":  {
+                                                                       "max":  636.0,
+                                                                       "mean":  294.167,
+                                                                       "min":  51.0,
+                                                                       "n":  12,
+                                                                       "p50":  202.0,
+                                                                       "p95":  606.85
+                                                                   },
+                                              "throughput":  {
+                                                                 "note":  "output_tokens_per_s_request_wall divides by the summed per-request wall time (excludes client/HTTP gaps); output_tokens_per_s_wall_clock divides by the whole measured wall clock including those gaps. Sequential requests only.",
+                                                                 "output_tokens_per_s_request_wall":  41.546,
+                                                                 "output_tokens_per_s_wall_clock":  41.545,
+                                                                 "requests_per_s":  0.553,
+                                                                 "summed_completion_tokens":  902,
+                                                                 "summed_prompt_tokens":  904,
+                                                                 "summed_request_wall_s":  21.711,
+                                                                 "wall_clock_s":  21.711
+                                                             },
+                                              "protocol":  {
+                                                               "concurrency":  1,
+                                                               "endpoint":  "/v1/chat/completions",
+                                                               "max_tokens":  128,
+                                                               "seed":  0,
+                                                               "sequential":  true,
+                                                               "stream":  true,
+                                                               "temperature":  0,
+                                                               "warmup_requests":  2
+                                                           },
+                                              "agreement":  null,
+                                              "agreement_note":  "no reference: the reference path is this run\u0027s own texts file (/mnt/c/Users/20106/Desktop/infergate/tmp/m4-quant-fp16.texts.json); a variant compared with itself says nothing. This is what happens when --variant fp16 runs first.",
+                                              "usage_source":  "api",
+                                              "created_utc":  "2026-10-05T12:20:40Z",
+                                              "artifact":  "tmp\\m4-quant-fp16.json",
+                                              "server_log":  "/mnt/c/Users/20106/Desktop/infergate/tmp/vllm-fp16.log",
+                                              "load_seconds":  58.0,
+                                              "vram_baseline_mb":  1766.0,
+                                              "vram_used_after_load_mb":  7935.0,
+                                              "vram_delta_mb":  6169.0,
+                                              "vram_released_mb":  7560.0,
+                                              "bench_status":  "ok"
+                                          },
+                                          {
+                                              "variant":  "awq",
+                                              "measured":  true,
+                                              "model":  "local-chat",
+                                              "n":  12,
+                                              "requests_attempted":  12,
+                                              "errors":  0,
+                                              "errors_source":  "tmp\\m4-quant-\u003cvariant\u003e.json field `errors` (an integer); requests[] carries error: null on all n entries and warmup_errors[] is empty",
+                                              "request_error_count":  0,
+                                              "warmup_error_count":  0,
+                                              "ttft_ms":  {
+                                                              "max":  35.861,
+                                                              "mean":  27.284,
+                                                              "min":  21.116,
+                                                              "n":  12,
+                                                              "p50":  28.135,
+                                                              "p95":  34.159
+                                                          },
+                                              "total_ms":  {
+                                                               "max":  1445.703,
+                                                               "mean":  740.184,
+                                                               "min":  195.908,
+                                                               "n":  12,
+                                                               "p50":  699.528,
+                                                               "p95":  1342.742
+                                                           },
+                                              "completion_chars":  {
+                                                                       "max":  603.0,
+                                                                       "mean":  292.083,
+                                                                       "min":  53.0,
+                                                                       "n":  12,
+                                                                       "p50":  222.0,
+                                                                       "p95":  560.1
+                                                                   },
+                                              "throughput":  {
+                                                                 "note":  "output_tokens_per_s_request_wall divides by the summed per-request wall time (excludes client/HTTP gaps); output_tokens_per_s_wall_clock divides by the whole measured wall clock including those gaps. Sequential requests only.",
+                                                                 "output_tokens_per_s_request_wall":  100.651,
+                                                                 "output_tokens_per_s_wall_clock":  100.645,
+                                                                 "requests_per_s":  1.351,
+                                                                 "summed_completion_tokens":  894,
+                                                                 "summed_prompt_tokens":  904,
+                                                                 "summed_request_wall_s":  8.882,
+                                                                 "wall_clock_s":  8.883
+                                                             },
+                                              "protocol":  {
+                                                               "concurrency":  1,
+                                                               "endpoint":  "/v1/chat/completions",
+                                                               "max_tokens":  128,
+                                                               "seed":  0,
+                                                               "sequential":  true,
+                                                               "stream":  true,
+                                                               "temperature":  0,
+                                                               "warmup_requests":  2
+                                                           },
+                                              "agreement":  {
+                                                                "caveat":  "agreement with fp16 text, NOT accuracy; one greedy sample per prompt; a different but equally correct answer counts as drift",
+                                                                "compared_requests":  12,
+                                                                "exact_match_definition":  "identical after whitespace normalisation",
+                                                                "exact_match_rate":  0.0,
+                                                                "mean_completion_chars":  292.083,
+                                                                "mean_reference_completion_chars":  294.167,
+                                                                "mean_token_overlap":  0.444,
+                                                                "reference_file":  "/mnt/c/Users/20106/Desktop/infergate/tmp/m4-quant-fp16.texts.json",
+                                                                "reference_variant":  "fp16",
+                                                                "token_overlap_definition":  "mean set-Jaccard over lowercased whitespace tokens: |A and B| / |A or B| with repeated words counted ONCE, not the model\u0027s tokenizer",
+                                                                "unmatched_requests":  0
+                                                            },
+                                              "agreement_note":  null,
+                                              "usage_source":  "api",
+                                              "created_utc":  "2026-10-05T12:34:04Z",
+                                              "artifact":  "tmp\\m4-quant-awq.json",
+                                              "server_log":  "/mnt/c/Users/20106/Desktop/infergate/tmp/vllm-awq.log",
+                                              "load_seconds":  60.0,
+                                              "vram_baseline_mb":  982.0,
+                                              "vram_used_after_load_mb":  7903.0,
+                                              "vram_delta_mb":  6921.0,
+                                              "vram_released_mb":  7299.0,
+                                              "bench_status":  "ok"
+                                          },
+                                          {
+                                              "variant":  "gptq",
+                                              "measured":  true,
+                                              "model":  "local-chat",
+                                              "n":  12,
+                                              "requests_attempted":  12,
+                                              "errors":  0,
+                                              "errors_source":  "tmp\\m4-quant-\u003cvariant\u003e.json field `errors` (an integer); requests[] carries error: null on all n entries and warmup_errors[] is empty",
+                                              "request_error_count":  0,
+                                              "warmup_error_count":  0,
+                                              "ttft_ms":  {
+                                                              "max":  32.528,
+                                                              "mean":  26.79,
+                                                              "min":  19.871,
+                                                              "n":  12,
+                                                              "p50":  28.676,
+                                                              "p95":  32.036
+                                                          },
+                                              "total_ms":  {
+                                                               "max":  1435.425,
+                                                               "mean":  825.979,
+                                                               "min":  198.712,
+                                                               "n":  12,
+                                                               "p50":  723.615,
+                                                               "p95":  1402.265
+                                                           },
+                                              "completion_chars":  {
+                                                                       "max":  681.0,
+                                                                       "mean":  315.417,
+                                                                       "min":  52.0,
+                                                                       "n":  12,
+                                                                       "p50":  269.5,
+                                                                       "p95":  660.1
+                                                                   },
+                                              "throughput":  {
+                                                                 "note":  "output_tokens_per_s_request_wall divides by the summed per-request wall time (excludes client/HTTP gaps); output_tokens_per_s_wall_clock divides by the whole measured wall clock including those gaps. Sequential requests only.",
+                                                                 "output_tokens_per_s_request_wall":  95.341,
+                                                                 "output_tokens_per_s_wall_clock":  95.336,
+                                                                 "requests_per_s":  1.211,
+                                                                 "summed_completion_tokens":  945,
+                                                                 "summed_prompt_tokens":  904,
+                                                                 "summed_request_wall_s":  9.912,
+                                                                 "wall_clock_s":  9.912
+                                                             },
+                                              "protocol":  {
+                                                               "concurrency":  1,
+                                                               "endpoint":  "/v1/chat/completions",
+                                                               "max_tokens":  128,
+                                                               "seed":  0,
+                                                               "sequential":  true,
+                                                               "stream":  true,
+                                                               "temperature":  0,
+                                                               "warmup_requests":  2
+                                                           },
+                                              "agreement":  {
+                                                                "caveat":  "agreement with fp16 text, NOT accuracy; one greedy sample per prompt; a different but equally correct answer counts as drift",
+                                                                "compared_requests":  12,
+                                                                "exact_match_definition":  "identical after whitespace normalisation",
+                                                                "exact_match_rate":  0.083,
+                                                                "mean_completion_chars":  315.417,
+                                                                "mean_reference_completion_chars":  294.167,
+                                                                "mean_token_overlap":  0.46,
+                                                                "reference_file":  "/mnt/c/Users/20106/Desktop/infergate/tmp/m4-quant-fp16.texts.json",
+                                                                "reference_variant":  "fp16",
+                                                                "token_overlap_definition":  "mean set-Jaccard over lowercased whitespace tokens: |A and B| / |A or B| with repeated words counted ONCE, not the model\u0027s tokenizer",
+                                                                "unmatched_requests":  0
+                                                            },
+                                              "agreement_note":  null,
+                                              "usage_source":  "api",
+                                              "created_utc":  "2026-10-05T12:23:03Z",
+                                              "artifact":  "tmp\\m4-quant-gptq.json",
+                                              "server_log":  "/mnt/c/Users/20106/Desktop/infergate/tmp/vllm-gptq.log",
+                                              "load_seconds":  55.0,
+                                              "vram_baseline_mb":  568.0,
+                                              "vram_used_after_load_mb":  7921.0,
+                                              "vram_delta_mb":  7353.0,
+                                              "vram_released_mb":  7403.0,
+                                              "bench_status":  "ok"
+                                          }
+                                      ],
+                         "measured":  3,
+                         "compared":  [
+                                          {
+                                              "variant":  "awq",
+                                              "reference":  "fp16",
+                                              "ttft_p50_ms":  {
+                                                                  "fp16":  35.182,
+                                                                  "variant":  28.135,
+                                                                  "delta_ms":  -7.047
+                                                              },
+                                              "total_p50_ms":  {
+                                                                   "fp16":  1758.479,
+                                                                   "variant":  699.528,
+                                                                   "delta_ms":  -1058.951
+                                                               },
+                                              "output_tokens_per_s":  {
+                                                                          "fp16":  41.546,
+                                                                          "variant":  100.651,
+                                                                          "ratio":  2.423
+                                                                      },
+                                              "vram_delta_mb":  {
+                                                                    "fp16":  6169.0,
+                                                                    "variant":  6921.0,
+                                                                    "saved_mb":  -752
+                                                                },
+                                              "load_seconds":  {
+                                                                   "fp16":  58.0,
+                                                                   "variant":  60.0
+                                                               },
+                                              "agreement_vs_fp16":  {
+                                                                        "caveat":  "agreement with fp16 text, NOT accuracy; one greedy sample per prompt; a different but equally correct answer counts as drift",
+                                                                        "compared_requests":  12,
+                                                                        "exact_match_definition":  "identical after whitespace normalisation",
+                                                                        "exact_match_rate":  0.0,
+                                                                        "mean_completion_chars":  292.083,
+                                                                        "mean_reference_completion_chars":  294.167,
+                                                                        "mean_token_overlap":  0.444,
+                                                                        "reference_file":  "/mnt/c/Users/20106/Desktop/infergate/tmp/m4-quant-fp16.texts.json",
+                                                                        "reference_variant":  "fp16",
+                                                                        "token_overlap_definition":  "mean set-Jaccard over lowercased whitespace tokens: |A and B| / |A or B| with repeated words counted ONCE, not the model\u0027s tokenizer",
+                                                                        "unmatched_requests":  0
+                                                                    },
+                                              "agreement_meaning":  "DRIFT: how much the quantized answer text differs from the fp16 reference text. It is NOT an accuracy or quality score.",
+                                              "signal_to_noise":  "single run each; no repeats, so this is a difference, not a distribution"
+                                          },
+                                          {
+                                              "variant":  "gptq",
+                                              "reference":  "fp16",
+                                              "ttft_p50_ms":  {
+                                                                  "fp16":  35.182,
+                                                                  "variant":  28.676,
+                                                                  "delta_ms":  -6.506
+                                                              },
+                                              "total_p50_ms":  {
+                                                                   "fp16":  1758.479,
+                                                                   "variant":  723.615,
+                                                                   "delta_ms":  -1034.864
+                                                               },
+                                              "output_tokens_per_s":  {
+                                                                          "fp16":  41.546,
+                                                                          "variant":  95.341,
+                                                                          "ratio":  2.295
+                                                                      },
+                                              "vram_delta_mb":  {
+                                                                    "fp16":  6169.0,
+                                                                    "variant":  7353.0,
+                                                                    "saved_mb":  -1184
+                                                                },
+                                              "load_seconds":  {
+                                                                   "fp16":  58.0,
+                                                                   "variant":  55.0
+                                                               },
+                                              "agreement_vs_fp16":  {
+                                                                        "caveat":  "agreement with fp16 text, NOT accuracy; one greedy sample per prompt; a different but equally correct answer counts as drift",
+                                                                        "compared_requests":  12,
+                                                                        "exact_match_definition":  "identical after whitespace normalisation",
+                                                                        "exact_match_rate":  0.083,
+                                                                        "mean_completion_chars":  315.417,
+                                                                        "mean_reference_completion_chars":  294.167,
+                                                                        "mean_token_overlap":  0.46,
+                                                                        "reference_file":  "/mnt/c/Users/20106/Desktop/infergate/tmp/m4-quant-fp16.texts.json",
+                                                                        "reference_variant":  "fp16",
+                                                                        "token_overlap_definition":  "mean set-Jaccard over lowercased whitespace tokens: |A and B| / |A or B| with repeated words counted ONCE, not the model\u0027s tokenizer",
+                                                                        "unmatched_requests":  0
+                                                                    },
+                                              "agreement_meaning":  "DRIFT: how much the quantized answer text differs from the fp16 reference text. It is NOT an accuracy or quality score.",
+                                              "signal_to_noise":  "single run each; no repeats, so this is a difference, not a distribution"
+                                          }
+                                      ],
+                         "model_provenance":  {
+                                                  "fp16":  {
+                                                               "model_dir":  "/opt/models/fp16",
+                                                               "safetensors":  "model.safetensors",
+                                                               "file_bytes":  3087467144,
+                                                               "mtime_local":  "2026-10-05T20:13:23+08:00",
+                                                               "hf_cache_entry":  "models--Qwen--Qwen2.5-1.5B-Instruct",
+                                                               "source_hint":  "huggingface / hf-mirror (root/.cache/huggingface/hub)"
+                                                           },
+                                                  "awq":  {
+                                                              "model_dir":  "/opt/models/awq",
+                                                              "safetensors":  "model.safetensors",
+                                                              "file_bytes":  1614553840,
+                                                              "mtime_local":  "2026-10-05T20:30:08+08:00",
+                                                              "hf_cache_entry":  "models--Qwen--Qwen2.5-1.5B-Instruct-AWQ",
+                                                              "source_hint":  "ModelScope (https://www.modelscope.cn/api/v1/models/Qwen/Qwen2.5-1.5B-Instruct-AWQ/repo?Revision=master\u0026FilePath=model.safetensors) after the hf-mirror transfer stalled at 732 MB"
+                                                          },
+                                                  "gptq":  {
+                                                               "model_dir":  "/opt/models/gptq",
+                                                               "safetensors":  "model.safetensors",
+                                                               "file_bytes":  1149862960,
+                                                               "mtime_local":  "2026-10-05T20:14:56+08:00",
+                                                               "hf_cache_entry":  "models--Qwen--Qwen2.5-1.5B-Instruct-GPTQ-Int4",
+                                                               "source_hint":  "huggingface / hf-mirror (root/.cache/huggingface/hub)"
+                                                           },
+                                                  "note":  "file_bytes and mtime_local are read with stat(1) at measure time; source_hint records how the checkpoint was fetched (hf-mirror vs ModelScope) and is not re-verified against the network here.",
+                                                  "download_process_seen_at_start":  ""
+                                              },
+                         "awq_wait":  "not attempted",
+                         "bench_variants_run":  [
+                                                    "fp16",
+                                                    "awq",
+                                                    "gptq"
+                                                ],
+                         "skip_bench":  true,
+                         "note":  "agreement (where present) is DRIFT against the fp16 reference text -- exact_match_rate and mean_token_overlap measure how much the quantized answer differs from fp16, NOT whether either answer is correct"
+                     },
+    "tiering":  {
+                    "measured":  true,
+                    "local_variant":  "awq",
+                    "gateway_port":  18410,
+                    "local_tier":  {
+                                       "upstream":  "local-vllm",
+                                       "base_url":  "http://127.0.0.1:8000",
+                                       "kind":  "real vLLM in WSL",
+                                       "variant":  "awq",
+                                       "model_dir":  "/opt/models/awq",
+                                       "served_model_name":  "local-chat",
+                                       "max_model_len":  4096,
+                                       "gpu_memory_utilization":  0.85,
+                                       "ready_seconds":  25,
+                                       "pid":  7293,
+                                       "reported_model_id":  "local-chat",
+                                       "log":  "tmp\\m4-measure-vllm.log"
+                                   },
+                    "cloud_tier":  {
+                                       "upstream":  "cloud-mock",
+                                       "base_url":  "http://127.0.0.1:19620",
+                                       "kind":  "cmd\\mockupstream (in-repo stand-in, NOT a real cloud provider)",
+                                       "note":  "the stand-in answers instantly, so the cross-tier latency difference is a property of this stand-in plus the real local model, never a comparison with a real cloud API"
+                                   },
+                    "config":  {
+                                   "source":  "configs\\tiered-local.yaml",
+                                   "instance":  "tmp\\m4-measure-20261005-205555-101420.yaml",
+                                   "strategy":  "tiered",
+                                   "local_max_prompt_tokens":  400,
+                                   "local_max_completion_tokens":  256,
+                                   "cloud_capabilities":  [
+                                                              "tools",
+                                                              "vision"
+                                                          ],
+                                   "note":  "configs\\ is never modified: only the literal listen port and the two upstream URLs are substituted"
+                               },
+                    "mix":  {
+                                "requests_total":  16,
+                                "simple_per_kind":  8,
+                                "hard_per_kind":  8,
+                                "simple_definition":  "short prompt (~42 chars), max_tokens 96",
+                                "hard_definition":  "2444 chars of user text (2400 required by the brief), max_tokens 96",
+                                "served_locally":  8,
+                                "served_by_cloud":  8,
+                                "local_share_percent":  50,
+                                "wall_seconds":  5.3,
+                                "simple_results":  [
+                                                       {
+                                                           "index":  1,
+                                                           "tier":  "local-vllm",
+                                                           "status":  "200",
+                                                           "client_ms":  946.226,
+                                                           "local_spend_usd":  6.993E-05,
+                                                           "prompt_tokens":  39,
+                                                           "completion_tokens":  54,
+                                                           "usage_present":  true,
+                                                           "content_chars":  281,
+                                                           "content":  "The water cycle is the continuous movement of water on Earth, including evaporation from oceans and land surfaces, condensation into clouds, precipitation as rain or snow, infiltration into soil, run-off to rivers and lakes, and eventual flow back into oceans through sea currents."
+                                                       },
+                                                       {
+                                                           "index":  2,
+                                                           "tier":  "local-vllm",
+                                                           "status":  "200",
+                                                           "client_ms":  524.517,
+                                                           "local_spend_usd":  6.663E-05,
+                                                           "prompt_tokens":  39,
+                                                           "completion_tokens":  51,
+                                                           "usage_present":  true,
+                                                           "content_chars":  277,
+                                                           "content":  "The water cycle describes how water moves through various states on Earth, including evaporation from oceans and land surfaces, condensation into clouds, precipitation as rain or snow, collection on land, and runoff back to bodies of water, repeating this process continuously."
+                                                       },
+                                                       {
+                                                           "index":  3,
+                                                           "tier":  "local-vllm",
+                                                           "status":  "200",
+                                                           "client_ms":  560.434,
+                                                           "local_spend_usd":  7.433E-05,
+                                                           "prompt_tokens":  39,
+                                                           "completion_tokens":  58,
+                                                           "usage_present":  true,
+                                                           "content_chars":  330,
+                                                           "content":  "The water cycle describes the continuous movement of water on Earth, including evaporation from oceans and land surfaces, condensation into clouds, precipitation as rain or snow, infiltration into soil and groundwater, runoff to rivers and lakes, and circulation back into the atmosphere through transpiration and other processes."
+                                                       },
+                                                       {
+                                                           "index":  4,
+                                                           "tier":  "local-vllm",
+                                                           "status":  "200",
+                                                           "client_ms":  616.959,
+                                                           "local_spend_usd":  8.093E-05,
+                                                           "prompt_tokens":  39,
+                                                           "completion_tokens":  64,
+                                                           "usage_present":  true,
+                                                           "content_chars":  339,
+                                                           "content":  "The water cycle is the continuous movement of water on Earth, including evaporation from oceans and land surfaces, condensation into clouds, precipitation as rain or snow, collection on land and bodies of water, runoff to rivers and lakes, infiltration into soil, transpiration back into atmosphere, and repeated cycles of these processes."
+                                                       },
+                                                       {
+                                                           "index":  5,
+                                                           "tier":  "local-vllm",
+                                                           "status":  "200",
+                                                           "client_ms":  440.123,
+                                                           "local_spend_usd":  5.893E-05,
+                                                           "prompt_tokens":  39,
+                                                           "completion_tokens":  44,
+                                                           "usage_present":  true,
+                                                           "content_chars":  225,
+                                                           "content":  "The water cycle describes how water moves through various phases (solid, liquid, and gas) across the Earth\u0027s surface and atmosphere, including evaporation, condensation, precipitation, infiltration, runoff, and transpiration."
+                                                       },
+                                                       {
+                                                           "index":  6,
+                                                           "tier":  "local-vllm",
+                                                           "status":  "200",
+                                                           "client_ms":  520.888,
+                                                           "local_spend_usd":  6.773E-05,
+                                                           "prompt_tokens":  39,
+                                                           "completion_tokens":  52,
+                                                           "usage_present":  true,
+                                                           "content_chars":  289,
+                                                           "content":  "The water cycle describes how water moves through the Earth system, circulating between oceans, land, and atmosphere, including evaporation, condensation, precipitation, infiltration, runoff, transpiration, freezing, melting, and other processes that redistribute freshwater on our planet."
+                                                       },
+                                                       {
+                                                           "index":  7,
+                                                           "tier":  "local-vllm",
+                                                           "status":  "200",
+                                                           "client_ms":  577.485,
+                                                           "local_spend_usd":  7.433E-05,
+                                                           "prompt_tokens":  39,
+                                                           "completion_tokens":  58,
+                                                           "usage_present":  true,
+                                                           "content_chars":  324,
+                                                           "content":  "The water cycle describes the continuous movement of water on Earth, including evaporation from oceans and land surfaces, condensation into clouds, precipitation as rain or snow, infiltration into soil and groundwater, runoff to bodies of water, and eventually return to the atmosphere through transpiration and evaporation."
+                                                       },
+                                                       {
+                                                           "index":  8,
+                                                           "tier":  "local-vllm",
+                                                           "status":  "200",
+                                                           "client_ms":  402.805,
+                                                           "local_spend_usd":  5.453E-05,
+                                                           "prompt_tokens":  39,
+                                                           "completion_tokens":  40,
+                                                           "usage_present":  true,
+                                                           "content_chars":  203,
+                                                           "content":  "The water cycle is the continuous movement of water on Earth, including evaporation from the surface, condensation into clouds, precipitation as rain or snow, and collection back onto the land or oceans."
+                                                       }
+                                                   ],
+                                "hard_results":  [
+                                                     {
+                                                         "index":  1,
+                                                         "tier":  "cloud-mock",
+                                                         "status":  "200",
+                                                         "client_ms":  75.364,
+                                                         "local_spend_usd":  0.00012979,
+                                                         "prompt_tokens":  387,
+                                                         "completion_tokens":  23,
+                                                         "usage_present":  true,
+                                                         "content_chars":  140,
+                                                         "content":  "mock answer to \"The following is a long technical note about inference routing. The following is a long technical note about inference r...\""
+                                                     },
+                                                     {
+                                                         "index":  2,
+                                                         "tier":  "cloud-mock",
+                                                         "status":  "200",
+                                                         "client_ms":  65.854,
+                                                         "local_spend_usd":  0.00012979,
+                                                         "prompt_tokens":  387,
+                                                         "completion_tokens":  23,
+                                                         "usage_present":  true,
+                                                         "content_chars":  140,
+                                                         "content":  "mock answer to \"The following is a long technical note about inference routing. The following is a long technical note about inference r...\""
+                                                     },
+                                                     {
+                                                         "index":  3,
+                                                         "tier":  "cloud-mock",
+                                                         "status":  "200",
+                                                         "client_ms":  85.893,
+                                                         "local_spend_usd":  0.00012979,
+                                                         "prompt_tokens":  387,
+                                                         "completion_tokens":  23,
+                                                         "usage_present":  true,
+                                                         "content_chars":  140,
+                                                         "content":  "mock answer to \"The following is a long technical note about inference routing. The following is a long technical note about inference r...\""
+                                                     },
+                                                     {
+                                                         "index":  4,
+                                                         "tier":  "cloud-mock",
+                                                         "status":  "200",
+                                                         "client_ms":  68.45,
+                                                         "local_spend_usd":  0.00012979,
+                                                         "prompt_tokens":  387,
+                                                         "completion_tokens":  23,
+                                                         "usage_present":  true,
+                                                         "content_chars":  140,
+                                                         "content":  "mock answer to \"The following is a long technical note about inference routing. The following is a long technical note about inference r...\""
+                                                     },
+                                                     {
+                                                         "index":  5,
+                                                         "tier":  "cloud-mock",
+                                                         "status":  "200",
+                                                         "client_ms":  71.835,
+                                                         "local_spend_usd":  0.00012979,
+                                                         "prompt_tokens":  387,
+                                                         "completion_tokens":  23,
+                                                         "usage_present":  true,
+                                                         "content_chars":  140,
+                                                         "content":  "mock answer to \"The following is a long technical note about inference routing. The following is a long technical note about inference r...\""
+                                                     },
+                                                     {
+                                                         "index":  6,
+                                                         "tier":  "cloud-mock",
+                                                         "status":  "200",
+                                                         "client_ms":  65.961,
+                                                         "local_spend_usd":  0.00012979,
+                                                         "prompt_tokens":  387,
+                                                         "completion_tokens":  23,
+                                                         "usage_present":  true,
+                                                         "content_chars":  140,
+                                                         "content":  "mock answer to \"The following is a long technical note about inference routing. The following is a long technical note about inference r...\""
+                                                     },
+                                                     {
+                                                         "index":  7,
+                                                         "tier":  "cloud-mock",
+                                                         "status":  "200",
+                                                         "client_ms":  135.244,
+                                                         "local_spend_usd":  0.00012979,
+                                                         "prompt_tokens":  387,
+                                                         "completion_tokens":  23,
+                                                         "usage_present":  true,
+                                                         "content_chars":  140,
+                                                         "content":  "mock answer to \"The following is a long technical note about inference routing. The following is a long technical note about inference r...\""
+                                                     },
+                                                     {
+                                                         "index":  8,
+                                                         "tier":  "cloud-mock",
+                                                         "status":  "200",
+                                                         "client_ms":  62.111,
+                                                         "local_spend_usd":  0.00012979,
+                                                         "prompt_tokens":  387,
+                                                         "completion_tokens":  23,
+                                                         "usage_present":  true,
+                                                         "content_chars":  140,
+                                                         "content":  "mock answer to \"The following is a long technical note about inference routing. The following is a long technical note about inference r...\""
+                                                     }
+                                                 ]
+                            },
+                    "stats_series_delta":  {
+                                               "local_vllm":  8,
+                                               "cloud_mock":  8,
+                                               "tokens_prompt":  3408,
+                                               "tokens_completion":  605
+                                           },
+                    "latency":  {
+                                    "source":  "client-side wall clock around curl (Invoke-Http), one tier per request",
+                                    "note":  "/stats exposes per-upstream request COUNT, mean and total seconds, but NOT per-upstream latency percentiles -- its latency p50/p90/p95/p99 block is computed over every request the gateway served. Per-tier percentiles therefore come from the client-side wall clock for each request, attributed by the X-InferGate-Upstream-Name response header.",
+                                    "local":  {
+                                                  "upstream":  "local-vllm",
+                                                  "count":  8,
+                                                  "client_ms_p50":  560.434,
+                                                  "client_ms_p95":  946.226,
+                                                  "client_ms_mean":  573.6796,
+                                                  "client_ms_min":  402.805,
+                                                  "client_ms_max":  946.226,
+                                                  "gateway_mean_seconds":  0.5004905125,
+                                                  "gateway_total_seconds":  4.0039241
+                                              },
+                                    "cloud":  {
+                                                  "upstream":  "cloud-mock",
+                                                  "count":  8,
+                                                  "client_ms_p50":  71.835,
+                                                  "client_ms_p95":  135.244,
+                                                  "client_ms_mean":  78.839,
+                                                  "client_ms_min":  62.111,
+                                                  "client_ms_max":  135.244,
+                                                  "gateway_mean_seconds":  0.0048256749999999989,
+                                                  "gateway_total_seconds":  0.038605399999999991
+                                              },
+                                    "mix":  {
+                                                "count":  16,
+                                                "client_ms_p50":  402.805,
+                                                "client_ms_p95":  946.226,
+                                                "client_ms_mean":  326.2593
+                                            }
+                                },
+                    "gateway_stats_latency":  {
+                                                  "count":  "16",
+                                                  "p50":  "342.6275ms",
+                                                  "p90":  "538.1255ms",
+                                                  "p95":  "851.8306ms",
+                                                  "p99":  "851.8306ms",
+                                                  "max":  "851.8306ms",
+                                                  "p50_ms":  342.6275,
+                                                  "p95_ms":  851.8306,
+                                                  "note":  "gateway-side, over ALL requests the gateway served on this run (there is no per-tier latency block in /stats)"
+                                              },
+                    "cost":  {
+                                 "prices_usd_per_1e6_tokens":  {
+                                                                   "local-chat":  {
+                                                                                      "in":  0.27,
+                                                                                      "out":  1.1
+                                                                                  },
+                                                                   "default":  {
+                                                                                   "in":  1,
+                                                                                   "out":  3
+                                                                               }
+                                                               },
+                                 "tokens":  {
+                                                "local_prompt":  312,
+                                                "local_completion":  421,
+                                                "cloud_prompt":  3096,
+                                                "cloud_completion":  184,
+                                                "mix_prompt":  3408,
+                                                "mix_completion":  605
+                                            },
+                                 "local_list_price_usd":  0.00054734,
+                                 "cloud_served_list_price_usd":  0.00103832,
+                                 "equiv_all_cloud_usd":  0.00158566,
+                                 "avoided_usd":  0.00054734,
+                                 "avoided_percent":  34.52,
+                                 "cloud_tier_requests_at_default_price_usd":  0.003648,
+                                 "all_requests_at_default_price_usd":  0.005223,
+                                 "formula":  "usd = (prompt_tokens * price_in + completion_tokens * price_out) / 1000000",
+                                 "note":  "pricing is by MODEL NAME (internal/gateway/pricing.go) and both tiers answered as \u0027local-chat\u0027, so EVERY request is priced at pricing.models.local-chat (in 0.27 / out 1.1 per 1e6 tokens). A locally served request is free in cash but is BOOKED at that cloud list rate, so avoided_usd is a list-price DISPLACEMENT, not a bill: it is the same tokens priced at the cloud rate the gateway would have charged. avoided_usd is the local arm alone (local tokens x price); cloud_served_list_price_usd is the cloud tier\u0027s own spend; equiv_all_cloud_usd = avoided + cloud_served is what all requests would have cost with no local tier, and avoided_percent is avoided/equiv_all_cloud."
+                             }
+                },
+    "assertions":  {
+                       "total":  63,
+                       "failed_count":  0,
+                       "failed":  [
+
+                                  ],
+                       "not_measured":  [
+
+                                        ],
+                       "note":  "written before the final artifact re-parse assertion, then rewritten with the final counts"
+                   },
+    "limitations":  [
+                        "The cloud tier is cmd\\mockupstream, an in-repo stand-in that answers instantly: the cross-tier latency difference is NOT a comparison with a real cloud provider, and no money was spent on this run.",
+                        "\"agreement\" between AWQ/GPTQ and fp16 is textual DRIFT from the fp16 reference (exact match rate, mean token overlap). It is not an accuracy, quality or correctness score; no answer was graded.",
+                        "quantization is a single run per variant at concurrency 1 with 12 measured requests after warmup. That gives a difference, not a distribution, and there is no repeat to estimate run-to-run noise.",
+                        "nvidia-smi reports TOTAL VRAM in use on a laptop GPU that the Windows desktop is also using (~1.8 GiB of 8188 MiB before any model loads). Every model footprint here is the DELTA, and the delta carries a noise floor of roughly 50 MiB.",
+                        "Each variant\u0027s \"before load\" VRAM baseline is a single reading taken right after the previous variant was unloaded, so those baselines differ between variants (the desktop allocates and frees VRAM on its own schedule). The deltas are therefore comparable only within their own noise floor, and the raw baseline and after-load readings are reported next to each delta so the arithmetic can be checked.",
+                        "vLLM was started with --gpu-memory-utilization 0.85, which reserves KV-cache VRAM beyond the weights; the VRAM delta is that reservation plus the weights, not the checkpoint size on disk.",
+                        "The tiering mix is 2N requests of two fixed shapes at concurrency 1. It proves the local/cloud classification and the per-tier split for THAT mix; it says nothing about behaviour under load, with streaming, or at the token-estimate boundary.",
+                        "Cost is DERIVED, not billed: there is no cost metric on any surface, so it is computed from the pricing block of the loaded config and the usage block of the responses. The convention (pricing by model name, and therefore list price for a locally served request) is stated in tiering.cost.note.",
+                        "The gateway estimates prompt tokens as len(serialised messages)/4 -- a character proxy, not a tokenizer -- so the simple/hard boundary is the gateway\u0027s estimate, not a real token count.",
+                        "Per-tier latency p50/p95 come from the client-side wall clock because /stats has no per-upstream latency block; they include gateway overhead plus loopback, and for the local tier they include the real model\u0027s generation time.",
+                        "Everything runs on loopback on one host that may also be running other gates; the two tiers were exercised sequentially, not simultaneously."
+                    ],
+    "run_log":  [
+                    "vllm start: RESULT start=ok pid=7293 seconds=25"
+                ]
+}

@@ -111,6 +111,30 @@ type RoutingConfig struct {
 	// FallbackModel, when set, is the model name to ask for on a retry where
 	// the caller's model does not exist on the candidate backend.
 	FallbackModel string `json:"fallback_model"`
+
+	// TierPolicy tunes the "tiered" strategy: which requests are cheap enough
+	// for the local tier, and which capabilities only the cloud tier has.
+	TierPolicy TierPolicyConfig `json:"tier_policy"`
+}
+
+// TierPolicyConfig describes the local/cloud split for the "tiered" strategy.
+//
+// A zero limit means "no limit", not "everything is too big": a deployment
+// that only wants to gate on capabilities writes no numbers at all, and a
+// limit of zero must never send every request to the cloud.
+type TierPolicyConfig struct {
+	// LocalMaxPromptTokens is the largest estimated prompt the local tier is
+	// asked to serve. Zero disables the rule.
+	LocalMaxPromptTokens int `json:"local_max_prompt_tokens"`
+
+	// LocalMaxCompletionTokens is the largest completion ceiling the local
+	// tier is asked to serve. Zero disables the rule.
+	LocalMaxCompletionTokens int `json:"local_max_completion_tokens"`
+
+	// CloudCapabilities are the capability tags that force a request to the
+	// cloud tier. They default to the two tags a small local model is most
+	// likely to lack outright (see Defaults).
+	CloudCapabilities []string `json:"cloud_capabilities"`
 }
 
 // RoutingWeights are the score-strategy coefficients.
@@ -253,6 +277,12 @@ type UpstreamConfig struct {
 	// Weight is the relative share for the "weighted" strategy. Zero means
 	// "unweighted"; negative values are rejected.
 	Weight float64 `json:"weight"`
+
+	// Tier places this backend in the "local" or "cloud" half of a tiered
+	// deployment. Empty means "cloud", so a config written before tiers
+	// existed keeps routing where it always did instead of silently becoming
+	// local.
+	Tier string `json:"tier"`
 }
 
 // LogConfig selects the logging surface.
@@ -545,6 +575,21 @@ const (
 	KindOpenAI = "openai"
 )
 
+// Supported backend tiers. The tier only matters to the "tiered" strategy; an
+// unknown value is rejected rather than defaulted, because a misspelled
+// "tier: locale" would silently leave the whole local fleet in the cloud tier
+// and the operator would learn about it from the bill.
+const (
+	// TierLocal marks a backend on the operator's own hardware: cheap to run,
+	// limited in capability and in how much prompt it is worth asking it to
+	// handle.
+	TierLocal = "local"
+
+	// TierCloud marks a backend behind a paid API. It is also the tier of an
+	// upstream that declares none.
+	TierCloud = "cloud"
+)
+
 // Supported routing strategies.
 const (
 	// StrategyPriority orders by configured priority, then config order. It is
@@ -565,6 +610,12 @@ const (
 	// StrategyScore orders by a normalised weighted sum of cost, latency,
 	// reliability and priority.
 	StrategyScore = "score"
+
+	// StrategyTiered orders the local tier ahead of the cloud tier for
+	// requests that look simple, and the cloud tier ahead of the local one for
+	// the rest. Both tiers stay in the plan either way, so failover still
+	// reaches the other half when one is down.
+	StrategyTiered = "tiered"
 )
 
 // Defaults mirrors configs/infergate.yaml. Load applies them before overlaying
@@ -589,6 +640,13 @@ func Defaults() Config {
 			// deliberately last because a shared host makes it noisy (see the
 			// M0 baseline in docs/RESUME.md).
 			Weights: RoutingWeights{Cost: 3, Latency: 1, Reliability: 2, Priority: 1},
+			TierPolicy: TierPolicyConfig{
+				// The two tags a small local model is most likely to lack, and
+				// the two whose absence is worst: a backend that ignores tools
+				// or images returns a confident answer about neither, which
+				// reads as a model failure rather than a routing mistake.
+				CloudCapabilities: []string{"tools", "vision"},
+			},
 		},
 		Health: HealthConfig{
 			Window:                Duration(60 * time.Second),
@@ -771,6 +829,18 @@ func (c *Config) Validate() error {
 		}
 		if !hasCatchAll(u.Models) && len(u.Models) == 0 {
 			return fmt.Errorf("upstream %s: models must list at least one model or the \"/\" catch-all", u.Name)
+		}
+
+		// The tier is normalised here, once, so the router never has to decide
+		// what an empty tier means and a typo cannot degrade into "cloud" --
+		// the silent direction that costs money.
+		switch tier := strings.ToLower(strings.TrimSpace(u.Tier)); tier {
+		case TierLocal, TierCloud:
+			u.Tier = tier
+		case "":
+			u.Tier = TierCloud
+		default:
+			return fmt.Errorf("upstream %s: unsupported tier %q (want local or cloud)", u.Name, u.Tier)
 		}
 	}
 
@@ -1024,18 +1094,44 @@ func (c *Config) Validate() error {
 	}
 
 	switch strings.ToLower(c.Routing.Strategy) {
-	case StrategyPriority, StrategyCost, StrategyLatency, StrategyWeighted, StrategyScore:
+	case StrategyPriority, StrategyCost, StrategyLatency, StrategyWeighted, StrategyScore, StrategyTiered:
 		c.Routing.Strategy = strings.ToLower(c.Routing.Strategy)
 	case "":
 		c.Routing.Strategy = Defaults().Routing.Strategy
 	default:
-		return fmt.Errorf("routing: unsupported strategy %q (want priority, cost, latency, weighted or score)", c.Routing.Strategy)
+		return fmt.Errorf("routing: unsupported strategy %q (want priority, cost, latency, weighted, score or tiered)", c.Routing.Strategy)
 	}
 	if w := c.Routing.Weights; w.Cost < 0 || w.Latency < 0 || w.Reliability < 0 || w.Priority < 0 {
 		return errors.New("routing.weights: weights must not be negative")
 	}
 	if c.Routing.Weights == (RoutingWeights{}) {
 		c.Routing.Weights = Defaults().Routing.Weights
+	}
+
+	dtp := Defaults().Routing.TierPolicy
+	tp := &c.Routing.TierPolicy
+	if tp.LocalMaxPromptTokens < 0 {
+		return errors.New("routing.tier_policy.local_max_prompt_tokens: must not be negative")
+	}
+	if tp.LocalMaxCompletionTokens < 0 {
+		return errors.New("routing.tier_policy.local_max_completion_tokens: must not be negative")
+	}
+	if len(tp.CloudCapabilities) == 0 {
+		tp.CloudCapabilities = dtp.CloudCapabilities
+	}
+	if c.Routing.Strategy == StrategyTiered {
+		// Checked against the already-normalised upstream tiers, so `tier: ""`
+		// counts as cloud exactly as it does for the router.
+		local := false
+		for i := range c.Upstreams {
+			if c.Upstreams[i].Tier == TierLocal {
+				local = true
+				break
+			}
+		}
+		if !local {
+			return errors.New(`routing: strategy "tiered" requires at least one upstream with tier: local`)
+		}
 	}
 
 	dh := Defaults().Health

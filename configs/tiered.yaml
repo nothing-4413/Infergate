@@ -1,0 +1,136 @@
+# InferGate M4 configuration — tiered local/cloud routing.
+#
+# The M4 story in one file: a self-hosted model on the operator's own GPU is the
+# FIRST choice for the requests it can actually handle, and a paid provider is
+# the first choice for the ones it cannot. Both tiers answer the OpenAI
+# /v1/chat/completions API, so the split is invisible to the caller.
+#
+#   vllm serve Qwen/Qwen2.5-1.5B-Instruct --served-model-name deepseek-chat \
+#        --port 8000                      # the local tier, on the GPU
+#   go run ./cmd/infergate -config configs/tiered.yaml
+#
+# WHY BOTH BACKENDS ARE CATCH-ALLS ("/"):
+# The router's FIRST filter is model eligibility: a backend that does not serve
+# the requested model is not a candidate at all. Tiering across two backends that
+# declare DIFFERENT concrete models therefore cannot work -- whichever model the
+# caller names, only one tier stays eligible, and the other tier is filtered out
+# before tiering is even consulted. Declaring "/" on both sides (the nginx
+# location-prefix idiom) means "I accept whatever alias the caller sent", so both
+# tiers remain candidates and the tier policy is what decides between them.
+# Start the local vLLM with --served-model-name set to the SAME alias the cloud
+# is addressed by, and the same request body works on both tiers.
+#
+# HOW THE SAVING IS ACCOUNTED:
+# The price book is keyed by model name and is the CLOUD's list price for that
+# alias. The local tier's marginal cost is zero (the GPU is already paid for),
+# but the gateway still prices every response at the cloud rate -- so the cost
+# figure reported for requests served by the local tier is exactly the cloud
+# spend those requests avoided. That is the number scripts/measure-m4.ps1 and the
+# /stats per-upstream split are read for: "X% of requests served locally, Y USD
+# per 1000 requests of cloud spend avoided". Overstating the local tier's cost is
+# the safe direction for a budget gate, and it makes the avoided cost measurable
+# without inventing a second price table.
+
+server:
+  listen: ":8080"
+
+  read_header_timeout: "10s"
+  idle_timeout: "90s"
+
+  # PER-ATTEMPT budget. A local model on a laptop GPU is slower than a hosted
+  # one, and the first request after a cold start has to load the weights, so
+  # this is generous: a request that is going to fall through to the cloud
+  # should do so because of a connection error, not because the local tier was
+  # merely slow.
+  upstream_timeout: "120s"
+
+  shutdown_timeout: "15s"
+  max_body_bytes: 8388608
+  max_idle_conns_per_host: 256
+
+log:
+  level: "info"
+  format: "text"
+
+routing:
+  # "tiered" is the M4 strategy. Everything else in this section is inherited
+  # from configs/routing.yaml.
+  strategy: "tiered"
+
+  tier_policy:
+    # A request is "simple" -- and therefore preferred to the local tier -- when
+    # it needs none of cloud_capabilities, its estimated prompt is at most this
+    # many tokens, and its completion ceiling is at most the next value below.
+    # 0 DISABLES that half of the rule, which is why the two numbers are
+    # separate: a deployment that only cares about capabilities writes neither.
+    #
+    # The estimate is len(serialised messages)/4, the same estimator the M3
+    # quota uses (config.EstimateCharsPerToken), so "a long prompt" means the
+    # same thing to routing and to budgeting.
+    local_max_prompt_tokens: 2000
+
+    # A caller asking for an unbounded completion is not a simple request: the
+    # local box would be holding a slot for a long generation that the paid
+    # provider is better at, at a price the operator can predict.
+    local_max_completion_tokens: 512
+
+    # Capabilities the local model almost certainly lacks. A request that
+    # requires one of these goes to the cloud first, and -- because the plan
+    # keeps the other tier behind it -- still falls back to the local box when
+    # the cloud is down. Tool calling that silently degrades to prose is worse
+    # than a 502.
+    cloud_capabilities:
+      - "tools"
+      - "vision"
+
+  weights:
+    cost: 3
+    latency: 1
+    reliability: 2
+    priority: 1
+
+  default_capabilities:
+    - "chat"
+
+upstreams:
+  # The local tier. tier: local is what makes it the preferred candidate for a
+  # simple request, and priority 1 is the tie-break within the tier.
+  - name: "local-vllm"
+    kind: "openai"
+    base_url: "http://127.0.0.1:8000"
+    api_key: ""
+    tier: "local"
+    models:
+      - "/"
+    capabilities:
+      - "chat"
+    priority: 1
+    weight: 1
+
+  # The cloud tier. An omitted tier means "cloud", and this one is written out
+  # to make the intent readable. api_key comes from the environment: an
+  # undefined variable is a startup error, not an empty credential.
+  - name: "deepseek"
+    kind: "openai"
+    base_url: "https://api.deepseek.com"
+    api_key: "${DEEPSEEK_API_KEY}"
+    tier: "cloud"
+    models:
+      - "/"
+    capabilities:
+      - "chat"
+      - "tools"
+      - "vision"
+    priority: 2
+    weight: 1
+
+# USD per one million tokens, keyed by the alias the caller sends. See the
+# header for why the local tier is priced at the CLOUD rate rather than zero.
+pricing:
+  default:
+    in: 1.0
+    out: 3.0
+  models:
+    deepseek-chat:
+      in: 0.27
+      out: 1.1

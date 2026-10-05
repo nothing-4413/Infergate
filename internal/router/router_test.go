@@ -1,6 +1,8 @@
 package router
 
 import (
+	"bytes"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,12 +20,17 @@ type routingFleet struct {
 	prio    int
 	weight  float64
 	baseURL string
+	tier    string
 }
 
 // newRoutingRouter builds a real registry and a real breaker group -- not stubs
 // -- because the router's whole job is to read their state correctly, and a stub
 // would let it pass while mis-reading the real one.
-func newRoutingRouter(t *testing.T, strategy string, weights config.RoutingWeights, targets []routingFleet, health config.HealthConfig) (*Router, *breaker.Group) {
+//
+// tune exists for the strategies with their own section: the tiered tests need
+// a routing.TierPolicy, and adding one to every existing call site would bury
+// what those tests are actually about.
+func newRoutingRouter(t *testing.T, strategy string, weights config.RoutingWeights, targets []routingFleet, health config.HealthConfig, tune ...func(*config.RoutingConfig)) (*Router, *breaker.Group) {
 	t.Helper()
 
 	ups := make([]config.UpstreamConfig, 0, len(targets))
@@ -40,7 +47,16 @@ func newRoutingRouter(t *testing.T, strategy string, weights config.RoutingWeigh
 			Capabilities: tg.caps,
 			Priority:     tg.prio,
 			Weight:       tg.weight,
+			Tier:         tg.tier,
 		})
+	}
+
+	routing := config.RoutingConfig{
+		Strategy: strategy,
+		Weights:  weights,
+	}
+	for _, fn := range tune {
+		fn(&routing)
 	}
 
 	cfg := &config.Config{
@@ -51,11 +67,8 @@ func newRoutingRouter(t *testing.T, strategy string, weights config.RoutingWeigh
 			MaxIdleConnsPerHost: 4,
 		},
 		Upstreams: ups,
-		Routing: config.RoutingConfig{
-			Strategy: strategy,
-			Weights:  weights,
-		},
-		Health: health,
+		Routing:   routing,
+		Health:    health,
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("config.Validate: %v", err)
@@ -495,5 +508,374 @@ func TestUnknownModelWithNamedBackendsIsAnError(t *testing.T) {
 
 	if _, err := r.Plan(Request{Model: "not-a-model"}); err == nil {
 		t.Fatal("Plan routed a model no backend claims in a fleet with a real choice")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tiered routing
+// ---------------------------------------------------------------------------
+
+// tierPolicy is the tune hook the tiered tests use to install a policy.
+func tierPolicy(p config.TierPolicyConfig) func(*config.RoutingConfig) {
+	return func(rc *config.RoutingConfig) { rc.TierPolicy = p }
+}
+
+// TestTieredClassificationOrdersTiers covers the classification rules and the
+// ordering they produce.
+//
+// The cloud backend is deliberately given the better priority number: if the
+// tier were not the primary key, every "cloud first" case below would order the
+// same way anyway and the test would pass without the feature existing.
+func TestTieredClassificationOrdersTiers(t *testing.T) {
+	// The cloud backend is first by priority, the local ones are second and
+	// fifth, so both the tier key and the within-tier priority order are
+	// visible in every expectation.
+	fleets := []routingFleet{
+		{name: "cloud", models: []string{"/"}, tier: config.TierCloud, prio: 1, caps: []string{"tools", "vision"}},
+		{name: "box", models: []string{"/"}, tier: config.TierLocal, prio: 2, caps: []string{"audio"}},
+		{name: "box2", models: []string{"/"}, tier: config.TierLocal, prio: 5, caps: []string{"audio"}},
+	}
+
+	// estimatePromptTokens is characters/4, so 404 is one estimated token past
+	// a limit of 100 and 400 sits exactly on it.
+	overPrompt := bytes.Repeat([]byte("a"), 404)
+	atPromptLimit := bytes.Repeat([]byte("a"), 400)
+
+	tests := []struct {
+		name   string
+		policy config.TierPolicyConfig
+		req    Request
+		want   []string
+	}{
+		{
+			// The strategy's reason to exist: the cheap tier carries the bulk.
+			name:   "a small request is simple and the local tier leads",
+			policy: config.TierPolicyConfig{LocalMaxPromptTokens: 100, LocalMaxCompletionTokens: 50},
+			req:    Request{Model: "local-llama", Messages: []byte("be brief"), MaxTokens: 10},
+			want:   []string{"box", "box2", "cloud"},
+		},
+		{
+			// A capability the cloud tier owns. The local backends do not claim
+			// it, so eligibility drops them from the plan before the tier has
+			// any say -- that filter is pre-existing behaviour, and tiering
+			// must not resurrect a backend that cannot serve the request.
+			name:   "a cloud capability sends the request to the cloud",
+			policy: config.TierPolicyConfig{LocalMaxPromptTokens: 100},
+			req:    Request{Model: "local-llama", Capabilities: []string{"tools"}},
+			want:   []string{"cloud"},
+		},
+		{
+			// Only the tags in CloudCapabilities force the cloud. A capability
+			// the local tier also has must not promote the request by itself,
+			// or every tagged request would become a paid one. The cloud
+			// backend does not claim it, so eligibility removes it: the tier
+			// orders the plan, it never widens it.
+			name:   "a non-cloud capability leaves the local tier preferred",
+			policy: config.TierPolicyConfig{},
+			req:    Request{Model: "local-llama", Capabilities: []string{"audio"}},
+			want:   []string{"box", "box2"},
+		},
+		{
+			name:   "capability matching ignores case and space",
+			policy: config.TierPolicyConfig{},
+			req:    Request{Model: "local-llama", Capabilities: []string{"  TOOLS "}},
+			want:   []string{"cloud"},
+		},
+		{
+			name:   "an over-long prompt goes to the cloud",
+			policy: config.TierPolicyConfig{LocalMaxPromptTokens: 100},
+			req:    Request{Model: "local-llama", Messages: overPrompt},
+			want:   []string{"cloud", "box", "box2"},
+		},
+		{
+			// The rule is "exceeds", not "reaches": a prompt exactly on the
+			// operator's line is one they said the local tier may serve.
+			name:   "a prompt exactly on the limit is still simple",
+			policy: config.TierPolicyConfig{LocalMaxPromptTokens: 100},
+			req:    Request{Model: "local-llama", Messages: atPromptLimit},
+			want:   []string{"box", "box2", "cloud"},
+		},
+		{
+			name:   "an over-long completion goes to the cloud",
+			policy: config.TierPolicyConfig{LocalMaxCompletionTokens: 50},
+			req:    Request{Model: "local-llama", Messages: []byte("hi"), MaxTokens: 51},
+			want:   []string{"cloud", "box", "box2"},
+		},
+		{
+			name:   "a completion exactly on the limit is still simple",
+			policy: config.TierPolicyConfig{LocalMaxCompletionTokens: 50},
+			req:    Request{Model: "local-llama", Messages: []byte("hi"), MaxTokens: 50},
+			want:   []string{"box", "box2", "cloud"},
+		},
+		{
+			// Both limits at zero: no limit at all, so size alone never
+			// promotes a request -- otherwise an unset policy would send the
+			// whole fleet to the paid tier.
+			name:   "zero limits disable both length rules",
+			policy: config.TierPolicyConfig{},
+			req:    Request{Model: "local-llama", Messages: bytes.Repeat([]byte("a"), 4096), MaxTokens: 4096},
+			want:   []string{"box", "box2", "cloud"},
+		},
+		{
+			name:   "a zero limit does not disable the capability rule",
+			policy: config.TierPolicyConfig{},
+			req:    Request{Model: "local-llama", Capabilities: []string{"vision"}},
+			want:   []string{"cloud"},
+		},
+		{
+			name:   "one zero limit leaves the other rule in force",
+			policy: config.TierPolicyConfig{LocalMaxPromptTokens: 100},
+			req:    Request{Model: "local-llama", Messages: []byte("hi"), MaxTokens: 4096},
+			want:   []string{"box", "box2", "cloud"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r, _ := newRoutingRouter(t, config.StrategyTiered, config.RoutingWeights{}, fleets, testHealth(), tierPolicy(tc.policy))
+			assertOrder(t, plan(t, r, tc.req), tc.want...)
+		})
+	}
+}
+
+// TestTieredUnhealthyLocalLosesToHealthyCloud is the one case where the tier
+// yields: a request that prefers the local tier must still not be sent to a
+// backend whose breaker is open while a healthy cloud backend is available.
+func TestTieredUnhealthyLocalLosesToHealthyCloud(t *testing.T) {
+	r, group := newRoutingRouter(t, config.StrategyTiered, config.RoutingWeights{}, []routingFleet{
+		{name: "box", models: []string{"/"}, tier: config.TierLocal, prio: 1},
+		{name: "cloud", models: []string{"/"}, tier: config.TierCloud, prio: 2},
+	}, testHealth(), tierPolicy(config.TierPolicyConfig{}))
+
+	assertOrder(t, plan(t, r, Request{Model: "local-llama"}), "box", "cloud")
+
+	// The breaker reads its decision out of the stats window and leaves the
+	// window to the proxy, so a test has to fill both.
+	window := group.Get("box").Stats()
+	for i := 0; i < 4; i++ {
+		window.RecordFailure(false)
+		group.Get("box").RecordFailure(false)
+	}
+	if got := group.Get("box").State(); got != breaker.StateOpen {
+		t.Fatalf("setup failed: breaker state = %s, want open", got)
+	}
+
+	cands := plan(t, r, Request{Model: "local-llama"})
+	assertOrder(t, cands, "cloud", "box")
+	if cands[1].Healthy {
+		t.Fatal("the open local backend is marked healthy")
+	}
+}
+
+// TestTieredReasonNamesTheTier checks the operator-facing half: the chosen tier
+// and the classification are readable from the decision the router already
+// logs, without a second field or a second lookup.
+func TestTieredReasonNamesTheTier(t *testing.T) {
+	r, _ := newRoutingRouter(t, config.StrategyTiered, config.RoutingWeights{}, []routingFleet{
+		{name: "cloud", models: []string{"/"}, tier: config.TierCloud, prio: 1},
+		{name: "box", models: []string{"/"}, tier: config.TierLocal, prio: 2},
+	}, testHealth(), tierPolicy(config.TierPolicyConfig{LocalMaxPromptTokens: 100}))
+
+	cands := plan(t, r, Request{Model: "local-llama", Messages: []byte("be brief")})
+	if got := cands[0].Reason; got != "strategy=tiered tier=local reason=simple request prefers this tier" {
+		t.Fatalf("local reason = %q", got)
+	}
+	if got := cands[1].Reason; got != "strategy=tiered tier=cloud reason=simple request falls back to this tier" {
+		t.Fatalf("cloud reason = %q", got)
+	}
+
+	hard := plan(t, r, Request{Model: "local-llama", Messages: bytes.Repeat([]byte("a"), 404)})
+	if got := hard[0].Reason; got != "strategy=tiered tier=cloud reason=hard request prefers this tier" {
+		t.Fatalf("cloud reason for a hard request = %q", got)
+	}
+	if got := hard[1].Reason; got != "strategy=tiered tier=local reason=hard request falls back to this tier" {
+		t.Fatalf("local reason for a hard request = %q", got)
+	}
+	if !strings.Contains(hard[0].Reason, "tier=cloud") {
+		t.Fatal("the reason does not name the tier")
+	}
+}
+
+// TestTieredKeepsTheTierPolicyOnTheSnapshot pins the policy to the router's
+// configuration snapshot: routing must not read live config while it ranks.
+func TestTieredKeepsTheTierPolicyOnTheSnapshot(t *testing.T) {
+	policy := config.TierPolicyConfig{LocalMaxPromptTokens: 100, LocalMaxCompletionTokens: 50}
+	r, _ := newRoutingRouter(t, config.StrategyTiered, config.RoutingWeights{}, []routingFleet{
+		{name: "box", models: []string{"/"}, tier: config.TierLocal},
+		{name: "cloud", models: []string{"/"}, tier: config.TierCloud},
+	}, testHealth(), tierPolicy(policy))
+
+	policy.LocalMaxPromptTokens = 0
+	if got := r.cfg.TierPolicy.LocalMaxPromptTokens; got != 100 {
+		t.Fatalf("router policy = %d, want the snapshot to be immune to later writes", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Fallback model (routing.fallback_model)
+// ---------------------------------------------------------------------------
+
+// fallbackModel is the tune hook the fallback tests use to set
+// routing.fallback_model, the way an operator would in the file.
+func fallbackModel(name string) func(*config.RoutingConfig) {
+	return func(rc *config.RoutingConfig) { rc.FallbackModel = name }
+}
+
+// TestFallbackEmptyKeepsNonServingTargetOut is the regression guard for the
+// default: with no fallback configured, a backend that does not serve the
+// caller's model stays out of the plan exactly as it did before the feature
+// existed. Every other test in this file runs on the same empty path.
+func TestFallbackEmptyKeepsNonServingTargetOut(t *testing.T) {
+	r, _ := newRoutingRouter(t, config.StrategyPriority, config.RoutingWeights{}, []routingFleet{
+		{name: "flagship", models: []string{"gpt-4o"}, prio: 1},
+		{name: "budget", models: []string{"deepseek-chat"}, prio: 2,
+			baseURL: "http://127.0.0.1:18020"},
+	}, testHealth())
+
+	assertOrder(t, plan(t, r, Request{Model: "gpt-4o"}), "flagship")
+}
+
+// TestFallbackModelMakesNonServingTargetEligible is the feature itself: a
+// backend that serves the configured fallback name -- and not the caller's --
+// becomes a candidate, and is asked for the fallback name so the proxy's
+// existing body rewrite carries it.
+//
+// The fleet has a second backend on purpose: with a single backend the M0
+// rule would admit the target on its own and the test would pass without the
+// fallback doing anything.
+func TestFallbackModelMakesNonServingTargetEligible(t *testing.T) {
+	r, _ := newRoutingRouter(t, config.StrategyPriority, config.RoutingWeights{}, []routingFleet{
+		{name: "vllm", models: []string{"gpt-4o"}, prio: 1},
+		{name: "other", models: []string{"deepseek-chat"}, prio: 2,
+			baseURL: "http://127.0.0.1:18021"},
+	}, testHealth(), fallbackModel("gpt-4o"))
+
+	cands := plan(t, r, Request{Model: "claude-3-5-sonnet"})
+	assertOrder(t, cands, "vllm")
+	if cands[0].Model != "gpt-4o" {
+		t.Fatalf("Model = %q, want the configured fallback name", cands[0].Model)
+	}
+
+	// An explicit pin goes through the same decision, so a pinned backend is
+	// still asked for a name it actually serves rather than the caller's alias.
+	pinned := plan(t, r, Request{Model: "claude-3-5-sonnet", Explicit: "vllm"})
+	assertOrder(t, pinned, "vllm")
+	if pinned[0].Model != "gpt-4o" {
+		t.Fatalf("pinned Model = %q, want the configured fallback name", pinned[0].Model)
+	}
+}
+
+// TestFallbackModelStillExcludesTargetServingNeither pins the boundary: the
+// fallback widens eligibility to the fallback name, not to everything.
+func TestFallbackModelStillExcludesTargetServingNeither(t *testing.T) {
+	r, _ := newRoutingRouter(t, config.StrategyPriority, config.RoutingWeights{}, []routingFleet{
+		{name: "serves-fallback", models: []string{"deepseek-chat"}, prio: 1},
+		{name: "serves-neither", models: []string{"qwen2.5-7b-instruct"}, prio: 2,
+			baseURL: "http://127.0.0.1:18022"},
+	}, testHealth(), fallbackModel("deepseek-chat"))
+
+	cands := plan(t, r, Request{Model: "gpt-4o"})
+	assertOrder(t, cands, "serves-fallback")
+	if cands[0].Model != "deepseek-chat" {
+		t.Fatalf("Model = %q, want the configured fallback name", cands[0].Model)
+	}
+}
+
+// TestCatchAllIgnoresTheFallbackModel pins the two exemptions that keep the
+// fallback from changing pass-through behaviour: a catch-all receives the
+// caller's model verbatim, and a catch-all that also declares concrete names
+// keeps preferring its own name.
+func TestCatchAllIgnoresTheFallbackModel(t *testing.T) {
+	r, _ := newRoutingRouter(t, config.StrategyPriority, config.RoutingWeights{}, []routingFleet{
+		{name: "gateway", models: []string{"/"}, prio: 1},
+		{name: "concrete", models: []string{"deepseek-chat"}, prio: 2,
+			baseURL: "http://127.0.0.1:18023"},
+	}, testHealth(), fallbackModel("deepseek-chat"))
+
+	cands := plan(t, r, Request{Model: "mock-reasoner"})
+	assertOrder(t, cands, "gateway", "concrete")
+	if cands[0].Model != "mock-reasoner" {
+		t.Fatalf("catch-all Model = %q, want the requested name verbatim", cands[0].Model)
+	}
+	if cands[1].Model != "deepseek-chat" {
+		t.Fatalf("concrete Model = %q, want the configured fallback name", cands[1].Model)
+	}
+
+	// A catch-all alongside a concrete name is still exempt, even when the
+	// configured fallback is a name it would "serve" through the catch-all.
+	r2, _ := newRoutingRouter(t, config.StrategyPriority, config.RoutingWeights{}, []routingFleet{
+		{name: "local", models: []string{"/", "mock-dear"}},
+	}, testHealth(), fallbackModel("gpt-4o"))
+
+	cands = plan(t, r2, Request{Model: "mock-router"})
+	if cands[0].Model != "mock-dear" {
+		t.Fatalf("Model = %q, want the concrete model the backend declares", cands[0].Model)
+	}
+}
+
+// TestSingleBackendIgnoresAnUnservedFallback keeps the M0 guarantee intact: one
+// backend still absorbs any model name, and a fallback it does not serve must
+// not change which name it is asked for.
+func TestSingleBackendIgnoresAnUnservedFallback(t *testing.T) {
+	r, _ := newRoutingRouter(t, config.StrategyPriority, config.RoutingWeights{}, []routingFleet{
+		{name: "local", models: []string{"qwen2.5-7b-instruct"}},
+	}, testHealth(), fallbackModel("gpt-4o"))
+
+	cands := plan(t, r, Request{Model: "whatever-the-agent-sends"})
+	assertOrder(t, cands, "local")
+	if cands[0].Model != "qwen2.5-7b-instruct" {
+		t.Fatalf("Model = %q, want the one the backend serves", cands[0].Model)
+	}
+}
+
+// TestTieredHardRequestUsesTheFallbackModel is the interplay case: a hard
+// request prefers the cloud tier, and that backend is only in the plan because
+// it serves the fallback. It must be asked for the fallback name -- not the
+// first name in its own list, which is what modelFor picks without one.
+func TestTieredHardRequestUsesTheFallbackModel(t *testing.T) {
+	r, _ := newRoutingRouter(t, config.StrategyTiered, config.RoutingWeights{}, []routingFleet{
+		{name: "box", models: []string{"local-llama"}, tier: config.TierLocal, prio: 1},
+		{name: "cloud", models: []string{"gpt-4o", "gpt-4o-mini"}, tier: config.TierCloud, prio: 2,
+			baseURL: "http://127.0.0.1:18024"},
+	}, testHealth(),
+		tierPolicy(config.TierPolicyConfig{LocalMaxPromptTokens: 100}),
+		fallbackModel("gpt-4o-mini"))
+
+	// 404 characters is one estimated token past the local limit.
+	hard := plan(t, r, Request{Model: "local-llama", Messages: bytes.Repeat([]byte("a"), 404)})
+	assertOrder(t, hard, "cloud", "box")
+	if hard[0].Model != "gpt-4o-mini" {
+		t.Fatalf("cloud Model = %q, want the configured fallback name", hard[0].Model)
+	}
+	// The local backend does serve the request, so it keeps the caller's name.
+	if hard[1].Model != "local-llama" {
+		t.Fatalf("local Model = %q, want the requested name", hard[1].Model)
+	}
+}
+
+// TestFallbackModelPricesTheRewrittenCandidate covers requirement 6 without
+// new pricing code: priceOf reads the name the backend is actually asked for,
+// so the fallback-rewritten candidate is priced as the fallback model.
+//
+// "direct" serves the caller's deepseek-chat (1) and "rewritten" is only
+// eligible through the fallback gpt-4o (10). If pricing used the caller's
+// name, both would cost 1, cost ordering would fall through to priority, and
+// "rewritten" (priority 1) would lead.
+func TestFallbackModelPricesTheRewrittenCandidate(t *testing.T) {
+	r, _ := newRoutingRouter(t, config.StrategyCost, config.RoutingWeights{}, []routingFleet{
+		{name: "rewritten", models: []string{"gpt-4o"}, prio: 1},
+		{name: "direct", models: []string{"deepseek-chat"}, prio: 99,
+			baseURL: "http://127.0.0.1:18025"},
+	}, testHealth(), fallbackModel("gpt-4o"))
+
+	cands := plan(t, r, Request{Model: "deepseek-chat"})
+	assertOrder(t, cands, "direct", "rewritten")
+	if cands[0].Model != "deepseek-chat" || cands[0].Score != 1 {
+		t.Fatalf("direct = {Model: %q, Score: %v}, want the caller's model at its own price",
+			cands[0].Model, cands[0].Score)
+	}
+	if cands[1].Model != "gpt-4o" || cands[1].Score != 10 {
+		t.Fatalf("rewritten = {Model: %q, Score: %v}, want the fallback model at its price",
+			cands[1].Model, cands[1].Score)
 	}
 }

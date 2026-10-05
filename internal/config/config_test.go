@@ -456,6 +456,193 @@ quota:
 	}
 }
 
+// A tier is normalised at load time, so neither the router nor the registry has
+// to decide what an empty tier means. A typo is rejected rather than defaulted:
+// "tier: locale" rounding to cloud is the direction that silently spends money.
+func TestUpstreamTierValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		tier    string
+		want    string
+		wantErr string
+	}{
+		{name: "explicit local", tier: "local", want: TierLocal},
+		{name: "explicit cloud", tier: "cloud", want: TierCloud},
+		{name: "omitted means cloud", tier: "", want: TierCloud},
+		{name: "case is not significant", tier: "LoCaL", want: TierLocal},
+		{name: "surrounding space is trimmed", tier: "  cloud  ", want: TierCloud},
+		{
+			name:    "unknown tier is an error",
+			tier:    "locale",
+			wantErr: `upstream mock: unsupported tier "locale" (want local or cloud)`,
+		},
+		{
+			name:    "a tier that is only close is still an error",
+			tier:    "edge",
+			wantErr: `upstream mock: unsupported tier "edge" (want local or cloud)`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Upstreams = []UpstreamConfig{{
+				Name:    "mock",
+				BaseURL: "http://127.0.0.1:9000",
+				Models:  []string{"/"},
+				Tier:    tc.tier,
+			}}
+			err := cfg.Validate()
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Validate: %v", err)
+			}
+			if got := cfg.Upstreams[0].Tier; got != tc.want {
+				t.Fatalf("tier = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// The tier policy's limits are "disabled at zero", so a negative can only be a
+// mistake -- and a mistake that would, if accepted, send every request to the
+// cloud.
+func TestTierPolicyValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*TierPolicyConfig)
+		wantErr string
+	}{
+		{
+			name:    "negative prompt limit",
+			mutate:  func(tp *TierPolicyConfig) { tp.LocalMaxPromptTokens = -1 },
+			wantErr: "routing.tier_policy.local_max_prompt_tokens: must not be negative",
+		},
+		{
+			name:    "negative completion limit",
+			mutate:  func(tp *TierPolicyConfig) { tp.LocalMaxCompletionTokens = -1 },
+			wantErr: "routing.tier_policy.local_max_completion_tokens: must not be negative",
+		},
+		{
+			name:   "zero disables both limits",
+			mutate: func(tp *TierPolicyConfig) { *tp = TierPolicyConfig{} },
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Routing.Strategy = StrategyTiered
+			cfg.Upstreams = []UpstreamConfig{
+				{Name: "local", BaseURL: "http://127.0.0.1:9000", Models: []string{"/"}, Tier: TierLocal},
+				{Name: "cloud", BaseURL: "https://api.example.com", Models: []string{"/"}},
+			}
+			tc.mutate(&cfg.Routing.TierPolicy)
+			err := cfg.Validate()
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Validate: %v", err)
+			}
+			// An unset capability list gets the defaults rather than an empty
+			// one, which would make every request look simple.
+			if got := cfg.Routing.TierPolicy.CloudCapabilities; !reflect.DeepEqual(got, []string{"tools", "vision"}) {
+				t.Fatalf("cloud capabilities = %v, want the defaults", got)
+			}
+		})
+	}
+
+	// An explicit list is the operator's, and is not merged with the defaults.
+	cfg := Defaults()
+	cfg.Upstreams = []UpstreamConfig{{Name: "mock", BaseURL: "http://127.0.0.1:9000", Models: []string{"/"}}}
+	cfg.Routing.TierPolicy.CloudCapabilities = []string{"audio"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if got := cfg.Routing.TierPolicy.CloudCapabilities; !reflect.DeepEqual(got, []string{"audio"}) {
+		t.Fatalf("cloud capabilities = %v, want the configured list", got)
+	}
+}
+
+// "tiered" with no local backend is a typo, not a deployment: nothing would
+// ever sort ahead of the cloud tier, so the strategy would silently behave
+// exactly like "priority" while reading as if the local tier were in use.
+func TestTieredRequiresLocalUpstream(t *testing.T) {
+	withUpstreams := func(tiers ...string) *Config {
+		cfg := Defaults()
+		cfg.Routing.Strategy = StrategyTiered
+		for i, tier := range tiers {
+			cfg.Upstreams = append(cfg.Upstreams, UpstreamConfig{
+				Name:    "u" + string(rune('0'+i)),
+				BaseURL: "http://127.0.0.1:9000",
+				Models:  []string{"/"},
+				Tier:    tier,
+			})
+		}
+		return &cfg
+	}
+
+	if err := withUpstreams("cloud", "").Validate(); err == nil {
+		t.Fatal("tiered with no local upstream must be rejected")
+	} else if !strings.Contains(err.Error(), `routing: strategy "tiered" requires at least one upstream with tier: local`) {
+		t.Fatalf("err = %v, want the local-tier requirement", err)
+	}
+
+	if err := withUpstreams("cloud", "local").Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+
+	// The same fleet is fine under a strategy that does not use tiers.
+	cfg := withUpstreams("cloud")
+	cfg.Routing.Strategy = StrategyPriority
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+}
+
+// The point of defaulting an omitted tier to cloud is that a config written
+// before tiers existed loads with its routing unchanged.
+func TestOmittedTierLoadsAsCloud(t *testing.T) {
+	path := writeConfig(t, `
+server:
+  listen: ":8080"
+routing:
+  strategy: "tiered"
+upstreams:
+  - name: "legacy"
+    base_url: "http://127.0.0.1:9000"
+    models:
+      - "/"
+  - name: "box"
+    base_url: "http://127.0.0.1:9001"
+    models:
+      - "/"
+    tier: "local"
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Upstreams[0].Tier; got != TierCloud {
+		t.Fatalf("omitted tier = %q, want %q", got, TierCloud)
+	}
+	if got := cfg.Upstreams[1].Tier; got != TierLocal {
+		t.Fatalf("declared tier = %q, want %q", got, TierLocal)
+	}
+	if got := cfg.Routing.TierPolicy.CloudCapabilities; !reflect.DeepEqual(got, []string{"tools", "vision"}) {
+		t.Fatalf("cloud capabilities = %v, want the defaults", got)
+	}
+}
+
 func writeConfig(t *testing.T, body string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.yaml")

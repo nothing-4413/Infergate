@@ -926,6 +926,8 @@ func (p *Proxy) plan(parsed parsedRequest, r *http.Request) ([]router.Candidate,
 			Model:        parsed.Model,
 			Capabilities: caps,
 			Explicit:     explicit,
+			Messages:     parsed.Messages,
+			MaxTokens:    parsed.MaxTokens,
 		})
 	}
 

@@ -57,6 +57,10 @@ type Target struct {
 
 	// weight is the relative share for the "weighted" strategy.
 	weight float64
+
+	// tier is the local/cloud half this backend belongs to. config.Validate
+	// normalises it, so it is always one of the two and never empty.
+	tier string
 }
 
 // IsCatchAll reports whether the backend accepts any model name.
@@ -73,6 +77,10 @@ func (t *Target) Priority() int { return t.priority }
 
 // Weight is the configured share for weighted routing.
 func (t *Target) Weight() float64 { return t.weight }
+
+// Tier is the local/cloud half this backend belongs to in a tiered
+// deployment.
+func (t *Target) Tier() string { return t.tier }
 
 // HasCapabilities reports whether every required tag is declared by this
 // backend.
@@ -172,6 +180,7 @@ func New(cfg *config.Config) (*Registry, error) {
 			Transport: newTransport(cfg.Server),
 			priority:  uc.Priority,
 			weight:    uc.Weight,
+			tier:      uc.Tier,
 		}
 		for _, c := range uc.Capabilities {
 			if c = strings.ToLower(strings.TrimSpace(c)); c != "" {

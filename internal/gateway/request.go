@@ -36,6 +36,11 @@ type parsedRequest struct {
 	// both directions.
 	MaxTokens int
 
+	// Messages is the request's serialised message array, nil when the body
+	// carried none. Tiered routing reads it to size the prompt, and it stays in
+	// its raw form so that sizing never needs a second decode of the body.
+	Messages json.RawMessage
+
 	// IsJSON reports whether the body parsed as a JSON object. A non-JSON body
 	// is still proxied: the gateway must not become a validator that rejects
 	// traffic the upstream would accept.
@@ -63,6 +68,7 @@ func inspectRequest(body []byte) parsedRequest {
 		Model:     fields.Model,
 		Stream:    fields.Stream,
 		MaxTokens: completionCeiling(fields.MaxTokens, fields.MaxCompletionTokens),
+		Messages:  fields.Messages,
 		IsJSON:    true,
 	}
 }

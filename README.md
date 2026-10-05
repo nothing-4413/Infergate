@@ -56,7 +56,8 @@ infergate/
 │   ├── verify/             # M0 Go 端到端验收（38 条断言，CI 门禁）
 │   ├── verify-m1/          # M1 Go 端到端验收：路由 / 故障转移 / 熔断（64 条断言）
 │   ├── verify-m2/          # M2 Go 端到端验收：语义缓存 / 存储降级 / 管理面（103 条断言）
-│   └── verify-m3/          # M3 Go 端到端验收：配额准入 / 降级 / 账目 / fail-open（470 条断言）
+│   ├── verify-m3/          # M3 Go 端到端验收：配额准入 / 降级 / 账目 / fail-open（470 条断言）
+│   └── verify-m4/          # M4 Go 端到端验收：分层路由 / 容量上限 / 跨层故障转移（877 条断言）
 ├── configs/
 │   ├── infergate.yaml      # 生产形态示例（OpenAI / DeepSeek / 本地兜底）
 │   ├── mock.yaml           # 本地形态示例（指向 mockupstream，单上游 = M0 路径）
@@ -65,7 +66,9 @@ infergate/
 │   ├── cache-local.yaml    # M2 本地形态：单上游 + 内存缓存（逐行注释的配置说明）
 │   ├── cache-redis.yaml    # M2 共享形态：同一套缓存策略换 Redis store
 │   ├── quota-local.yaml    # M3 本地形态：四租户四维度预算，计数在进程内存
-│   └── quota-redis.yaml    # M3 共享形态：同一套预算换 Redis 计数（多副本唯一正确选择）
+│   ├── quota-redis.yaml    # M3 共享形态：同一套预算换 Redis 计数（多副本唯一正确选择）
+│   ├── tiered.yaml         # M4 生产形态：本地 vLLM 一层 + 云侧一层，简单请求本地优先
+│   └── tiered-local.yaml   # M4 本地形态：本地层 = WSL 里的 vLLM，云层 = mockupstream
 ├── internal/
 │   ├── config/             # 配置加载：YAML -> JSON -> struct，环境变量覆盖，启动即校验
 │   ├── miniyaml/           # 手写 YAML 子集解析器（代价与收益见 docs/DESIGN.md）
@@ -92,12 +95,16 @@ infergate/
 │   ├── verify-m3.ps1       # M3 curl 端到端验收：内存与 Redis 计数、降级、fail-closed（323 条）
 │   ├── measure-m1.ps1      # M1 实测：路由开销、故障吸收、熔断省下的延迟
 │   ├── measure-m2.ps1      # M2 实测：命中率、token/成本节省、命中 vs 未命中延迟
-│   └── measure-m3.ps1      # M3 实测：准入开销、预扣准确度、预算挡下的上游调用（57 条断言）
+│   ├── measure-m3.ps1      # M3 实测：准入开销、预扣准确度、预算挡下的上游调用（57 条断言）
+│   ├── verify-m4.ps1       # M4 curl 端到端验收：两层假上游，不需要 GPU（125 条断言）
+│   ├── measure-m4.ps1      # M4 实测：真实 vLLM 三层量化对比 + 分层路由的本地/云分流与省钱
+│   ├── bench-vllm-quant.sh # 量化对比驱动：逐个变体起 vLLM、跑 12 条固定 prompt、落盘结果
+│   └── bench_vllm_quant.py # 量化对比客户端：只依赖标准库，流式取真首字延迟与文本一致性
 ├── tools/go.cmd            # 本机工具链 shim（GOROOT / GOCACHE 重定向，见第 4 节）
 └── docs/
     ├── DESIGN.md           # 模块划分、请求生命周期、关键决策与踩坑记录
     ├── RESUME.md           # 每个里程碑对应的简历项目描述（含量化指标占位）
-    └── baseline/           # 压测原始数据（m0-baseline.json、m1-*.json、m2-summary.json、m3-summary.json）
+    └── baseline/           # 压测原始数据（m0-baseline.json、m1-*.json、m2-summary.json、m3-summary.json、m4-summary.json）
 ```
 
 ---
@@ -191,6 +198,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m1.ps1   # 
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m2.ps1   # M2 curl，157 条（内存 + Redis）
 .\tools\go.cmd run .\cmd\verify-m3                                     # M3，470 条断言
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m3.ps1   # M3 curl，323 条（内存 + 真 Redis 协议）
+.\tools\go.cmd run .\cmd\verify-m4                                     # M4，877 条断言
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m4.ps1   # M4 curl，125 条（两层假上游，不需要 GPU）
 ```
 
 `scripts/verify-m0.ps1` 会自行编译两个二进制、拉起两个真实进程、跑完 47 条断言，并在 `finally` 中
@@ -681,6 +690,106 @@ curl 门禁自己编译三个二进制、拉起内存与 Redis 两条栈、并**
 
 ---
 
+### 3.13 分层路由与本地推理（M4）
+
+M4 的产品能力是**分层路由**：给每个上游标一层（`tier: local` / `tier: cloud`），再在网关上定义
+"什么算简单请求"。简单请求本地优先、难请求云端优先，于是"多少比例的请求被本地接住、省下多少云侧
+花费"变成一个可测的数字，而不是一句愿景。分层是**排序**，不是过滤——所以 M1 的能力筛选与跨层故障
+转移都还在（见 `docs/DESIGN.md` 11.1–11.3）。
+
+`configs/tiered-local.yaml` 是自洽的形态：本地层是**真的 vLLM**（WSL2 + GPU 直通），云端层用仓库内
+的 `mockupstream` 顶替付费 provider（不花钱、离线可跑，但单价表是真的）。
+
+```powershell
+# 0) 本地层：WSL 里起一个真的 vLLM（M4 的所有数字都来自它，不是 mock）
+#    环境搭建（驱动/CUDA 大版本、transformers 上界、gcc、镜像源）见 docs\DESIGN.md 11.4
+#    下面这行是 fp16；分层实测那一档用的是 AWQ 权重，把路径换成 /opt/models/awq 即可复现
+wsl -d Ubuntu24 -u root -- /opt/vllm/bin/vllm serve /opt/models/fp16 `
+    --served-model-name local-chat --port 8000 --gpu-memory-utilization 0.85 --max-model-len 4096
+
+# 1) 云端层：假上游顶替付费 provider
+.\tools\go.cmd run .\cmd\mockupstream -listen :9100 -name cloud-mock
+
+# 2) 网关：strategy=tiered，本地层 = vLLM，云端层 = mockupstream
+.\tools\go.cmd run .\cmd\infergate -config configs\tiered-local.yaml
+```
+
+```powershell
+# 3) 短 prompt → 本地层；把 prompt 写长（估算超过 local_max_prompt_tokens: 400）→ 云端层。
+#    请求体一律写文件用 --data-binary @file 发送（PS 5.1 会吃掉原生参数里的引号，见 3.3）
+curl.exe -s -D headers.txt -o body.txt -H "Content-Type: application/json" `
+    --data-binary "@body.json" http://127.0.0.1:8080/v1/chat/completions
+#    看 X-InferGate-Upstream-Name / -Model，以及网关日志里的那一行：
+#      strategy=tiered tier=local reason=simple request prefers this tier
+#    两个请求只差请求体长度，层就换了——判据是"序列化后的消息长度 / 4"，与 M3 的预扣估算同一个常数
+```
+
+三个可复现的门（前两条不需要显卡，第三条需要）：
+
+```powershell
+.\tools\go.cmd run .\cmd\verify-m4                                          # Go 门禁，877/877 断言（16 组）
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m4.ps1   # curl 门禁，125/125（两层假上游，不需要 GPU）
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\measure-m4.ps1  # 实测：三变体量化对比 + 分层分流 → docs\baseline\m4-summary.json
+```
+
+量化对比（同一份 12 条固定 prompt、同一套服务参数、单并发、单轮；fp16 为参照）：
+
+| 变体 | 权重文件 | 加载 | 首字 P50 | 端到端 P50 | 吞吐（tok/s，请求墙钟） | 显存增量 | 与 fp16 完全一致 | 平均 token 重合 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| FP16（参照） | 3.09 GB | 58s | 35.2ms | 1758.5ms | 41.5 | 6169 MiB | — | — |
+| AWQ（4bit, group 128） | 1.61 GB | 60s | 28.1ms | 699.5ms | **100.7** | 6921 MiB | 0/12 | 0.444 |
+| GPTQ-Int4 | 1.15 GB | 55s | 28.7ms | 723.6ms | 95.3 | 7353 MiB | 1/12 | 0.460 |
+
+同一批请求里量化模型的真实差异（12 条里最容易看的两条）：`4873+6259` 那条，fp16 与 GPTQ 都答
+`11132` 且差值 `1386`，AWQ 把差值答成 `-1386`——这就是它 0/12 完全一致的原因；问"澳大利亚人口
+（百万）"那条，fp16 给 4.1，AWQ 给 40，GPTQ 给 2.8。也就是说 **token 重合率 0.44 这个量级不是
+"输出没崩"的证明，而是"语义框架还在、数字与措辞会漂"的证明**。
+
+相对 fp16（同一次运行内部对比）：AWQ 吞吐 **2.42×**、端到端 P50 **−60.2%**、首字 P50 −20.0%、
+权重文件 **−47.7%**；GPTQ 吞吐 **2.30×**、端到端 P50 −58.8%、首字 P50 −18.5%、权重文件 −62.8%。
+两者吞吐只差 5.6%（12 条、单轮，低于本机可分辨的门槛），所以这张表能支持"量化把这张 8 GB 卡上的
+本地推理变成可用"，不能支持"AWQ 与 GPTQ 谁更好"。
+
+分层分流（本地 vLLM + 云端 mock，同一批请求走网关，产物 `docs/baseline/m4-summary.json`）：
+
+一次运行 16 个请求——8 条"短 prompt"（约 42 字符 user 文本）+ 8 条"长 prompt"（2444 字符），两者
+`max_tokens` 都是 96；归属不看网关日志的说法，而看每个响应上的 `X-InferGate-Upstream-Name`：
+
+| 层 | 接到哪些请求 | 客户端墙钟 P50 / P95 | 层内 token（prompt / completion） | 按单价折算 |
+| --- | --- | --- | --- | --- |
+| `local-vllm`（真 vLLM，AWQ 4bit） | 8/8 短请求 | 560.4ms / 946.2ms | 312 / 421 | 0.00054734 USD |
+| `cloud-mock`（仓库内 mock 顶替付费 provider） | 8/8 长请求 | 71.8ms / 135.2ms | 3096 / 184 | 0.00103832 USD |
+
+- **分层的判据是可复现的**：短请求 8/8 被本地接住、长请求 8/8 去了云端，`/stats` 的 per-upstream
+  增量同样是 local +8 / cloud +8（网关自己数的）；同一批请求把 prompt 写到 2400 字符以上就是换层，
+  边界仍然是"序列化消息长度 / 4"这个估算值，不是模型名。
+- **"省下的云侧花费" = 本地接住的那 8 条按云侧单价折算出来的钱**：0.00054734 USD；同一批 16 个请求
+  全走云侧要 0.00158566 USD，所以这次分流打掉了云侧账单的 **34.52%**。本地层的现金边际成本是 0，
+  但网关按模型名定价、两层都答 `local-chat`，所以这 0.00054734 是**按云侧单价记账**的数字——
+  它是"账面替代"，不是"少付的账单"；云端层自己那 8 条仍然记 0.00103832 USD。
+- **层间延迟差不是"本地比云端慢"的结论**：云端层是仓库内 mock，秒回；本地层是真模型在笔记本 GPU 上
+  逐字生成，所以 560.4ms vs 71.8ms 只证明"真模型有生成时间、mock 没有"（网关 `/stats` 看整批 16 个
+  请求是 P50 342.6ms / P95 851.8ms）。同一天三次运行本地 P50 分别是 560.4 / 627.2 / 784.5ms
+  （同机同权重，最大摆动 40%），所以这里只引用同一次运行内部的对比。
+
+怎么读这几行：
+
+- **量化对比不是精度评测**：12 条 prompt、单次采样，`完全一致 / token 重合` 只能说明"输出没崩"，
+  不能当准确率用；产物里也这么写。
+- **显存要读增量**：`nvidia-smi` 的 `memory.used` 包含 Windows 桌面占用的 1.7–1.9 GiB，所以只报
+  加载前后的差值，且 ±50 MiB 以内不算差异；GPTQ 的增量比 FP16 大是因为 vLLM 按
+  `--gpu-memory-utilization 0.85` 预分配 KV cache，权重小了反而留出更多缓存——这是口径问题，
+  不是"量化更费显存"。
+- **不读小于 5% 的差异**：单并发、单轮、共享散热受限的笔记本 GPU，吞吐差异在几个百分点内没有
+  区分度；跨次引用绝对值同理（M2/M3 的 47% 轮间抖动就是前车之鉴）。
+- 本地层的边际成本按 0 计，所以"被省下的云侧花费"= 本地服务的那些请求按**云侧单价**折算出来的钱，
+  单价取自 `pricing`（`internal/gateway/pricing.go`），不是账单。
+- 分层实测只覆盖两种固定形态（16 个请求、单并发、非流式、每层各 8 条），它证明的是这个 mix 下的
+  分类与分流、以及本地层确实在被调用（本地答案是真模型的输出且带 `usage`），不代表负载下、
+  流式下或估算边界上的行为。
+
+---
+
 ## 4. 本机工具链说明（为什么有 `tools/go.cmd`）
 
 这台机器上 `go` 不在 PATH，且有两处硬限制，M0 的构建方式是被它们逼出来的：
@@ -709,8 +818,8 @@ schannel 取不到凭证，所以验收脚本只打本机回环地址。
 | M0 | 最小网关：OpenAI 兼容透传 + SSE 流式 + 基础计量与可观测 | **完成** |
 | M1 | 多 Provider 路由（成本 / 延迟 / 能力 / 健康度）+ 故障转移 | **完成** |
 | M2 | 语义缓存：Embedding + 阈值门控 + Redis | **完成** |
-| M3 | Token 配额与成本治理：预算、超限降级、计量对账 | 计划中 |
-| M4 | vLLM 本地推理服务化 + 量化对比（FP16 / AWQ / GPTQ） | 计划中 |
+| M3 | Token 配额与成本治理：预算、超限降级、计量对账 | **完成** |
+| M4 | vLLM 本地推理服务化 + 量化对比（FP16 / AWQ / GPTQ）+ 分层路由 | **完成** |
 | M5 | 可观测完善 + 压测基线（QPS / P95 / 首字延迟 / 缓存命中率） | 计划中 |
 | M6 | 与 Warden 打通：工具调用、会话、成本归因 | 计划中 |
 

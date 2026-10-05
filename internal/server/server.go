@@ -287,6 +287,7 @@ func (s *Server) handleUpstreams(w http.ResponseWriter, r *http.Request) {
 		Capabilities []string `json:"capabilities"`
 		Priority     int      `json:"priority"`
 		Weight       float64  `json:"weight"`
+		Tier         string   `json:"tier"`
 	}
 	out := make([]upstreamView, 0, len(s.registry.Names()))
 	for _, name := range s.registry.Names() {
@@ -304,6 +305,7 @@ func (s *Server) handleUpstreams(w http.ResponseWriter, r *http.Request) {
 			Capabilities: target.Capabilities(),
 			Priority:     target.Priority(),
 			Weight:       target.Weight(),
+			Tier:         target.Tier(),
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
