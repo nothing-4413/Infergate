@@ -3,7 +3,8 @@
 面向 Agent / LLM 应用的**推理网关**：统一多 Provider 接入、智能路由、语义缓存、Token 成本治理、
 稳定性治理、本地推理服务化与全链路可观测。它同时是另一个 Agent 项目 Warden 的底层模型接入层。
 
-当前进度：**M0 已完成，双路验证全绿**（Go 端到端 38/38，curl 端到端 47/47，含压测基线）。
+当前进度：**M0 / M1 已完成，双路验证全绿**。M0：Go 端到端 38/38、curl 端到端 47/47；
+M1：Go 端到端 64/64、curl 端到端 56/56，多 Provider 路由 + 故障转移实测 54000 请求 0 错误。
 
 ---
 
@@ -49,24 +50,36 @@ infergate/
 ├── cmd/
 │   ├── infergate/          # 主程序入口：加载配置、起服务、优雅退出
 │   ├── mockupstream/       # OpenAI 兼容假上游，支持故障注入（延迟 / 异常码 / 省略 DONE）
-│   └── verify/             # Go 端到端验收程序（38 条断言，可作 CI 门禁）
+│   ├── loadtest/           # 压测与基线：直连 vs 经网关 × 流式/非流式 × 多并发
+│   ├── verify/             # M0 Go 端到端验收（38 条断言，CI 门禁）
+│   └── verify-m1/          # M1 Go 端到端验收：路由 / 故障转移 / 熔断（64 条断言）
 ├── configs/
 │   ├── infergate.yaml      # 生产形态示例（OpenAI / DeepSeek / 本地兜底）
-│   └── mock.yaml           # 本地形态示例（指向 mockupstream）
+│   ├── mock.yaml           # 本地形态示例（指向 mockupstream，单上游 = M0 路径）
+│   ├── routing.yaml        # 生产形态多 Provider 路由（成本/延迟/可靠性权重 + 健康度窗口）
+│   └── routing-local.yaml  # 本地三副本路由（primary/secondary/tools，供 curl 验收与压测）
 ├── internal/
 │   ├── config/             # 配置加载：YAML -> JSON -> struct，环境变量覆盖，启动即校验
 │   ├── miniyaml/           # 手写 YAML 子集解析器（代价与收益见 docs/DESIGN.md）
 │   ├── sse/                # SSE 帧解析 / 写出 / 增量观测（usage、tool_call、首字）
 │   ├── upstream/           # Provider 注册表：模型 -> 目标，per-target 连接池
-│   ├── gateway/            # 代理核心：路由、转发、流式中继、错误映射、计费
-│   ├── metrics/            # 内存指标聚合（请求 / 尝试 / token / 首字 / 流分片）
+│   ├── router/             # 路由决策：候选筛选 + 能力/健康/成本/延迟打分排序
+│   ├── breaker/            # 滑动窗口熔断：closed / open / half-open + 半开探针
+│   ├── stats/              # 每上游滑动窗口统计（attempts/failures/timeouts/延迟/首字）
+│   ├── gateway/            # 代理核心：路由、多次尝试转发、流式中继、错误映射、计费
+│   ├── metrics/            # 内存指标聚合（请求 / 尝试 / token / 首字 / 流分片 / 熔断）
+│   ├── mockbackend/        # 进程内假上游（验收程序用，可按后端注入故障与停顿）
 │   ├── logging/            # slog 初始化
 │   └── server/             # HTTP 服务与运维端点（/healthz /readyz /stats /metrics /admin）
-├── scripts/verify-m0.ps1   # curl 端到端验收脚本（41 条断言，真实进程 + 真实 curl）
+├── scripts/
+│   ├── verify-m0.ps1       # M0 curl 端到端验收（47 条断言，真实进程 + 真实 curl）
+│   ├── verify-m1.ps1       # M1 curl 端到端验收：优先级/能力/指定/熔断/恢复（56 条断言）
+│   └── measure-m1.ps1      # M1 实测：路由开销、故障吸收、熔断省下的延迟
 ├── tools/go.cmd            # 本机工具链 shim（GOROOT / GOCACHE 重定向，见第 4 节）
 └── docs/
     ├── DESIGN.md           # 模块划分、请求生命周期、关键决策与踩坑记录
-    └── RESUME.md           # 每个里程碑对应的简历项目描述（含量化指标占位）
+    ├── RESUME.md           # 每个里程碑对应的简历项目描述（含量化指标占位）
+    └── baseline/           # 压测原始数据（m0-baseline.json、m1-*.json）
 ```
 
 ---
@@ -227,6 +240,162 @@ pricing:                                     # 单位：USD / 1M tokens
 请求级控制头：`X-InferGate-Upstream: <name>` 强制指定上游（用于灰度与排障）。
 路由顺序：显式头 → 模型精确匹配（大小写不敏感）→ 兜底 `"/"` → 只剩一个后端时吸收任意模型名。
 
+### 3.7 多 Provider 路由与故障转移（M1）
+
+```powershell
+# 终端 1~3：三个假上游；-name 决定 /healthz 与 X-InferGate-Upstream-Name 里显示谁答的
+.\bin\mockupstream.exe -listen :19100 -name primary
+.\bin\mockupstream.exe -listen :19101 -name secondary
+.\bin\mockupstream.exe -listen :19102 -name tools     # 唯一声明了 tools 能力的后端
+
+# 终端 4：网关（configs/routing-local.yaml：strategy=priority，primary > secondary > tools）
+.\tools\go.cmd run .\cmd\infergate -config .\configs\routing-local.yaml
+```
+
+三个副本故意声明同一个模型 `["/"]`：这样"选谁"只由优先级与健康度决定，故障转移在响应头里
+一眼可见（换个上游就是换个 `X-InferGate-Upstream-Name`），不会被模型名改写遮住。
+
+```powershell
+$base = 'http://127.0.0.1:8080'
+
+# 路由表（模型索引 / 策略 / 权重 / 能力 / 当前熔断状态）与每上游健康窗口
+curl.exe -s "$base/admin/upstreams"
+curl.exe -s "$base/admin/breakers"
+
+'{"model":"mock-gpt","messages":[{"role":"user","content":"hi"}]}' |
+  Set-Content -NoNewline -Encoding ascii .\tmp\chat.json
+
+# 1) 普通请求：打到 priority=1 的 primary
+curl.exe -s -i -X POST "$base/v1/chat/completions" `
+  -H 'Content-Type: application/json' --data-binary "@.\tmp\chat.json" |
+  Select-String 'X-InferGate-'
+
+# 2) 能力路由：只送给声明了该能力的后端；一个都匹配不上时是 400，不静默降级
+curl.exe -s -i -X POST "$base/v1/chat/completions" `
+  -H 'Content-Type: application/json' -H 'X-InferGate-Capabilities: tools' `
+  --data-binary "@.\tmp\chat.json" | Select-String 'X-InferGate-'
+
+# 3) 显式指定后端（灰度 / 排障），跳过一切打分
+curl.exe -s -i -X POST "$base/v1/chat/completions" `
+  -H 'Content-Type: application/json' -H 'X-InferGate-Upstream: tools' `
+  --data-binary "@.\tmp\chat.json" | Select-String 'X-InferGate-'
+```
+
+响应头就是这套机制的自证（`internal/gateway/headers.go`）：
+
+| 响应头 | 含义 |
+| --- | --- |
+| `X-InferGate-Upstream-Name` | 最终服务这次请求的后端 |
+| `X-InferGate-Attempt` | 这是第几次尝试（`1` 表示第一次就成功） |
+| `X-InferGate-Tried` | **只有发生过重试才出现**：逗号分隔的尝试顺序，如 `primary, secondary` |
+| `X-InferGate-Request-Id` | 请求关联 id，客户端给了就沿用，没给就生成 |
+
+「为什么选了它」不进响应头，而是写进网关的结构化日志：每条 `msg=request` 都带 `reason=`，
+内容来自 `internal/router` 的 `reasonFor`（如 `priority (priority 1)`、`cost`，
+熔断中的后端则是 `priority: circuit open, only used as a last resort`）。响应头只回答
+"换没换、换了谁"，日志回答"凭什么是它"。
+
+故意杀一个后端，就能看到"熔断把一个死后端从第一次尝试里摘掉"：
+
+```powershell
+# 杀掉 primary（关掉那个终端即可），再发请求：客户端仍然是 200，只是换了后端
+curl.exe -s -i -X POST "$base/v1/chat/completions" `
+  -H 'Content-Type: application/json' --data-binary "@.\tmp\chat.json" |
+  Select-String 'X-InferGate-'                     # Tried: primary, secondary
+
+# 连续发，等窗口内失败率越过 failure_ratio：primary 被排到最后，第一次尝试不再碰它，
+# 于是 Tried 头直接消失（只剩一次尝试），/admin/breakers 里 primary 变成 open
+curl.exe -s "$base/admin/breakers"
+
+# 修好后不必等冷却：手动重置熔断器（全部，或只重置一个上游）
+curl.exe -s -X POST "$base/admin/breakers/reset"
+curl.exe -s -X POST "$base/admin/breakers/reset?upstream=primary"
+```
+
+配置里与 M1 相关的三个块（完整注释与"为什么这么设"见 `configs/routing.yaml`）：
+
+```yaml
+routing:
+  strategy: "priority"          # priority | cost | latency | weighted | score
+  weights:                      # 只有 score 策略读；是比例，不要求和为 1
+    cost: 3
+    latency: 1
+    reliability: 2
+    priority: 1
+  default_capabilities: ["chat"]  # 没声明能力的后端按此补齐，否则会被能力请求排除
+  fallback_model: ""              # 空 = 绝不替换模型：可预测优先
+
+health:                         # 滑动窗口熔断（不是计数器：一小时前的失败不该压着现在）
+  window: "30s"
+  buckets: 6
+  min_requests: 5               # 样本不足不熔断：未知 ≠ 坏了
+  failure_ratio: 0.5            # 窗口内失败率阈值（超时也算失败）
+  open_duration: "5s"           # open 持续多久后放半开探针
+  half_open_probes: 2           # 连续几个探针成功才回到 closed
+  max_failures_per_request: 2   # 单次请求允许失败几次（= 重试预算的上界）
+  retry_backoff: "50ms"         # 线性增长 + 全抖动，避免所有客户端同拍重试
+
+pricing:                        # USD / 1M tokens；cost 策略与日志里的 cost_usd 都用它
+  default: { in: 1.0, out: 3.0 }   # 未标价的模型也有成本数字，而不是看起来免费
+  models:
+    "gpt-4o": { in: 2.5, out: 10.0 }
+```
+
+两条验收路径（都是真实进程 + 真实 curl）：
+
+```powershell
+.\tools\go.cmd run .\cmd\verify-m1                                            # 64/64 断言
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m1.ps1    # 56/56 断言
+```
+
+`scripts/verify-m1.ps1` 自己编译二进制、拉起三个副本和一个网关，依次验证：优先级路由 → 杀掉一个
+后端后的非流式与流式故障转移 → 熔断把死后端摘出轮转 → 能力路由 → 显式指定 → 四条可观测面 →
+恢复（重启副本 + 重置熔断器），并在 `finally` 中回收全部进程；参数为
+`-GatewayPort 18180 -PrimaryPort 19100 -SecondaryPort 19101 -ToolsPort 19102`。
+
+### 3.8 M1 实测（路由开销 / 故障吸收 / 熔断收益）
+
+```powershell
+# 约 3 分钟：单上游网关 vs 三副本路由网关（交错 3 轮），再中途杀掉一个副本压同样的负载，
+# 最后用"停顿 1500ms 的后端 + 400ms 单次超时预算"逐请求量出熔断省下的延迟
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\measure-m1.ps1
+```
+
+原始数据：`docs/baseline/m1-summary.json` 与 `docs/baseline/m1-load-{single,router,faulted}-r{1,2,3}.json`
+（每阶段 1500 请求 + 300 预热，3 轮取中位数，本机回环）。
+
+| 场景 | 负载 | 并发 | QPS（中位数[轮间区间]） | P95 | P99 | 错误 |
+| --- | --- | --- | --- | --- | --- | --- |
+| M0 单上游 | 非流式 | 8 | 1772 [1228..1975] | 6.35ms | 12.49ms | 0 |
+| M0 单上游 | 非流式 | 32 | 1825 [1402..1948] | 22.08ms | 31.00ms | 0 |
+| M0 单上游 | 流式 | 8 | 977 [892..1266] | 12.50ms | 15.01ms | 0 |
+| M0 单上游 | 流式 | 32 | 1425 [1050..1434] | 27.53ms | 31.75ms | 0 |
+| M1 路由（三副本健康） | 非流式 | 8 | 1749 [1287..1777] | 7.08ms | 8.99ms | 0 |
+| M1 路由（三副本健康） | 非流式 | 32 | 1701 [1558..1724] | 22.25ms | 27.92ms | 0 |
+| M1 路由（三副本健康） | 流式 | 8 | 935 [871..940] | 13.00ms | 15.58ms | 0 |
+| M1 路由（三副本健康） | 流式 | 32 | 1334 [1152..1647] | 31.62ms | 35.62ms | 0 |
+| M1 路由（priority=1 副本被杀） | 非流式 | 8 | 431 [411..435] | 23.10ms | 24.71ms | 0 |
+| M1 路由（priority=1 副本被杀） | 非流式 | 32 | 1652 [1317..1669] | 24.58ms | 29.79ms | 0 |
+| M1 路由（priority=1 副本被杀） | 流式 | 8 | 803 [784..1146] | 14.01ms | 16.77ms | 0 |
+| M1 路由（priority=1 副本被杀） | 流式 | 32 | 1033 [629..1691] | 40.34ms | 43.74ms | 0 |
+
+怎么读这张表：
+
+- **路由本身不加延迟**：M1（三副本健康）与 M0（单上游）的 QPS/P95 差异全部落在 40%+ 的轮间抖动以内
+  （非流式 c=8：1749 vs 1772 QPS，P95 7.08ms vs 6.35ms）。候选筛选 + 打分的成本在这台机器上量不出来。
+- **故障对客户端是透明的**：每轮压测中途 `Stop-Process` 杀掉 priority=1 的副本，该场景 18000 个请求
+  **0 错误**（全部 200，改由 secondary 接管）；整个实测 54000 个请求同样 0 错误。
+- **代价集中在"熔断窗口还没关掉死副本"的那一段**：此时每个请求都先白跑一次死上游，非流式 c=8
+  掉到 431 QPS、P50 19.5ms；等窗口内失败率越过阈值、primary 被排到最后，同一轮的后半段就回到
+  健康水平（非流式 c=32：1652 vs 健康 1701 QPS）。这是 `failure_ratio` / `min_requests` 的取舍，
+  不是路由失效。
+- **熔断省下的延迟是逐请求量出来的**（停顿 1500ms 的后端 + 400ms 单次超时预算，共 10 个请求）：
+  第 1~4 个请求各付约 418–423ms（第一次尝试超时 → 换到快后端，`tried='stalled, fast'`）；
+  第 5 个请求起熔断已 open（attempts=4 failures=4 timeouts=4 failure_ratio=1.0），
+  **中位延迟 420.42ms → 17.81ms（23.6×）**，且 `attempts=1`、不再出现 `X-InferGate-Tried`。
+- 与 M0 相同的读数警告：本机回环、机器上还有别的负载，只有毫秒级以上的差异才可信；
+  `/metrics` 显示这台机器上先成为瓶颈的是压测客户端本身。
+
 ---
 
 ## 4. 本机工具链说明（为什么有 `tools/go.cmd`）
@@ -255,7 +424,7 @@ schannel 取不到凭证，所以验收脚本只打本机回环地址。
 | 里程碑 | 内容 | 状态 |
 | --- | --- | --- |
 | M0 | 最小网关：OpenAI 兼容透传 + SSE 流式 + 基础计量与可观测 | **完成** |
-| M1 | 多 Provider 路由（成本 / 延迟 / 能力 / 健康度）+ 故障转移 | 计划中 |
+| M1 | 多 Provider 路由（成本 / 延迟 / 能力 / 健康度）+ 故障转移 | **完成** |
 | M2 | 语义缓存：Embedding + 阈值门控 + Redis | 计划中 |
 | M3 | Token 配额与成本治理：预算、超限降级、计量对账 | 计划中 |
 | M4 | vLLM 本地推理服务化 + 量化对比（FP16 / AWQ / GPTQ） | 计划中 |
@@ -279,3 +448,47 @@ schannel 取不到凭证，所以验收脚本只打本机回环地址。
 | `[DONE]` 补齐 | 上游省略时网关补齐 | `X-Mock-Omit-Done: 1` 断言通过 |
 | 成本计量 | 采信 provider usage 并按单价折算 | 日志 `cost_usd=`、`infergate_tokens_total` |
 | 字节账目一致 | 日志 `resp_bytes=1718` 等于 curl 落盘 1718 字节 | `tmp\stream.out` 交叉核对 |
+
+---
+
+## 7. 已验证结论（M1 验收口径）
+
+| 验收项 | 结论 | 证据 |
+| --- | --- | --- |
+| 单元 / 集成测试 | 全绿 | `go test ./...` exit 0（gateway / router / breaker / stats / sse / miniyaml） |
+| 静态检查 | 全绿 | `go vet ./...` exit 0 |
+| Go 端到端 | 64/64 断言通过 | `go run ./cmd/verify-m1` |
+| curl 端到端 | 56/56 断言通过 | `scripts/verify-m1.ps1` |
+| 优先级路由 | 无异常时第一名恒为 priority=1 | `TestPriorityIsTheDefaultOrder`、verify-m1 段 3 |
+| 成本排序 | 更便宜的后端胜过更优先的贵后端 | `TestCostOrderingBeatsPriority`、`TestFreeBackendWinsOnCost` |
+| 延迟排序 | 按窗口实测均值排，没测过的排最后 | `TestLatencyOrderingUsesTheMeasuredWindow`、`TestUnmeasuredBackendSortsLast` |
+| 加权策略 | 按 weight 抽样，两个后端都能分到流量 | `TestWeightedStrategyHandsOutBothBackends` |
+| 健康度参与排序 | 不健康的后端排到最后但仍然保留（不是直接剔除） | `TestUnhealthyBackendSortsLastButSurvives`、`TestScoreBlendsReliability` |
+| 非流式故障转移 | 上游 5xx / 429 换下一个后端，客户端无感 | `TestFailoverOn5xx`、`TestFailoverOn429`、verify-m1 段 4 |
+| 流式故障转移 | 首帧之前可以重试，已出帧不重试（不会拼出两份答案） | `TestStreamingFailoverRelaysTheSecondBackend`、verify-m1 段 4 |
+| 4xx 不换后端也不透支健康度 | 上游 4xx 原样回传且记为成功 | `TestNoFailoverOn4xx` |
+| 超时也走故障转移 | 单次上游超时只算这一次尝试失败 | `TestTimeoutFailsOverWithoutAnswering504ForTheClient` |
+| 全部候选失败 | 回传最后一个 Provider 的状态与响应体 | `TestAllCandidatesFailForwardsTheProviderError`、`TestLastCandidateTimeoutAnswers504` |
+| 重试预算有上界 | `max_failures_per_request` 封顶尝试次数 | `TestMaxAttemptsCapsTheFailoverBudget`、verify-m1 `checkMaxAttemptsBudget` |
+| 熔断状态机 | closed → open → half-open → closed，半开只放 1 个探针 | `TestHalfOpenAdmitsExactlyOneProbe`、`TestFailedProbeReopensImmediately`、`TestHalfOpenProbesCloseTheBreaker` |
+| 样本不足不熔断 | 低于 `min_requests` 永不跳闸：未知 ≠ 坏了 | `TestBelowMinRequestsNeverTrips` |
+| 熔断不吞请求 | open 的后端排最后而非剔除；全熔断时给出 502 而不是挂住 | `TestBreakerStopsRoutingToADeadBackend`、verify-m1 段 5 |
+| 能力路由 | 只送给声明了该能力的后端；无匹配返回 400 而不降级 | `TestCapabilityHeaderExcludesABackend`、`TestUnmatchedCapabilityIs400NotADowngrade` |
+| 显式指定 | `X-InferGate-Upstream` 跳过打分，且是唯一候选 | `TestExplicitPinSkipsThePreferredBackend`、`TestExplicitPinWinsAndIsAlone` |
+| 模型名改写 | 后端声明了具体模型就送它自己的名字 | `TestBackendReceivesItsOwnModelName`、`TestCatchAllWithConcreteModelPrefersTheConcreteName` |
+| 四条可观测面 | 路由表 / 熔断 / 统计 / 指标都可读且带标签 | `/admin/upstreams`、`/admin/breakers`、`/stats`、`/metrics`，verify-m1 段 8 |
+| 故障吸收实测 | 杀副本期间 18000 请求 0 错误 | `docs/baseline/m1-load-faulted-r{1,2,3}.json` |
+| 熔断收益实测 | 中位延迟 420.42ms → 17.81ms（23.6×） | `docs/baseline/m1-summary.json` 的 `failover` 块 |
+
+M1 的取舍与已知边界（都写在代码注释里，不是事后找补）：
+
+1. **`upstream_timeout` 是"每次尝试"的预算，不是整条请求的共享预算**。共享预算会让慢的第一个候选
+   用光整段时间，后面的健康候选拿到一个已经过期的 deadline，于是客户端拿到 504 而网关其实从未
+   问过那个快的后端——那正是故障转移要解决的场景。代价是最坏情况 `上游超时 × 尝试次数`，
+   两个旋钮都暴露在配置里，由使用方按自己的超时预算权衡。
+2. **熔断失败率的分母是整个窗口，成功也计入**。所以短促故障在繁忙窗口里需要更多失败才会跳闸；
+   这是"宁可晚跳闸也不要抖动"的选择，想更激进就调小 `window` 或 `min_requests`。
+3. **流式重试只在首帧之前**。一旦有字节发给客户端就不能再换后端，否则会把两个后端的输出拼成
+   一份看起来正常、实际自相矛盾的答案。
+4. **打分与排序不碰 IO**：`internal/router` 只吃传入的候选与窗口快照，不读网络也不改输入，
+   所以策略可以单测、决策可以解释（`reason=` 直接进日志）。

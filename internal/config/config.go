@@ -37,8 +37,94 @@ func unmarshalYAML(raw []byte, v any) error {
 type Config struct {
 	Server    ServerConfig     `json:"server"`
 	Upstreams []UpstreamConfig `json:"upstreams"`
+	Routing   RoutingConfig    `json:"routing"`
+	Health    HealthConfig     `json:"health"`
 	Log       LogConfig        `json:"log"`
 	Pricing   PricingConfig    `json:"pricing"`
+}
+
+// HealthConfig parameterises the per-upstream circuit breaker.
+//
+// Every threshold here is expressed against a SLIDING WINDOW rather than a
+// lifetime counter. A lifetime counter is the classic breaker bug: an upstream
+// that failed a thousand times yesterday can never be trusted again, because the
+// ratio never recovers no matter how healthy it is now.
+type HealthConfig struct {
+	// Window is the observation window for failure and latency statistics.
+	Window Duration `json:"window"`
+
+	// Buckets is how many slices the window is divided into. More buckets make
+	// the window slide more smoothly at the cost of a little memory. A window
+	// of 60s with 6 buckets means statistics fall out of scope in 10s steps.
+	Buckets int `json:"buckets"`
+
+	// MinRequests is how many attempts must be observed in the window before
+	// the breaker may open. Below it a single unlucky failure would trip a
+	// breaker on a healthy-but-quiet backend.
+	MinRequests int `json:"min_requests"`
+
+	// FailureRatio opens the breaker when the windowed error ratio reaches it
+	// (0.5 = half the attempts failed).
+	FailureRatio float64 `json:"failure_ratio"`
+
+	// OpenDuration is how long the breaker stays open before it lets a single
+	// probe request through (half-open).
+	OpenDuration Duration `json:"open_duration"`
+
+	// HalfOpenProbes is how many consecutive successes in the half-open state
+	// are needed to close the breaker again. One success is enough for a mock,
+	// but too few for a flapping provider, so the default is 2.
+	HalfOpenProbes int `json:"half_open_probes"`
+
+	// MaxFailuresPerRequest bounds the failover chain length. It exists to stop
+	// an amplification loop: three broken backends multiplied by three retries
+	// each would turn one client request into nine upstream requests, and the
+	// cost of that is paid by the provider's rate limiter.
+	MaxFailuresPerRequest int `json:"max_failures_per_request"`
+
+	// RetryBackoff is the base delay before the next attempt. Successive
+	// attempts multiply it (linear growth) and jitter is added, because a fixed
+	// delay makes every client retry in lockstep and re-creates the stampede.
+	RetryBackoff Duration `json:"retry_backoff"`
+}
+
+// RoutingConfig selects and weights the routing strategy.
+type RoutingConfig struct {
+	// Strategy is one of "priority" (config order / explicit priority), "cost"
+	// (cheapest first), "latency" (fastest observed first), "weighted" (random
+	// by weight) or "score" (normalised weighted sum of cost, latency and
+	// failure ratio). Unknown values are rejected at load time rather than
+	// silently degrading to the first backend.
+	Strategy string `json:"strategy"`
+
+	// Weights tune the "score" strategy. They do not need to sum to 1: they are
+	// normalised against their own total, so an operator can write
+	// "cost: 3, latency: 1" without doing arithmetic.
+	Weights RoutingWeights `json:"weights"`
+
+	// DefaultCapabilities is applied to an upstream that does not declare its
+	// own capability tags.
+	DefaultCapabilities []string `json:"default_capabilities"`
+
+	// FallbackModel, when set, is the model name to ask for on a retry where
+	// the caller's model does not exist on the candidate backend.
+	FallbackModel string `json:"fallback_model"`
+}
+
+// RoutingWeights are the score-strategy coefficients.
+type RoutingWeights struct {
+	// Cost is the weight of normalised price per 1M tokens.
+	Cost float64 `json:"cost"`
+
+	// Latency is the weight of normalised recent latency.
+	Latency float64 `json:"latency"`
+
+	// Reliability is the weight of the windowed failure ratio. It is the only
+	// term that can take a backend out of rotation on its own.
+	Reliability float64 `json:"reliability"`
+
+	// Priority is the weight of the configured priority (lower wins).
+	Priority float64 `json:"priority"`
 }
 
 // Duration is a time.Duration that reads the human-readable form from YAML.
@@ -150,6 +236,21 @@ type UpstreamConfig struct {
 	// acts as a catch-all, matching any model name (this mirrors the classic
 	// nginx location-prefix idiom and is deliberate, not an accident).
 	Models []string `json:"models"`
+
+	// Capabilities are the feature tags this backend supports, matched against
+	// the capabilities a request requires (function calling, JSON mode, long
+	// context, vision...). A request that requires a missing capability skips
+	// this backend rather than failing on it.
+	Capabilities []string `json:"capabilities"`
+
+	// Priority orders candidates in the "priority" strategy: lower wins. All
+	// else being equal it is also the final tie-break, which keeps routing
+	// deterministic when the score strategy produces equal scores.
+	Priority int `json:"priority"`
+
+	// Weight is the relative share for the "weighted" strategy. Zero means
+	// "unweighted"; negative values are rejected.
+	Weight float64 `json:"weight"`
 }
 
 // LogConfig selects the logging surface.
@@ -187,6 +288,28 @@ const (
 	KindOpenAI = "openai"
 )
 
+// Supported routing strategies.
+const (
+	// StrategyPriority orders by configured priority, then config order. It is
+	// the default because it is the only strategy whose behaviour an operator
+	// can predict from the file alone.
+	StrategyPriority = "priority"
+
+	// StrategyCost orders by the configured price book, cheapest first.
+	StrategyCost = "cost"
+
+	// StrategyLatency orders by a sliding-window latency EWMA.
+	StrategyLatency = "latency"
+
+	// StrategyWeighted picks randomly according to the configured weights,
+	// which is how traffic is split deliberately (canary, quota smoothing).
+	StrategyWeighted = "weighted"
+
+	// StrategyScore orders by a normalised weighted sum of cost, latency,
+	// reliability and priority.
+	StrategyScore = "score"
+)
+
 // Defaults mirrors configs/infergate.yaml. Load applies them before overlaying
 // the file, so a partially specified file is still a valid configuration.
 func Defaults() Config {
@@ -201,6 +324,25 @@ func Defaults() Config {
 			MaxIdleConnsPerHost: 64,
 		},
 		Log: LogConfig{Level: "info", Format: "text"},
+		Routing: RoutingConfig{
+			Strategy: StrategyPriority,
+			// Weights are a starting point, not a truth: cost dominates because
+			// it is the only term an operator controls exactly, reliability is
+			// next because a failing backend costs a retry, and latency is
+			// deliberately last because a shared host makes it noisy (see the
+			// M0 baseline in docs/RESUME.md).
+			Weights: RoutingWeights{Cost: 3, Latency: 1, Reliability: 2, Priority: 1},
+		},
+		Health: HealthConfig{
+			Window:                Duration(60 * time.Second),
+			Buckets:               6,
+			MinRequests:           20,
+			FailureRatio:          0.5,
+			OpenDuration:          Duration(15 * time.Second),
+			HalfOpenProbes:        2,
+			MaxFailuresPerRequest: 3,
+			RetryBackoff:          Duration(50 * time.Millisecond),
+		},
 		Pricing: PricingConfig{
 			Default: ModelPrice{In: 0, Out: 0},
 			Models:  map[string]ModelPrice{},
@@ -324,6 +466,67 @@ func (c *Config) Validate() error {
 	}
 	if c.Pricing.Default.In < 0 || c.Pricing.Default.Out < 0 {
 		return errors.New("pricing: default price must not be negative")
+	}
+
+	switch strings.ToLower(c.Routing.Strategy) {
+	case StrategyPriority, StrategyCost, StrategyLatency, StrategyWeighted, StrategyScore:
+		c.Routing.Strategy = strings.ToLower(c.Routing.Strategy)
+	case "":
+		c.Routing.Strategy = Defaults().Routing.Strategy
+	default:
+		return fmt.Errorf("routing: unsupported strategy %q (want priority, cost, latency, weighted or score)", c.Routing.Strategy)
+	}
+	if w := c.Routing.Weights; w.Cost < 0 || w.Latency < 0 || w.Reliability < 0 || w.Priority < 0 {
+		return errors.New("routing.weights: weights must not be negative")
+	}
+	if c.Routing.Weights == (RoutingWeights{}) {
+		c.Routing.Weights = Defaults().Routing.Weights
+	}
+
+	dh := Defaults().Health
+	if c.Health.Window <= 0 {
+		c.Health.Window = dh.Window
+	}
+	if c.Health.OpenDuration <= 0 {
+		c.Health.OpenDuration = dh.OpenDuration
+	}
+	if c.Health.Buckets <= 0 {
+		c.Health.Buckets = dh.Buckets
+	}
+	if c.Health.MinRequests <= 0 {
+		c.Health.MinRequests = dh.MinRequests
+	}
+	if c.Health.HalfOpenProbes <= 0 {
+		c.Health.HalfOpenProbes = dh.HalfOpenProbes
+	}
+	if c.Health.MaxFailuresPerRequest <= 0 {
+		c.Health.MaxFailuresPerRequest = dh.MaxFailuresPerRequest
+	}
+	if c.Health.RetryBackoff < 0 {
+		return errors.New("health: retry_backoff must not be negative")
+	}
+	if c.Health.FailureRatio == 0 {
+		c.Health.FailureRatio = dh.FailureRatio
+	}
+	if c.Health.FailureRatio < 0 || c.Health.FailureRatio > 1 {
+		return fmt.Errorf("health: failure_ratio must be within (0, 1], got %v", c.Health.FailureRatio)
+	}
+
+	weights := 0.0
+	for i := range c.Upstreams {
+		u := &c.Upstreams[i]
+		if u.Weight < 0 {
+			return fmt.Errorf("upstream %s: weight must not be negative", u.Name)
+		}
+		weights += u.Weight
+	}
+	if weights == 0 {
+		// An unweighted fleet is treated as equally weighted. Doing it here
+		// rather than in the picker means the picker never divides by zero and
+		// the meaning of "weight: 0" is defined in exactly one place: default.
+		for i := range c.Upstreams {
+			c.Upstreams[i].Weight = 1
+		}
 	}
 	return nil
 }

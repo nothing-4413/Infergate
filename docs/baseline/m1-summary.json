@@ -1,0 +1,156 @@
+{
+    "generated_at":  "2026-10-05T14:43:16",
+    "host":  "LLX / Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+    "rounds":  3,
+    "requests":  1500,
+    "warmup":  300,
+    "rows":  [
+                 {
+                     "Scenario":  "M0 single upstream",
+                     "Workload":  "non-stream",
+                     "Concurrency":  8,
+                     "QPS":  1772,
+                     "QPSMin":  1228,
+                     "QPSMax":  1975,
+                     "P95_ms":  6.35,
+                     "P99_ms":  12.49,
+                     "Errors":  0
+                 },
+                 {
+                     "Scenario":  "M0 single upstream",
+                     "Workload":  "non-stream",
+                     "Concurrency":  32,
+                     "QPS":  1825,
+                     "QPSMin":  1402,
+                     "QPSMax":  1948,
+                     "P95_ms":  22.075,
+                     "P99_ms":  30.999,
+                     "Errors":  0
+                 },
+                 {
+                     "Scenario":  "M0 single upstream",
+                     "Workload":  "stream",
+                     "Concurrency":  8,
+                     "QPS":  977,
+                     "QPSMin":  892,
+                     "QPSMax":  1266,
+                     "P95_ms":  12.502,
+                     "P99_ms":  15.007,
+                     "Errors":  0
+                 },
+                 {
+                     "Scenario":  "M0 single upstream",
+                     "Workload":  "stream",
+                     "Concurrency":  32,
+                     "QPS":  1425,
+                     "QPSMin":  1050,
+                     "QPSMax":  1434,
+                     "P95_ms":  27.527,
+                     "P99_ms":  31.748,
+                     "Errors":  0
+                 },
+                 {
+                     "Scenario":  "M1 router (healthy)",
+                     "Workload":  "non-stream",
+                     "Concurrency":  8,
+                     "QPS":  1749,
+                     "QPSMin":  1287,
+                     "QPSMax":  1777,
+                     "P95_ms":  7.081,
+                     "P99_ms":  8.992,
+                     "Errors":  0
+                 },
+                 {
+                     "Scenario":  "M1 router (healthy)",
+                     "Workload":  "non-stream",
+                     "Concurrency":  32,
+                     "QPS":  1701,
+                     "QPSMin":  1558,
+                     "QPSMax":  1724,
+                     "P95_ms":  22.246,
+                     "P99_ms":  27.918,
+                     "Errors":  0
+                 },
+                 {
+                     "Scenario":  "M1 router (healthy)",
+                     "Workload":  "stream",
+                     "Concurrency":  8,
+                     "QPS":  935,
+                     "QPSMin":  871,
+                     "QPSMax":  940,
+                     "P95_ms":  13.001,
+                     "P99_ms":  15.582,
+                     "Errors":  0
+                 },
+                 {
+                     "Scenario":  "M1 router (healthy)",
+                     "Workload":  "stream",
+                     "Concurrency":  32,
+                     "QPS":  1334,
+                     "QPSMin":  1152,
+                     "QPSMax":  1647,
+                     "P95_ms":  31.618,
+                     "P99_ms":  35.616,
+                     "Errors":  0
+                 },
+                 {
+                     "Scenario":  "M1 router (1 replica down)",
+                     "Workload":  "non-stream",
+                     "Concurrency":  8,
+                     "QPS":  431,
+                     "QPSMin":  411,
+                     "QPSMax":  435,
+                     "P95_ms":  23.104,
+                     "P99_ms":  24.714,
+                     "Errors":  0
+                 },
+                 {
+                     "Scenario":  "M1 router (1 replica down)",
+                     "Workload":  "non-stream",
+                     "Concurrency":  32,
+                     "QPS":  1652,
+                     "QPSMin":  1317,
+                     "QPSMax":  1669,
+                     "P95_ms":  24.58,
+                     "P99_ms":  29.79,
+                     "Errors":  0
+                 },
+                 {
+                     "Scenario":  "M1 router (1 replica down)",
+                     "Workload":  "stream",
+                     "Concurrency":  8,
+                     "QPS":  803,
+                     "QPSMin":  784,
+                     "QPSMax":  1146,
+                     "P95_ms":  14.014,
+                     "P99_ms":  16.767,
+                     "Errors":  0
+                 },
+                 {
+                     "Scenario":  "M1 router (1 replica down)",
+                     "Workload":  "stream",
+                     "Concurrency":  32,
+                     "QPS":  1033,
+                     "QPSMin":  629,
+                     "QPSMax":  1691,
+                     "P95_ms":  40.34,
+                     "P99_ms":  43.741,
+                     "Errors":  0
+                 }
+             ],
+    "failover":  {
+                     "scenario":  "stalled-primary behind a per-attempt timeout",
+                     "stall_ms":  1500,
+                     "upstream_timeout_ms":  400,
+                     "requests":  10,
+                     "all_succeeded":  true,
+                     "requests_that_paid_a_timeout":  4,
+                     "median_ms_while_breaker_closed":  420.42,
+                     "median_ms_once_breaker_open":  17.81,
+                     "breaker_state":  "open",
+                     "breaker_attempts":  4,
+                     "breaker_failures":  4,
+                     "breaker_timeouts":  4,
+                     "breaker_failure_ratio":  1
+                 }
+}

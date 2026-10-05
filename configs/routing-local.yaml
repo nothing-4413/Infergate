@@ -1,0 +1,120 @@
+# InferGate M1 configuration — self-contained three-replica fleet.
+#
+# Same routing and health machinery as configs/routing.yaml, but every backend is
+# the in-repo mock upstream, so scripts/verify-m1.ps1 can run the whole M1 story
+# (failover, circuit breaking, capability routing, admin surfaces) with no API
+# key and no network.
+#
+#   go run ./cmd/mockupstream -listen :9100 -name primary
+#   go run ./cmd/mockupstream -listen :9101 -name secondary
+#   go run ./cmd/mockupstream -listen :9102 -name tools
+#   go run ./cmd/infergate   -config configs/routing-local.yaml
+#
+# The three replicas declare the SAME logical model ("/", the catch-all), so the
+# only thing that decides between them is priority and health. That is
+# deliberate: it makes failover observable as a change of
+# X-InferGate-Upstream-Name, with no model rewriting in the way.
+
+server:
+  listen: ":8080"
+  read_header_timeout: "10s"
+  idle_timeout: "90s"
+
+  # Per-attempt budget. The script kills one replica, so this only has to be
+  # long enough for a healthy local backend to answer.
+  upstream_timeout: "10s"
+
+  shutdown_timeout: "5s"
+  max_body_bytes: 8388608
+  max_idle_conns_per_host: 256
+
+log:
+  level: "info"
+  format: "text"
+
+routing:
+  strategy: "priority"
+  weights:
+    cost: 3
+    latency: 1
+    reliability: 2
+    priority: 1
+  default_capabilities:
+    - "chat"
+
+health:
+  # A sliding window of time buckets, not a lifetime counter: a backend that
+  # failed a minute ago must not keep a breaker open now.
+  window: "30s"
+  buckets: 6
+
+  # Deliberately small so a curl script can trip a breaker in a few requests,
+  # but NOT as small as the number of healthy requests the script makes first:
+  # the ratio is computed over the whole window, so a request that SUCCEEDED
+  # counts toward min_requests. With min_requests=2 a single failure after one
+  # success is already a ratio of 0.5 and trips the breaker, which makes the
+  # sequence "healthy request, then failover, then skip" collapse into "skip"
+  # before the failover has been observed. The production-shaped values are in
+  # configs/routing.yaml.
+  min_requests: 4
+  failure_ratio: 0.5
+
+  # Long enough that scripts/verify-m1.ps1 can prove a tripped backend receives
+  # NO attempts without racing the half-open probe. The half-open transitions
+  # themselves are covered deterministically by cmd/verify-m1, and by this
+  # script's final section, which resets the breaker rather than sleeping.
+  open_duration: "30s"
+
+  half_open_probes: 1
+  max_failures_per_request: 2
+  retry_backoff: "20ms"
+
+upstreams:
+  - name: "primary"
+    kind: "openai"
+    base_url: "http://127.0.0.1:9100"
+    api_key: ""
+    models:
+      - "/"
+    capabilities:
+      - "chat"
+    priority: 1
+    weight: 1
+
+  - name: "secondary"
+    kind: "openai"
+    base_url: "http://127.0.0.1:9101"
+    api_key: ""
+    models:
+      - "/"
+    capabilities:
+      - "chat"
+    priority: 2
+    weight: 1
+
+  # The only backend that declares "tools". A request that requires the
+  # capability must reach this one, and a request requiring a capability nobody
+  # has must fail with 400 rather than silently downgrade.
+  - name: "tools"
+    kind: "openai"
+    base_url: "http://127.0.0.1:9102"
+    api_key: ""
+    models:
+      - "/"
+    capabilities:
+      - "chat"
+      - "tools"
+    priority: 3
+    weight: 1
+
+pricing:
+  default:
+    in: 1.0
+    out: 3.0
+  models:
+    mock-gpt:
+      in: 1.0
+      out: 3.0
+    mock-reasoner:
+      in: 2.0
+      out: 8.0

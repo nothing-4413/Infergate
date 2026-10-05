@@ -50,6 +50,16 @@ type Sink interface {
 	// request.
 	ObserveUpstreamAttempt(upstream string, status int, outcome Outcome, elapsed time.Duration)
 
+	// ObserveFailover records the decision to abandon one backend and try
+	// another, with the abandoned attempt's outcome.
+	//
+	// This is reported separately from ObserveUpstreamAttempt because the two
+	// answer different questions: attempts say how often a backend was tried,
+	// failovers say how often the gateway decided it was not worth waiting for.
+	// A rising failover rate with a flat attempt rate is the signature of a
+	// fleet-wide slowdown that no single backend's error rate would show.
+	ObserveFailover(upstream string, outcome Outcome, status int)
+
 	// ObserveFirstToken records time-to-first-token for a streamed response.
 	ObserveFirstToken(upstream, model string, elapsed time.Duration)
 
@@ -69,6 +79,9 @@ func (Nop) ObserveTokens(string, string, int, int, int) {}
 // ObserveUpstreamAttempt implements Sink.
 func (Nop) ObserveUpstreamAttempt(string, int, Outcome, time.Duration) {}
 
+// ObserveFailover implements Sink.
+func (Nop) ObserveFailover(string, Outcome, int) {}
+
 // ObserveFirstToken implements Sink.
 func (Nop) ObserveFirstToken(string, string, time.Duration) {}
 
@@ -83,10 +96,21 @@ type Recorder struct {
 
 	requests       map[requestKey]*requestStat
 	attempts       map[attemptKey]*attemptStat
+	failovers      map[failoverKey]int64
 	tokens         map[tokenKey]*TokenStat
 	firstToken     map[tokenKey]*latencyStat
 	streams        map[string]*streamStat
 	requestLatency []time.Duration
+}
+
+// failoverKey groups failover decisions by the backend that was abandoned and
+// why. The status is kept because a failover away from a 429 is a quota problem
+// while a failover away from a 503 is an outage, and an operator responds to
+// those very differently.
+type failoverKey struct {
+	Upstream string
+	Outcome  Outcome
+	Status   int
 }
 
 type requestKey struct {
@@ -141,6 +165,7 @@ func NewRecorder() *Recorder {
 	return &Recorder{
 		requests:   map[requestKey]*requestStat{},
 		attempts:   map[attemptKey]*attemptStat{},
+		failovers:  map[failoverKey]int64{},
 		tokens:     map[tokenKey]*TokenStat{},
 		firstToken: map[tokenKey]*latencyStat{},
 		streams:    map[string]*streamStat{},
@@ -192,6 +217,44 @@ func (m *Recorder) ObserveUpstreamAttempt(upstream string, status int, outcome O
 	}
 	st.Count++
 	st.Seconds += secs
+}
+
+// ObserveFailover implements Sink.
+//
+// status is the abandoned attempt's HTTP status, or 0 when the attempt never
+// produced a response (dial failure, timeout, stream reset).
+func (m *Recorder) ObserveFailover(upstream string, outcome Outcome, status int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.failovers[failoverKey{Upstream: upstream, Outcome: outcome, Status: status}]++
+}
+
+// FailoverSample is one (upstream, outcome, status) failover counter.
+type FailoverSample struct {
+	Upstream string
+	Outcome  Outcome
+	Status   int
+	Count    int64
+}
+
+// FailoverSnapshot returns the failover counters in deterministic order.
+func (m *Recorder) FailoverSnapshot() []FailoverSample {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]FailoverSample, 0, len(m.failovers))
+	for k, v := range m.failovers {
+		out = append(out, FailoverSample{Upstream: k.Upstream, Outcome: k.Outcome, Status: k.Status, Count: v})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Upstream != out[j].Upstream {
+			return out[i].Upstream < out[j].Upstream
+		}
+		if out[i].Outcome != out[j].Outcome {
+			return out[i].Outcome < out[j].Outcome
+		}
+		return out[i].Status < out[j].Status
+	})
+	return out
 }
 
 // ObserveFirstToken implements Sink.
@@ -384,6 +447,7 @@ func (m *Recorder) Reset() {
 	defer m.mu.Unlock()
 	m.requests = map[requestKey]*requestStat{}
 	m.attempts = map[attemptKey]*attemptStat{}
+	m.failovers = map[failoverKey]int64{}
 	m.tokens = map[tokenKey]*TokenStat{}
 	m.firstToken = map[tokenKey]*latencyStat{}
 	m.streams = map[string]*streamStat{}

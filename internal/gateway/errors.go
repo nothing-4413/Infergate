@@ -56,3 +56,20 @@ func writeRawError(w http.ResponseWriter, status int, contentType string, body [
 	w.WriteHeader(status)
 	_, _ = w.Write(body)
 }
+
+// errorBodyBytes renders the same envelope writeError would send, as bytes.
+//
+// It exists for the failover path: an attempt that fails in a way the caller
+// cannot see yet must carry its response with it, so that a later candidate can
+// still answer. Producing the body here means the "every candidate failed" case
+// and the "write it immediately" case emit byte-identical errors.
+func errorBodyBytes(status int, typ, msg string) []byte {
+	_ = status // the status travels separately, with the header
+	body, err := json.Marshal(ErrorBody{Error: ErrorDetail{Message: msg, Type: typ}})
+	if err != nil {
+		// json.Marshal cannot fail for a struct of strings and nils; the
+		// fallback keeps the function total rather than returning no body.
+		return []byte(`{"error":{"message":"internal gateway error","type":"infergate_internal_error","param":null,"code":null}}`)
+	}
+	return append(body, '\n')
+}

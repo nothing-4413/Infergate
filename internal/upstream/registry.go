@@ -47,6 +47,16 @@ type Target struct {
 
 	// patterns is the configured model list, retained for introspection.
 	patterns []string
+
+	// capabilities are the feature tags this backend declared, lower-cased so
+	// that matching is insensitive to how an operator capitalised them.
+	capabilities []string
+
+	// priority orders candidates in the "priority" strategy: lower wins.
+	priority int
+
+	// weight is the relative share for the "weighted" strategy.
+	weight float64
 }
 
 // IsCatchAll reports whether the backend accepts any model name.
@@ -54,6 +64,70 @@ func (t *Target) IsCatchAll() bool { return t.catchAll }
 
 // ModelPatterns lists the model names this backend can serve, "/" included.
 func (t *Target) ModelPatterns() []string { return t.patterns }
+
+// Capabilities lists the declared feature tags in configuration order.
+func (t *Target) Capabilities() []string { return t.capabilities }
+
+// Priority is the configured priority; lower wins.
+func (t *Target) Priority() int { return t.priority }
+
+// Weight is the configured share for weighted routing.
+func (t *Target) Weight() float64 { return t.weight }
+
+// HasCapabilities reports whether every required tag is declared by this
+// backend.
+//
+// Two deliberate rules:
+//
+//   - An empty requirement list always matches. Most requests (plain chat) name
+//     no capability, and making them fail because a backend declared nothing
+//     would take a working gateway offline.
+//   - A non-empty requirement never matches a backend that declared nothing.
+//     "We don't know" must not be treated as "we support it": silently sending a
+//     tool-calling request to a backend that drops the tools yields a plausible
+//     answer with no tool call, which is far harder to debug than a 400.
+func (t *Target) HasCapabilities(required []string) bool {
+	if len(required) == 0 {
+		return true
+	}
+	if len(t.capabilities) == 0 {
+		return false
+	}
+	have := make(map[string]struct{}, len(t.capabilities))
+	for _, c := range t.capabilities {
+		have[c] = struct{}{}
+	}
+	for _, c := range required {
+		if _, ok := have[strings.ToLower(strings.TrimSpace(c))]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// ServesModel reports whether this backend claims model, case-insensitively.
+// A catch-all backend serves everything.
+func (t *Target) ServesModel(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	if model == "" {
+		return true
+	}
+	for _, p := range t.patterns {
+		if p == "/" || strings.ToLower(p) == model {
+			return true
+		}
+	}
+	return false
+}
+
+// Tags returns the transport-level identity used in logs: name plus whether the
+// backend can serve arbitrary model names.
+func (t *Target) Tags() string {
+	if t.catchAll {
+		return t.Name + " (catch-all)"
+	}
+	return t.Name
+}
 
 // Registry resolves inbound requests to backends.
 type Registry struct {
@@ -96,6 +170,13 @@ func New(cfg *config.Config) (*Registry, error) {
 			APIKey:    uc.APIKey,
 			Kind:      uc.Kind,
 			Transport: newTransport(cfg.Server),
+			priority:  uc.Priority,
+			weight:    uc.Weight,
+		}
+		for _, c := range uc.Capabilities {
+			if c = strings.ToLower(strings.TrimSpace(c)); c != "" {
+				t.capabilities = append(t.capabilities, c)
+			}
 		}
 		r.targets = append(r.targets, t)
 		r.byName[t.Name] = t
@@ -207,6 +288,20 @@ func (r *Registry) Target(name string) (*Target, bool) {
 	defer r.mu.RUnlock()
 	t, ok := r.byName[name]
 	return t, ok
+}
+
+// Targets returns every backend in configuration order.
+//
+// The caller gets the live *Target values, not copies, because a Target carries
+// the shared, per-backend http.Transport that makes connection pooling work.
+// Copying a Target per request would copy the transport pointer but defeat the
+// value of having one construction site for it.
+func (r *Registry) Targets() []*Target {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]*Target, len(r.targets))
+	copy(out, r.targets)
+	return out
 }
 
 // Names returns every configured backend name in configuration order, which is

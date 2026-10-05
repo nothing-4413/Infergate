@@ -41,8 +41,22 @@ const (
 	// HeaderAttempt reports how many upstream attempts were made (M1 retries).
 	HeaderAttempt = "X-InferGate-Attempt"
 
-	// HeaderRoute reasons about routing decisions in M1.
-	HeaderRoute = "X-InferGate-Route"
+	// HeaderCapabilities declares the feature tags the request requires, as a
+	// comma-separated list ("tools", "json", "vision"). The router only offers
+	// backends that declared all of them.
+	//
+	// It is a REQUEST header rather than something inferred from the body,
+	// because the same model served by two backends can differ in what it
+	// supports, and only the caller knows whether the downstream agent actually
+	// needs tool calls. Inferring "tools" from a non-empty tools array is the
+	// obvious guess and the wrong one: an agent framework sends the same tool
+	// schema whether or not the model will use it.
+	HeaderCapabilities = "X-InferGate-Capabilities"
+
+	// HeaderTried lists the backends attempted for this request, in order, on
+	// the response. It is response-only: a client that sees two names knows a
+	// failover happened without reading the gateway's logs.
+	HeaderTried = "X-InferGate-Tried"
 )
 
 // removeHopByHop deletes hop-by-hop headers from h, including any header the

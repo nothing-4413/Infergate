@@ -10,12 +10,12 @@
 
 GO ?= tools/go.cmd
 
-.PHONY: all build vet test verify verify-curl loadtest diag run-mock run-gateway clean help
+.PHONY: all build vet test verify verify-curl verify-m1 loadtest diag run-mock run-gateway clean help
 
 all: build vet test
 
 help:
-	@echo "targets: build vet test verify verify-curl loadtest diag run-mock run-gateway clean"
+	@echo "targets: build vet test verify verify-curl verify-m1 loadtest diag run-mock run-gateway clean"
 
 ## build: compile every package and emit the two binaries.
 build:
@@ -39,6 +39,26 @@ verify:
 ## Requires Windows PowerShell; `pwsh` does not exist on this host.
 verify-curl:
 	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-m0.ps1
+
+## verify-m1: multi-provider routing + failover acceptance (64 assertions, the M1
+## CI gate).  Runs three mock replicas and really kills one: a failover test that
+## never loses a backend is a test of the happy path.
+verify-m1:
+	$(GO) run ./cmd/verify-m1
+
+## verify-m1-curl: the same claims through the real binary and real curl.exe,
+## over a real three-replica fleet on :19100-19102 (the M0 lesson: the in-process
+## gate proves the gateway is correct, a real fleet proves it is operable).
+verify-m1-curl:
+	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-m1.ps1
+
+## run-fleet: the M1 sample fleet (configs/routing-local.yaml) on :8080 with the
+## three replicas the routing config names.  Run in three more shells:
+##   $(GO) run ./cmd/mockupstream -listen :9100 -name primary
+##   $(GO) run ./cmd/mockupstream -listen :9101 -name secondary
+##   $(GO) run ./cmd/mockupstream -listen :9102 -name tools
+run-fleet:
+	$(GO) run ./cmd/infergate -config configs/routing-local.yaml
 
 ## loadtest: the M0 baseline.  Medians of 3 rounds, spreads included, because a
 ## single pass on a shared laptop is not reproducible (see docs/RESUME.md).

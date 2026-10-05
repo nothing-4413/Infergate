@@ -1,0 +1,188 @@
+# InferGate M1 configuration — a multi-provider fleet with health-based routing.
+#
+# This profile is the M1 story in one file: one OpenAI-compatible endpoint in
+# front of several backends, with cost/latency/capability/health deciding where
+# each request goes and what happens when the first choice is broken.
+#
+#   go run ./cmd/mockupstream -listen :9100 -name primary
+#   go run ./cmd/mockupstream -listen :9101 -name secondary
+#   go run ./cmd/mockupstream -listen :9102 -name tools
+#   go run ./cmd/infergate   -config configs/routing.yaml
+#
+# The three replicas are the same binary with different names, so you can see
+# WHICH backend answered in X-InferGate-Upstream-Name and in the structured log.
+#
+# Time values MUST be quoted strings. The loader normalises YAML to JSON, and
+# encoding/json cannot parse "30s" into a duration from a bare token (the
+# config.Duration type is what makes the quoted form legal).
+#
+# PATHS: the inbound path is appended to base_url verbatim. A client calling
+# /v1/chat/completions with base_url "http://127.0.0.1:9100" reaches
+# http://127.0.0.1:9100/v1/chat/completions. Real providers are written the same
+# way ("https://api.deepseek.com"), and a local vLLM is
+# "http://127.0.0.1:8000" — in all three cases the caller's /v1/... completes it.
+
+server:
+  listen: ":8080"
+
+  read_header_timeout: "10s"
+  idle_timeout: "90s"
+
+  # PER-ATTEMPT budget, not a per-request deadline. Each candidate in the
+  # failover chain gets this long, so a slow-but-alive preferred backend is
+  # abandoned and the next one is tried with a full budget rather than a
+  # pre-expired one. The worst case a client waits is therefore about
+  # upstream_timeout * health.max_failures_per_request; both knobs are here.
+  upstream_timeout: "30s"
+
+  shutdown_timeout: "15s"
+  max_body_bytes: 8388608
+
+  # Go's http.Transport defaults to 2 idle connections per host, which forces a
+  # fresh TCP handshake for every concurrent request beyond that. This is the
+  # single most important throughput knob in the file.
+  max_idle_conns_per_host: 256
+
+log:
+  level: "info"
+  format: "text"
+
+routing:
+  # One of: priority | cost | latency | weighted | score.
+  #
+  #   priority  config order, then the `priority` field (lower wins). Default.
+  #   cost      cheapest first, by the price book below.
+  #   latency   fastest measured mean first, from a sliding window.
+  #   weighted  random by the `weight` field, for canary splits.
+  #   score     normalised weighted sum of cost/latency/reliability/priority.
+  strategy: "priority"
+
+  # Only the "score" strategy reads these. They do NOT need to sum to 1: they
+  # are normalised against their own total, so 3/1/2/1 is a ratio, not a
+  # percentage. Reliability is the only term that can take a backend out of
+  # rotation on its own.
+  weights:
+    cost: 3
+    latency: 1
+    reliability: 2
+    priority: 1
+
+  # Applied to an upstream that declares no capabilities of its own. Being
+  # explicit here matters: an untagged backend is otherwise EXCLUDED from any
+  # request that requires a capability, which is the safe default (silently
+  # downgrading a tool-calling request to a model that cannot call tools
+  # produces a plausible-looking wrong answer).
+  default_capabilities:
+    - "chat"
+
+  # Ask for this model when the caller's model does not exist on a candidate.
+  # Empty means "never substitute", which is the right default for a gateway
+  # whose whole job is to be predictable.
+  fallback_model: ""
+
+health:
+  # Circuit breaking is a sliding window of time buckets, not a counter: a
+  # backend that failed an hour ago must not keep a breaker open now.
+  window: "30s"
+  buckets: 6
+
+  # Never trip below this many attempts in the window. Without it a single
+  # unlucky failure on a quiet backend opens its breaker and removes capacity
+  # exactly when there is the least traffic to re-probe it with.
+  min_requests: 5
+
+  # Open when this fraction of windowed attempts failed.
+  failure_ratio: 0.5
+
+  # How long a tripped backend stays out before one probe is admitted.
+  open_duration: "5s"
+
+  # Consecutive successes on the probe needed to close again. One is enough for
+  # a mock but too few for a flapping provider.
+  half_open_probes: 2
+
+  # Bounds the failover chain. This is an amplification guard: three broken
+  # backends times three retries each turns one client request into nine
+  # upstream requests, and the provider's rate limiter pays for it.
+  max_failures_per_request: 2
+
+  # Base delay before the next attempt: linear growth plus full jitter. A fixed
+  # delay makes every client retry in lockstep and re-creates the stampede.
+  retry_backoff: "50ms"
+
+upstreams:
+  # A real provider, first choice. api_key is read from the environment by the
+  # loader, so no secret is committed here; an undefined variable is a hard
+  # error at startup rather than an empty credential at request time.
+  - name: "openai"
+    kind: "openai"
+    base_url: "https://api.openai.com"
+    api_key: "${OPENAI_API_KEY}"
+    models:
+      - "gpt-4o"
+      - "gpt-4o-mini"
+    capabilities:
+      - "chat"
+      - "tools"
+      - "vision"
+    priority: 1
+    weight: 1
+
+  # A cheaper provider that serves the same logical models under its own names.
+  # Because this backend declares concrete patterns and NOT "/", the gateway
+  # rewrites the caller's model to the one this backend actually serves, and the
+  # price book is keyed by those concrete names.
+  - name: "deepseek"
+    kind: "openai"
+    base_url: "https://api.deepseek.com"
+    api_key: "${DEEPSEEK_API_KEY}"
+    models:
+      - "deepseek-chat"
+      - "deepseek-reasoner"
+    capabilities:
+      - "chat"
+      - "tools"
+    priority: 2
+    weight: 1
+
+  # Local vLLM/Ollama-style backend. "/" is the catch-all (the nginx
+  # location-prefix idiom): it accepts whatever model alias the caller sent
+  # rather than being rewritten, which is what a deployment serving an
+  # OpenAI-compatible alias for a local checkpoint wants.
+  #
+  # It is listed last so it is used when the paid providers are unhealthy or
+  # over budget, and it is the reason a request still succeeds with the network
+  # unplugged.
+  - name: "local-vllm"
+    kind: "openai"
+    base_url: "http://127.0.0.1:8000"
+    api_key: ""
+    models:
+      - "/"
+    capabilities:
+      - "chat"
+    priority: 9
+    weight: 1
+
+# USD per one million tokens. M1 uses this for the "cost" strategy and for the
+# per-request cost figure in the logs; M3 turns the same table into a quota and
+# a budget gate, which is why it is a first-class section rather than a comment.
+pricing:
+  # Used for any model with no explicit row, so an unpriced model still gets a
+  # cost figure instead of a zero that would silently look free.
+  default:
+    in: 1.0
+    out: 3.0
+  models:
+    gpt-4o:
+      in: 2.5
+      out: 10.0
+    gpt-4o-mini:
+      in: 0.15
+      out: 0.6
+    deepseek-chat:
+      in: 0.27
+      out: 1.1
+    deepseek-reasoner:
+      in: 0.55
+      out: 2.19

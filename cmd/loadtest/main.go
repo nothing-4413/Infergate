@@ -952,13 +952,33 @@ func scrapeMetrics(base string, client *http.Client) (mean time.Duration, count 
 // ---------------------------------------------------------------------------
 // reporting
 
+// shortTarget renders a base URL as host:port so the per-phase table stays
+// narrow; "direct" is reserved for the in-process backend baseline.
+func shortTarget(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return raw
+	}
+	return u.Host
+}
+
 func printTable(phases []result) {
 	fmt.Println("| workload | target | c | QPS | P50 | P95 | P99 | TTFT P50 | TTFT P95 | errors |")
 	fmt.Println("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
 	for _, r := range phases {
+		// Name the target from the label when the label says what it is, and
+		// from the URL otherwise. The old rule ("no 'gateway' in the label ->
+		// direct") printed the caller's own endpoint as "direct" in -url mode,
+		// which reads as "this is the no-gateway baseline" in a table that is
+		// often pasted into a report.
 		target := "direct"
-		if strings.Contains(r.Label, "gateway") || r.Target == "" {
+		switch {
+		case strings.HasPrefix(r.Label, "direct"):
+			target = "direct"
+		case strings.Contains(r.Label, "gateway"):
 			target = "gateway"
+		case r.Target != "":
+			target = shortTarget(r.Target)
 		}
 		ttft50, ttft95 := "-", "-"
 		if r.Stream {

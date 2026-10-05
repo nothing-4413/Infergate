@@ -1,0 +1,99 @@
+{
+    "summary":  {
+                    "scenario":  "stalled-primary behind a per-attempt timeout",
+                    "stall_ms":  1500,
+                    "upstream_timeout_ms":  400,
+                    "requests":  10,
+                    "all_succeeded":  true,
+                    "requests_that_paid_a_timeout":  4,
+                    "median_ms_while_breaker_closed":  420.42,
+                    "median_ms_once_breaker_open":  17.81,
+                    "breaker_state":  "open",
+                    "breaker_attempts":  4,
+                    "breaker_failures":  4,
+                    "breaker_timeouts":  4,
+                    "breaker_failure_ratio":  1
+                },
+    "series":  [
+                   {
+                       "n":  1,
+                       "status":  200,
+                       "ms":  423.37,
+                       "upstream":  "fast",
+                       "attempts":  "2",
+                       "tried":  "stalled, fast"
+                   },
+                   {
+                       "n":  2,
+                       "status":  200,
+                       "ms":  420.42,
+                       "upstream":  "fast",
+                       "attempts":  "2",
+                       "tried":  "stalled, fast"
+                   },
+                   {
+                       "n":  3,
+                       "status":  200,
+                       "ms":  418.57,
+                       "upstream":  "fast",
+                       "attempts":  "2",
+                       "tried":  "stalled, fast"
+                   },
+                   {
+                       "n":  4,
+                       "status":  200,
+                       "ms":  417.43,
+                       "upstream":  "fast",
+                       "attempts":  "2",
+                       "tried":  "stalled, fast"
+                   },
+                   {
+                       "n":  5,
+                       "status":  200,
+                       "ms":  17.81,
+                       "upstream":  "fast",
+                       "attempts":  "1",
+                       "tried":  ""
+                   },
+                   {
+                       "n":  6,
+                       "status":  200,
+                       "ms":  16.6,
+                       "upstream":  "fast",
+                       "attempts":  "1",
+                       "tried":  ""
+                   },
+                   {
+                       "n":  7,
+                       "status":  200,
+                       "ms":  16.42,
+                       "upstream":  "fast",
+                       "attempts":  "1",
+                       "tried":  ""
+                   },
+                   {
+                       "n":  8,
+                       "status":  200,
+                       "ms":  18.15,
+                       "upstream":  "fast",
+                       "attempts":  "1",
+                       "tried":  ""
+                   },
+                   {
+                       "n":  9,
+                       "status":  200,
+                       "ms":  16.52,
+                       "upstream":  "fast",
+                       "attempts":  "1",
+                       "tried":  ""
+                   },
+                   {
+                       "n":  10,
+                       "status":  200,
+                       "ms":  18.01,
+                       "upstream":  "fast",
+                       "attempts":  "1",
+                       "tried":  ""
+                   }
+               ]
+}
