@@ -1,0 +1,43 @@
+# InferGate M5 —— Prometheus 抓取配置（容器形态）
+#
+# 与 ../prometheus.yml 的唯一区别是抓取目标：那份写死 127.0.0.1:18999，因为它是
+# "本机形态"的配置；在 compose 网络里 127.0.0.1 指的是 Prometheus 容器自己，
+# 所以要写 compose 的服务名 gateway:8080（容器内端口，不是宿主机映射的 18080）。
+#
+# 这份文件被 docker-compose.yml 的 prometheus 服务挂载为 /etc/prometheus/prometheus.yml。
+# 本机直跑 Prometheus 时仍然用 ../prometheus.yml，两者不要互换。
+
+global:
+  scrape_interval: 5s
+  evaluation_interval: 15s
+  # 必须严格小于 scrape_interval，理由与 ../prometheus.yml 第 18-20 行相同。
+  scrape_timeout: 4s
+
+external_labels:
+  cluster: infergate-compose
+  # 与 ../prometheus.yml 的 host=windows-dev 区分开：容器形态的数据必须能和
+  # 本机形态的数据在历史里分开，否则两种口径会混进同一条曲线。
+  host: docker-desktop
+  milestone: m5
+
+scrape_configs:
+  - job_name: infergate
+    metrics_path: /metrics
+    scheme: http
+    static_configs:
+      # 服务名 + 容器内端口。9090 不在这里出现：那是 Prometheus 自己的端口。
+      - targets:
+          - "gateway:8080"
+        labels:
+          instance_kind: compose
+
+  # mock 上游今天不暴露 /metrics（../prometheus.yml 第 66-79 行有同样一段预留），
+  # 所以这里保持注释。打开时记得把端口改成容器内实际监听的 9000。
+  # - job_name: mock-upstream
+  #   metrics_path: /metrics
+  #   scheme: http
+  #   static_configs:
+  #     - targets:
+  #         - "mockupstream:9000"
+  #       labels:
+  #         instance_kind: upstream

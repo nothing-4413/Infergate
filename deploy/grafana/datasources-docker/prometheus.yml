@@ -1,0 +1,26 @@
+# InferGate M5 —— Grafana 数据源 provisioning（容器形态）
+#
+# 与 ../provisioning/datasources/prometheus.yml 的唯一区别是 url：
+#   http://127.0.0.1:9090      ← 本机直跑 Grafana + 本机直跑 Prometheus
+#   http://prometheus:9090     ← compose 网络里的服务名
+#
+# 容器里写 127.0.0.1 会指向 Grafana 自己，数据源健康检查失败、所有 panel 空白，
+# 而 Grafana 本身的日志不会因此报错——这是这套配置最容易踩的一脚（deploy/README §4.3）。
+#
+# uid 必须保持 PROMETHEUS 不变：看板 JSON 里的每一处 datasource.uid 都引用它。
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: PROMETHEUS
+    type: prometheus
+    access: proxy
+    # proxy 模式下 Grafana 服务端去连，浏览器不直连，所以不需要给 Prometheus 配 CORS。
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      httpMethod: POST
+      timeInterval: 5s
+      prometheusType: Prometheus
+      prometheusVersion: 2.53.0

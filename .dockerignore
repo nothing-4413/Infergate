@@ -1,0 +1,40 @@
+# Keep the build context small and the layer cache stable.
+#
+# The point is not size for its own sake: `.gotoolchain/`, `.gomodcache/`,
+# `.gocache/` and `.gotmp/` are hundreds of megabytes of LOCAL toolchain state
+# extracted inside this repository (README §4). Without these lines the first
+# `docker build` would upload all of it to the daemon and then copy it into a
+# layer.
+
+.git
+.github
+.gitattributes
+
+# Local Go toolchain and caches (see tools/go.cmd + README §4).
+.gotoolchain
+.gomodcache
+.gocache
+.gotmp
+
+# Build artifacts and runtime state.
+bin
+tmp
+*.exe
+*.test
+
+# Docs and deploy config: not needed to compile, and deploy/ is mounted into
+# the observability containers rather than baked into the gateway image.
+docs
+deploy
+scripts
+
+# Editor / OS noise.
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+
+# Secrets.
+.env
+configs/local.yaml
+configs/*.secret.yaml

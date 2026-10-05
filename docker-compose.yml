@@ -1,0 +1,165 @@
+# InferGate observability stack as a single command.
+#
+#   docker compose up -d --build      # gateway + mock upstream + RESP2 server
+#   docker compose --profile obs up -d --build   # ... plus Prometheus + Grafana
+#   docker compose down -v
+#
+# See deploy/README.md §6 for what to look at once it is up. The local
+# (non-Docker) route through the same observability config is §3/§4.
+#
+# PORT CHOICES are deliberately off the usual defaults (18080 instead of 8080,
+# 19090 instead of 9090, 13000 instead of 3000, 16399 instead of 6379): this
+# repository is normally run as local processes on the same machine, and the
+# acceptance scripts already use 18080/18999 for exactly that reason (README
+# §3.2). Override any of them with an environment variable, e.g.
+#   INFERGATE_GATEWAY_PORT=8080 docker compose up -d
+
+name: infergate
+
+services:
+  # ---------------------------------------------------------------------------
+  # The gateway. Dependencies are expressed with service_healthy so a scrape or
+  # a request never races the stores coming up.
+  # ---------------------------------------------------------------------------
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Pin the toolchain tag here if golang:1.26-alpine is not available yet;
+        # see the note at the top of the Dockerfile.
+        GO_IMAGE: ${INFERGATE_GO_IMAGE:-golang:1.26-alpine}
+        CMD: infergate
+        LDFLAGS: "-s -w -X main.version=0.1.0-compose"
+    image: infergate:local
+    command: ["-config", "/app/configs/docker.yaml"]
+    ports:
+      - "${INFERGATE_GATEWAY_PORT:-18080}:8080"
+    volumes:
+      # Read-only: experimenting with a config should not require a rebuild, and
+      # a container has no business writing into the repository.
+      - ./configs:/app/configs:ro
+    depends_on:
+      mockupstream:
+        condition: service_started
+      miniredis:
+        condition: service_started
+    healthcheck:
+      # /readyz is the strong probe (routing table + stores), so "healthy" here
+      # means "can actually serve", not just "the listener is up".
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/readyz >/dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # The OpenAI-compatible upstream: no API key, no network, deterministic enough
+  # to read a panel off. Confirmed by M0-M6; see cmd/mockupstream.
+  # ---------------------------------------------------------------------------
+  mockupstream:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        GO_IMAGE: ${INFERGATE_GO_IMAGE:-golang:1.26-alpine}
+        CMD: mockupstream
+    image: infergate-mockupstream:local
+    command:
+      - "-listen"
+      - ":9000"
+      - "-name"
+      - "docker-mock"
+      # 15ms between frames is the mock's default and makes streaming visible by
+      # eye. Set it to 0 before drawing any throughput conclusion — otherwise a
+      # load test measures the mock, not the gateway (README §3.2).
+      - "-token-delay"
+      - "15ms"
+      - "-ttfb"
+      - "50ms"
+    expose:
+      - "9000"
+    ports:
+      # Published so you can hit the upstream directly and compare with the
+      # gateway path (the M5 bottleneck question: "is the gateway the limit?").
+      - "${INFERGATE_MOCK_PORT:-19000}:9000"
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # In-repo RESP2 server, so the shared-cache and shared-quota paths can be
+  # exercised without installing Redis. Swap in a real redis:7 for anything
+  # resembling production.
+  # ---------------------------------------------------------------------------
+  miniredis:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        GO_IMAGE: ${INFERGATE_GO_IMAGE:-golang:1.26-alpine}
+        CMD: miniredis
+    image: infergate-miniredis:local
+    command: ["-listen", ":6399"]
+    expose:
+      - "6399"
+    ports:
+      - "${INFERGATE_REDIS_PORT:-16399}:6399"
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Observability. Kept behind a profile so the default `up` stays a three-
+  # container, few-second start; ask for it explicitly with
+  #   docker compose --profile obs up -d
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    profiles: ["obs"]
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      # Lets you reload after editing deploy/prometheus/docker.yml without a
+      # restart:  curl -X POST http://127.0.0.1:19090/-/reload
+      - "--web.enable-lifecycle"
+      - "--log.level=warn"
+    ports:
+      - "${INFERGATE_PROMETHEUS_PORT:-19090}:9090"
+    volumes:
+      # The DOCKER scrape config, not deploy/prometheus/prometheus.yml: that one
+      # targets 127.0.0.1:18999, which inside this namespace is nothing at all.
+      - ./deploy/prometheus/docker.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      gateway:
+        condition: service_healthy
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana-oss:11.1.0
+    profiles: ["obs"]
+    ports:
+      - "${INFERGATE_GRAFANA_PORT:-13000}:3000"
+    environment:
+      # Anonymous viewer: the point of the container profile is "open the URL and
+      # see panels", not to stand up an auth story. Do NOT carry this into
+      # anything reachable from a network you do not control.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      # The default admin/admin is kept (Grafana forces a change on first login);
+      # set GF_SECURITY_ADMIN_PASSWORD here if you want a fixed one.
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      # The dashboard JSONs land exactly where the file provider scans, which is
+      # why no path editing is needed for the container route (deploy/README §4.2).
+      - ./deploy/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      # Container-specific datasource: url http://prometheus:9090 instead of the
+      # host-local http://127.0.0.1:9090. Mounted over the repository copy so the
+      # local Windows route (§4.1) keeps working unchanged.
+      - ./deploy/grafana/datasources-docker/prometheus.yml:/etc/grafana/provisioning/datasources/prometheus.yml:ro
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+# No named volumes: Prometheus and Grafana state is intentionally ephemeral in
+# this profile. `docker compose down` is a clean slate, which is the right
+# default for something whose numbers are supposed to be reproducible.

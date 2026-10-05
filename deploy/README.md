@@ -12,14 +12,22 @@ Prometheus 与 Grafana 都是**外部程序**——仓库里没有 vendored、�
 deploy/
 ├─ README.md                               ← 本文件
 ├─ prometheus/
-│  └─ prometheus.yml                       ← scrape 配置：两个 job（single / fleet）
+│  ├─ prometheus.yml                       ← scrape 配置（本机形态）：两个 job（single / fleet）
+│  └─ docker.yml                           ← scrape 配置（容器形态）：target 是服务名 gateway:8080
 └─ grafana/
    ├─ provisioning/
-   │  ├─ datasources/prometheus.yml        ← 自动注册数据源（uid=PROMETHEUS）
+   │  ├─ datasources/prometheus.yml        ← 自动注册数据源（uid=PROMETHEUS，url 127.0.0.1:9090）
    │  └─ dashboards/infergate.yml          ← 自动注册看板目录（provider）
+   ├─ datasources-docker/
+   │  └─ prometheus.yml                    ← 容器形态的数据源（同一个 uid，url 换成 prometheus:9090）
    └─ dashboards/
       └─ infergate.json                    ← 看板本体（uid=infergate，33 个 panel）
 ```
+
+两份 scrape 配置与两份 datasource 的区别只有一个词，但换错了就是"target DOWN / 所有 panel 空白"：
+本机形态里 Prometheus 自己就是 `127.0.0.1`，容器形态里 `127.0.0.1` 指的是 Prometheus 容器**自己**。
+`docker-compose.yml` 挂的是 `docker.yml` + `datasources-docker/prometheus.yml`；第 3、4 节讲的本机直跑挂的是另外两份。
+两者的 `external_labels.host` 不同（`windows-dev` / `docker-desktop`），所以两套数据进同一个 Prometheus 也能分开看。
 
 三份 YAML 都是 2 空格缩进、无 Tab（YAML 里 Tab 是非法的）；看板 JSON 是纯 ASCII（中文全部写成 `\uXXXX`），
 原因见第 8 节——这是为了让 Windows PowerShell 5.1 的 `Get-Content`（默认按 gb2312 解码无 BOM 文件）也能直接解析它。
@@ -202,3 +210,70 @@ curl.exe -s -o NUL -w "%{http_code}`n" http://127.0.0.1:18999/readyz
   3. `curl.exe -s "http://127.0.0.1:9090/api/v1/query?query=infergate_build_info"` 有序列（标签正确）；
   4. `http://127.0.0.1:3000/api/datasources` 能看到 uid=`PROMETHEUS`，`http://127.0.0.1:3000/api/dashboards/uid/infergate` 能取到看板；
   5. 打开看板，逐个 panel 确认有数据——**空 panel 与真 0 是两件事**，延迟类 panel 尤其如此。
+
+## 7. 一条命令起整套（`docker-compose.yml`）
+
+第 3、4 节是"自己准备两份二进制、两个终端、注意 datasource 的 url"的路线。如果你只是想把面板看亮，
+仓库根目录的 `docker-compose.yml` 把四件事都接好了：网关、mock 上游、仓库内的 RESP2 服务器（`cmd/miniredis`）、
+以及（可选）Prometheus + Grafana。
+
+```
+docker compose up -d --build                 # 网关 + mock 上游 + RESP2（三容器，几秒）
+docker compose --profile obs up -d --build   # 再加 Prometheus + Grafana
+docker compose down                          # 收工（无 named volume，状态随容器一起没）
+```
+
+起来之后：
+
+| 地址 | 是什么 |
+| --- | --- |
+| `http://127.0.0.1:18080/healthz` `/readyz` `/metrics` | 网关自身（`/readyz` 是强探针：路由表 + 存储都在才算 ready） |
+| `http://127.0.0.1:18080/admin/upstreams` 等 `/admin/*` | 管理面（**无认证**，见根 README §9 的安全边界） |
+| `http://127.0.0.1:19000/v1/chat/completions` | 直连 mock 上游，用来回答"瓶颈在网关还是在后端" |
+| `http://127.0.0.1:19090/targets` | Prometheus 抓取状态（`--profile obs`） |
+| `http://127.0.0.1:13000` | Grafana，匿名 Viewer，看板 `InferGate` 已自动加载（`--profile obs`） |
+
+**端口故意都不是默认值**（18080/19000/16399/19090/13000）：这台机器平时是"本机进程"形态在跑，
+验收脚本也用 18080/18999（根 README §3.2）。想改就用环境变量，例如 `INFERGATE_GATEWAY_PORT=8080 docker compose up -d`。
+
+两个形态的差别只有地址，配置是分开的两份：
+
+* `configs/docker.yaml` —— 容器画像：`base_url` 写 `http://mockupstream:9000`，cache 与 quota 的 `redis.addr` 都写 `miniredis:6399`。
+  在容器里写 `127.0.0.1` 会指到网关自己，于是"缓存永远 miss、配额永远连不上"。
+* `configs/mock.yaml` / `cache-redis.yaml` / `quota-redis.yaml` —— 本机画像，保持 loopback 不变。
+
+镜像只有一个 `Dockerfile`，用 `--build-arg CMD=` 选择编译哪个 `cmd/`（网关 / mock 上游 / miniredis），
+compose 的三个服务就是这么来的。构建细节写在 `Dockerfile` 顶部注释里。
+
+### 7.1 这一节里被验证过、与没被验证过的
+
+口径与第 6 节一致，不把"写好了"说成"跑通了"。
+
+**已验证**
+
+* `docker compose -f docker-compose.yml config --quiet` 通过（YAML 与 compose 语法，不需要 daemon）。
+* `configs/docker.yaml` 用真实加载器校验通过：`go run ./cmd/infergate -config configs/docker.yaml -check` → `configuration OK`。
+* **`scripts/verify-docker-profile.ps1` 16 项全过**：把 `configs/docker.yaml` 里的服务名换成本地地址，
+  用仓库自己的三个二进制真起一遍（网关 + mock 上游 + miniredis），证明这些键不只是"能被解析"，而是**真的生效**：
+  `capacity`（幂等 512 / 会话 512）、`max_response_bytes`、`recent_per_session`、`tracing.jsonl_path: ""`，
+  以及缓存/幂等/会话/配额/追踪五个面在 RESP2 存储上的往返。这一条最值得看，因为加载器**不拒绝未知键**——
+  键名写错（例如把 `capacity` 写成 `max_entries`）会静默不生效，只有真跑起来看 admin 面才能证伪。
+
+**未验证**
+
+* **镜像本身没有被构建过**，compose 也没有被起来过：写这份文档的机器上 Docker Desktop 装着但**守护进程没运行**
+  （`failed to connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine`）。
+* 所以 compose 里的东西——`golang:1.26-alpine` / `alpine:3.20` / `prom/prometheus:v2.53.0` / `grafana/grafana-oss:11.1.0`
+  这四个 tag 是否都存在、多阶段构建是否通过、非 root 用户能否写 OTLP 之类——**一概没验过**。
+  `GO_IMAGE` 因此做成 build arg，tag 换了不用改文件。
+* `docker.yml` 与 `datasources-docker/prometheus.yml` 里的服务名解析（`gateway:8080`、`prometheus:9090`）没验过，
+  这是 Docker 内嵌 DNS 的标准行为，不是本仓库的代码。
+* 结论：**容器形态的正确性到"配置解析通过 + 同一份配置在本地真实进程上跑通 + compose 语法合法"为止**。
+  第一次 `docker compose up -d --build` 仍然可能撞上镜像 tag 或构建问题。
+
+## 8. 为什么有一批 `\uXXXX`
+
+（见第 1 节末段。）看板 JSON 里所有中文都写成了 `\uXXXX` 转义，是刻意的：PowerShell 5.1 的
+`Get-Content` 对无 BOM 文件按本地代码页解码，直接写中文会在"读-改-写"一次之后变成乱码。
+同样原因，`scripts/verify-docker-profile.ps1` 通篇只用 ASCII、且所有写文件都走 `[System.IO.File]::WriteAllText`
+（`Set-Content -Encoding utf8` 会写 BOM，网关会把带 BOM 的请求体判成"不是 JSON"）。

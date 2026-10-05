@@ -1,0 +1,167 @@
+# InferGate container profile — the whole stack behind Docker DNS names.
+#
+# This is NOT a copy of configs/mock.yaml with different indentation. The one
+# thing that changes in a container network is who "127.0.0.1" refers to:
+# inside the gateway's namespace it is the gateway itself, not the mock upstream
+# and not Redis. So every address that is loopback in the local profiles is a
+# compose service name here:
+#
+#   127.0.0.1:9000  -> mockupstream:9000
+#   127.0.0.1:6399  -> miniredis:6399
+#
+# Everything else (pricing, cache threshold, quota policy) is deliberately the
+# same shape as the local profiles so that a number measured here is comparable
+# with the ones in docs/baseline/.
+#
+# Run it:  docker compose up -d --build
+# Docs:    deploy/README.md §6
+
+server:
+  listen: ":8080"
+
+  read_header_timeout: "10s"
+  idle_timeout: "90s"
+
+  # Bounds one upstream exchange including the streaming body. Same reasoning as
+  # configs/mock.yaml: the HTTP server has no WriteTimeout on purpose, because
+  # that would truncate a long generation mid-sentence.
+  upstream_timeout: "10m"
+
+  # Container stop sends SIGTERM and docker then waits; this is the drain
+  # window for in-flight streams. Keep it below the stop grace period so the
+  # process exits on its own rather than being SIGKILLed.
+  shutdown_timeout: "15s"
+
+  max_body_bytes: 8388608
+  # The single most important throughput knob (README §8).
+  max_idle_conns_per_host: 256
+
+log:
+  level: "info"
+  format: "text"
+
+routing:
+  strategy: "priority"
+  default_capabilities:
+    - "chat"
+
+health:
+  window: "30s"
+  buckets: 6
+  min_requests: 4
+  failure_ratio: 0.5
+  open_duration: "10s"
+  half_open_probes: 1
+  max_failures_per_request: 2
+  retry_backoff: "20ms"
+
+upstreams:
+  - name: "mock"
+    kind: "openai"
+    # Compose service name, resolved by the embedded Docker DNS.
+    base_url: "http://mockupstream:9000"
+    api_key: ""
+    models:
+      - "/"
+    capabilities:
+      - "chat"
+    priority: 1
+    weight: 1
+
+# Semantic cache on the shared RESP2 server, so the container profile is the
+# multi-replica-shaped one rather than a per-process memory cache.
+cache:
+  enabled: true
+  store: "redis"
+  threshold: 0.86
+  ttl: "15m"
+  max_entries_per_scope: 256
+  min_prompt_chars: 12
+  allow_nondeterministic: false
+  allow_tools: false
+
+  embedding:
+    provider: "hashing"
+    dims: 512
+    timeout: "5s"
+
+  redis:
+    addr: "miniredis:6399"
+    db: 0
+    prefix: "ig:cache"
+    pool_size: 16
+    dial_timeout: "2s"
+    read_timeout: "2s"
+    write_timeout: "2s"
+
+# Cost governance on the shared store. Budgets are generous here because this
+# profile is for looking at panels, not for reproducing the M3 rejections (use
+# configs/quota-redis.yaml for that).
+quota:
+  enabled: true
+  store: "redis"
+  fail_open: false
+  estimate_chars_per_token: 4
+  estimate_completion_tokens: 256
+  anomaly_ratio: 3
+
+  default_policy:
+    tokens_per_day: 100000000
+    cost_per_day_usd: 100
+    requests_per_minute: 6000
+    on_exceed: "reject"
+
+  redis:
+    addr: "miniredis:6399"
+    db: 0
+    prefix: "ig:quota"
+    pool_size: 16
+    dial_timeout: "2s"
+    read_timeout: "2s"
+    write_timeout: "2s"
+
+# Idempotent replay and the session ledger.
+#
+# The bound is spelled `capacity`, not `max_entries` — only the cache section
+# uses `max_entries_per_scope` (internal/config/config.go:356 for the cache,
+# :710 idempotency, :733 sessions). The loader does NOT reject unknown keys, so
+# writing `max_entries` here would parse cleanly and silently bound nothing,
+# which is a worse failure than a red check.
+idempotency:
+  enabled: true
+  ttl: "15m"
+  capacity: 512
+  # A streamed completion is held in memory to be replayable; past this size it
+  # is served normally and just not remembered (/admin/idempotency: oversize).
+  max_response_bytes: 2097152
+
+sessions:
+  enabled: true
+  capacity: 512
+  ttl: "1h"
+  recent_per_session: 16
+
+# Traces are the one thing whose default destination (a JSONL file) is wrong for
+# a container: the filesystem is ephemeral and `docker compose logs` is where you
+# actually look. Leaving jsonl_path and otlp.endpoint empty keeps the ring buffer
+# and /admin/tracing useful without writing a file that dies with the container.
+tracing:
+  enabled: true
+  capacity: 4096
+  sample_ratio: 1.0
+  jsonl_path: ""
+
+pricing:
+  default:
+    in: 1.0
+    out: 3.0
+  models:
+    mock-gpt:
+      in: 1.0
+      out: 3.0
+    mock-reasoner:
+      in: 2.0
+      out: 8.0
+    mock-tool:
+      in: 0.5
+      out: 1.5
