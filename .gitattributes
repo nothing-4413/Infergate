@@ -1,0 +1,17 @@
+# Line endings: keep the repository LF-normalized.
+#
+# Windows checkouts used to convert *.ps1 to CRLF in the working copy (see
+# `git ls-files --eol`); PowerShell on the Windows CI runner does not care, but a
+# bash-runner heredoc/`source` on a CRLF shell script does. Normalize on commit
+# and let each platform decide on checkout.
+* text=auto eol=lf
+
+# Real CRLF is required by these formats.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Binary: never touch.
+*.exe binary
+*.png binary
+*.jpg binary
+*.gif binary

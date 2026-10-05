@@ -1,0 +1,45 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The base gate: build, vet, tests (including the race detector). This is the
+  # Linux-shaped gate and needs nothing from this machine's local toolchain shim
+  # (see tools/go.cmd and README §4) — GitHub runners have Go on PATH.
+  base:
+    name: build / vet / test / race
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go build
+        run: go build ./...
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test ./... -count=1
+
+      # The local machine cannot run this: `-race` needs cgo and there is no gcc
+      # (README §4 / §10). A hosted runner can, so the concurrency claims get
+      # evidence here instead of only an argument.
+      - name: go test -race
+        run: go test -race ./... -count=1
+
+  # Step 2 (separate commit): the real-process verification gates. The curl
+  # gates live in PowerShell and build/start/tear down real stacks, so they need
+  # a Windows runner; see scripts/verify-m*.ps1.
