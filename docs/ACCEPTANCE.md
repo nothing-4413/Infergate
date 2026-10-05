@@ -46,7 +46,7 @@ curl 门编译真二进制、拉真进程、用真 `curl.exe` 打真 socket，�
 | `go vet ./...` | 静态检查 | 绿 |
 | `gofmt -l ./cmd ./internal` | 格式门 | 绿（加入这一步时仓库里有 7 个文件不干净，已一并修好） |
 | `go test ./... -count=1 -timeout 20m` | 全部单元/集成测试（Linux，无 `-race`） | 绿 |
-| `go test -race` **逐个包**（`go list ./...` 循环，失败继续跑下一个） | 竞态检测（**本机做不到**：无 gcc） | **红**（run 37374000997 / 37378602289；这是唯一红的一项） |
+| `go test -race` **逐个包**（`go list ./...` 循环，失败继续跑下一个） | 竞态检测（**本机做不到**：无 gcc） | 已定位并修复；**尚未在 runner 上复测**（见下） |
 | `.\tools\go.cmd run .\cmd\verify*` | 2353 条 Go 端到端断言 | 尚未接入（需要 Windows runner） |
 | `.\scripts\verify-m*.ps1` | 1060 条 curl 端到端断言 | **绿**：`curl gates (M0-M6, operator token)` job 在 run 37374000997 上 119 秒跑完，8 个门（M0–M6 + 管理面令牌门）全过 |
 
@@ -65,6 +65,26 @@ curl -s https://api.github.com/repos/nothing-4413/Infergate/commits/<sha>/check-
 在那份 JSON 里会多出一个名为 `ci failure: build / vet / test / race` 的 check run，`output.summary`
 就是失败测试名与 race 报告。这是 run 37379724217 测定出来的：**创建一个 check run** 与
 **修改 GitHub 为本 job 创建的那个 check run** 是两回事，后者会被回收。
+
+**这条通路本身尚未在真实 CI 上验证到**，原因是 GitHub 侧的一次异常：从 run 37380607350
+（head `760c303`）起，一直到 `3a7f2e4`，`GET /actions/runs/{id}/jobs` 与
+`GET /commits/{sha}/check-runs` 都返回 `total_count: 0`，而更早的 run 37374000997 / 37377940124 /
+37379724217 仍然分别返回 2 / 3 / 4 个 job。同一批 run 的 `name` 字段也从 `ci` 变成了
+`.github/workflows/ci.yml`（`workflow_id` 仍是 375731182），并且 `3a7f2e4` 的 runner 页面对匿名
+读者返回 404。也就是说**红/绿结论读得到，job 与 check run 的元数据读不到**，所以 relay 是"已接线、
+本机验证过、外部待验证"。判据是：等上面两个接口对这些 sha 恢复返回 job 后，
+`check-runs` 里应当出现 `ci failure: build / vet / test / race` 且 `output.summary` 非空。
+
+**为什么 race 那一项从"红"改成了"已定位"**：它在 runner 上红，而本机普通 `go test` 全绿、连
+`-count=3` 都无抖动。依据是两处**测试代码**的共享计数器——`internal/embed/embed_test.go` 的
+`gotPath`/`gotAuth`/`gotReq`、`internal/gateway/proxy_test.go` 的 `aHits`/`bHits`/`hits`——都由
+`httptest` 的 handler goroutine 写、由测试 goroutine 读。往返一个 socket **不是** race detector
+承认的 happens-before 边（`httptest` 只在 `Close` 里等 handler，那已在读之后），所以这类代码在
+无 `-race` 时永远是绿的、在有 `-race` 的机器上必红。修法是 `atomic.Int64` 与一把 mutex
+（`internal/gateway/failover_test.go:388` 早就是这么写的）。同一次还修掉一个真实的生产竞态：
+`internal/router/router.go` 的 `Router.rand` 是 `*math/rand.Rand`（文档明示不可并发使用），而每个
+请求 goroutine 都会经 `Plan` 走到 `orderWeighted`；现在改用包级 `rand.Float64`/`rand.Intn`。
+**本机无法验证这条修复**（CGO_ENABLED=0、全机无 C 编译器），所以它的判据只能来自 runner。
 
 四条被测定为死路、不要再试的做法：
 
