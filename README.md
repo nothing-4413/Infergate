@@ -308,8 +308,42 @@ pricing:
 | `routing.strategy` | `priority` / `cost` / `latency` / `weighted` / `tiered` | 权重配置在 `routing.weights` |
 | `cache.embedding.*` / `cache.threshold` | 缓存的身份与命中阈值 | 阈值扫描结果见 `docs/USAGE.md` 3.10 |
 | `quota.*` | 四维度预算与降级策略 | 计数在内存还是 Redis 决定多副本正确性 |
+| `access.*` | 运营者令牌：谁可以读 / 改管理面 | 默认关闭；绑到可路由地址就该打开，见 8.1 |
 
 每个配置块的理由都写在示例文件的注释里；逐块讲解见 [docs/USAGE.md](docs/USAGE.md) 的 3.6。
+
+### 8.1 管理面鉴权（`access`）
+
+`/admin/*` 能刷掉配额计数、清空缓存、让已重放的答案失效、读到每个租户的花费，`/stats`
+是同一份账目的汇总。它们**不在**任何 provider 的 API key 后面：那些 key 是网关**发出去**的
+凭证，这些端点是网关**回答**的。默认不鉴权，这是 M0–M6 的既有行为（所有验收脚本都以无凭证
+访问 `/admin/*` 为前提），在 loopback 上没问题；一旦 `server.listen` 绑到别人能连上的地址，
+不加这一节就等于把每个租户的花费和一个清缓存的按钮开放给任何能建立 TCP 连接的人。启动时
+日志会明确说一次是哪一种情况（有令牌则 Info 报出受保护前缀与令牌数量，没有则 Warn 明说
+管理面是开放的）。
+
+```yaml
+access:
+  enabled: true
+  tokens: ["${INFERGATE_ADMIN_TOKEN}"]  # 任一命中即可；多个令牌 = 轮换而不是硬切
+  header: ""            # 空 = Authorization，按 RFC 7235 的 Bearer 方案（scheme 大小写不敏感）
+  protect: []           # 空 = ["/admin", "/stats"]；显式给出则替换默认，不是追加
+  allow_query_token: false   # 也可用 ?access_token=…，默认关：URL 会进访问日志和浏览器历史
+```
+
+几条刻意的取舍：
+
+- **`/healthz`、`/readyz`、`/metrics` 不在默认保护集里。** 探针和抓取器不带凭证；给它们加
+  令牌就是把一个正常的部署变成永远不健康。要关就显式写进 `protect`（`/metrics` 常这么干）。
+- **少带令牌和带错令牌都是 401，响应体也一样。** 区分 403 会告诉探测者"这个端点存在、只是
+  格式不对"。`WWW-Authenticate: Bearer realm="infergate"` 只在凭证本身是 Bearer 形态时才发。
+- **写错的配置会让启动失败，而不是静默失效。** `enabled: true` 却没有令牌、或 `protect: ["/"]`
+  （会把 OpenAI 兼容面一起挡住）都在加载期报错——加载器不拒未知键，所以这两种错必须靠
+  `Validate` 而不是靠键名拼写来兜。
+- **令牌只从 `${ENV}` 读也行，未定义的变量会让启动中止**，和 upstream 的 `api_key` 同一条规则：
+  静默变成空串的令牌会让"配置看起来受保护"而实际开放。注意这条检查在 `enabled: false` 时
+  也会跑，所以 `configs/agent.yaml` 里那段 `tokens` 是注释掉的。
+- **`access.protect` 按路径段匹配**：`/admin` 覆盖 `/admin/cache`，但不覆盖 `/administrator`。
 
 ---
 
@@ -342,3 +376,7 @@ pricing:
 - **M6 的幂等存储有容量上限**：LRU 淘汰后同 key 重放会重新打到上游（安全但不再省调用）。
 - **Warden 的 embeddings 调用不带网关头**（`app/memory/embeddings.py` 未接入），这条路径没有成本归因。
 - **M6 的 tracing 属性只记标量**：不采样请求/响应体，所以回放看到的是决策链而不是内容。
+- **`/admin/*` 与 `/stats` 默认不鉴权**：`access` 这一节提供了运营者令牌，但默认关闭（打开它会让本仓库
+  全部 curl 验收脚本的凭证假设失效）。这意味着把网关绑到 0.0.0.0 而不加 `access.tokens`，等于把
+  每个租户的花费和一个清缓存的按钮开放给任何能连上这个端口的人；启动日志会 Warn 提醒一次。
+  鉴权本身目前只有 Go 进程内的单测证据，**没有**端到端 curl 证据（见 `docs/ACCEPTANCE.md`）。

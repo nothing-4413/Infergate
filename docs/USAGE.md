@@ -173,11 +173,33 @@ pricing:                                     # 单位：USD / 1M tokens
   default: { in: 0.15, out: 0.60 }
   models:
     "gpt-4o": { in: 2.50, out: 10.00 }
+
+access:                                      # 运营者令牌：默认关闭，见下方
+  enabled: true
+  tokens: ["${INFERGATE_ADMIN_TOKEN}"]
+  protect: []                                # 空 = ["/admin", "/stats"]
 ```
 
 环境变量覆盖：`INFERGATE_LISTEN`、`INFERGATE_LOG_LEVEL`、`INFERGATE_MAX_BODY_BYTES`。
 请求级控制头：`X-InferGate-Upstream: <name>` 强制指定上游（用于灰度与排障）。
 路由顺序：显式头 → 模型精确匹配（大小写不敏感）→ 兜底 `"/"` → 只剩一个后端时吸收任意模型名。
+
+**`access` 这一节**：`/admin/*`（刷配额、清缓存、使重放失效、读每个租户的花费）和 `/stats`
+默认**不鉴权**——这是 M0–M6 的既有行为，本节所有 curl 示例也都以无凭证访问为前提。
+绑到可路由地址时打开它：
+
+```powershell
+$env:INFERGATE_ADMIN_TOKEN = "pick-something-long"
+.\bin\infergate.exe -config .\configs\agent.yaml
+# 无令牌 -> 401；令牌对 -> 和以前一样
+curl.exe -s -o NUL -w "%{http_code}`n" http://127.0.0.1:8080/admin/upstreams
+curl.exe -s -o NUL -w "%{http_code}`n" -H "Authorization: Bearer $env:INFERGATE_ADMIN_TOKEN" http://127.0.0.1:8080/admin/upstreams
+```
+
+`protect: []` 表示用默认集 `["/admin", "/stats"]`；给出显式列表是**替换**默认集，不是追加。
+`/healthz`、`/readyz`、`/metrics` 不在默认集里（探针与抓取器不带凭证），要关就显式列上。
+少带令牌和带错令牌都是 401、响应体相同；`enabled: true` 却没有令牌、或 `protect: ["/"]` 会在
+加载期报错。完整取舍见 [README.md](../README.md) 的 8.1。
 
 ### 3.7 多 Provider 路由与故障转移（M1）
 

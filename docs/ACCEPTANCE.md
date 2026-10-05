@@ -17,6 +17,10 @@ M4–M6 的验收与实测段落与各自的启动方式写在一起，见 [USAG
 | M6 幂等/账本/能力 | 381 | 149 | `baseline/m6-summary.json` |
 | **合计** | **2353** | **1060** | |
 
+表外还有一项不属于任何里程碑的改造：管理面鉴权（`access`）。它默认关闭，所以 M0–M6 的
+两条证据链一行都没有覆盖它；它的证据是 `internal/server/access_test.go` 与
+`internal/config/config_test.go` 的 Go 单测，见下方「管理面鉴权的证据边界」。
+
 两条路径相互独立：Go 门用进程内假上游跑得快、断言密度高；
 curl 门编译真二进制、拉真进程、用真 `curl.exe` 打真 socket，证的是“部署起来就是这样”。
 两条都绿才算这个里程碑完成。复现命令见 [USAGE.md](USAGE.md) 的 3.4。
@@ -29,15 +33,31 @@ curl 门编译真二进制、拉真进程、用真 `curl.exe` 打真 socket，�
 | --- | --- | --- |
 | `go build ./...` | 全仓库编译 | 绿 |
 | `go vet ./...` | 静态检查 | 绿 |
+| `gofmt -l ./cmd ./internal` | 格式门 | 绿（加入这一步时仓库里有 7 个文件不干净，已一并修好） |
 | `go test ./... -count=1 -timeout 20m` | 全部单元/集成测试（Linux，无 `-race`） | 绿 |
 | `go test -race ./... -count=1 -timeout 20m` | 竞态检测（**本机做不到**：无 gcc） | **红**（run 37361004384，退出码 1） |
 | `.\tools\go.cmd run .\cmd\verify*` | 2353 条 Go 端到端断言 | 尚未接入（需要 Windows runner） |
-| `.\scripts\verify-m*.ps1` | 1060 条 curl 端到端断言 | 尚未接入（需要 Windows runner） |
+| `.\scripts\verify-m*.ps1` | 1060 条 curl 端到端断言 | 已写进 `ci.yml` 的第二个 job（`windows-2022`，7 个步骤 + 失败时上传 `tmp/**.log`），**首次运行尚未发生** |
 
 两个 `go test` 步骤在失败时会 `grep` 出 `FAIL` / `--- FAIL` / `DATA RACE` 等行——**这是刻意的**：
 首次上 CI 时 `-race` 那一步只留下了一句 “Process completed with exit code 1”，
 而 GitHub 的 job 日志需要仓库管理员权限才能下载（`GET /actions/jobs/{id}/logs` 返回 403），
 于是失败原因无处可查；改成把关键行写进注解后，下一次红的时候能直接看到是哪个测试。
+
+### 管理面鉴权（`access`）的证据边界
+
+| 说的事 | 证据 | 状态 |
+| --- | --- | --- |
+| 默认行为与 M0–M6 完全一致 | `internal/server/access_test.go`（`TestAccessDisabledMatchesTheM0M6Behaviour`，13 个端点逐个断言 200） | 绿 |
+| 打开后 `/admin/*` 与 `/stats` 需要令牌 | 同文件 `TestAccessEnabledProtectsTheOperationalSurface`（GET 10 路径 × 无令牌/错令牌/对令牌，POST 4 条 flush 路径） | 绿 |
+| 探针、`/metrics` 与 OpenAI 兼容面不受影响 | 同文件 `TestAccessLeavesTheProbesAndTheProxyOpen` | 绿 |
+| 少带/带错令牌不可区分，且不回显凭证 | 同文件 `TestAccessRejectionShapeIsUsableAndTellsNothing` | 绿 |
+| 路径前缀按路径段匹配（`/admin` 不覆盖 `/administrator`） | 同文件 `TestAccessCoversUsesPathSegments` | 绿 |
+| 配置错误在加载期报错（启用但无令牌、`protect: ["/"]`） | `internal/config/config_test.go` 的 `TestAccessValidationErrors` | 绿 |
+| 令牌从 `${ENV}` 展开，未定义即中止 | 同文件 `TestAccessSectionParsesAndExpands` | 绿 |
+| **真进程 + curl 打一次受保护的 `/admin/*`** | 无 | **未验证**：`scripts/verify-m*.ps1` 全部以「无凭证访问管理面」为前提，加令牌会一次破掉 1060 条断言中的一部分，所以这一步**没有**加进去；上面这些性质目前只有 Go 进程内的证据 |
+
+最后一行是这一节存在的原因：把「默认关」以外的行为说成已经被端到端验证过，是这份文档最不该犯的错。
 
 ---
 

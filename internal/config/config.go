@@ -45,9 +45,12 @@ type Config struct {
 	Quota     QuotaConfig      `json:"quota"`
 	Tracing   TracingConfig    `json:"tracing"`
 	// M6: what an agent runtime needs on top of a chat endpoint.
-	Idempotency IdempotencyConfig    `json:"idempotency"`
-	Sessions    SessionsConfig       `json:"sessions"`
-	Models      map[string]ModelInfo `json:"models"`
+	Idempotency IdempotencyConfig `json:"idempotency"`
+	Sessions    SessionsConfig    `json:"sessions"`
+	// Access gates the operational surfaces (/admin/*, /stats) behind an
+	// operator token. Off unless configured; see AccessConfig.
+	Access AccessConfig         `json:"access"`
+	Models map[string]ModelInfo `json:"models"`
 }
 
 // HealthConfig parameterises the per-upstream circuit breaker.
@@ -658,6 +661,61 @@ type TracingConfig struct {
 	// OTLP exports spans to an OpenTelemetry collector.
 	OTLP OTLPConfig `json:"otlp"`
 }
+
+// AccessConfig gates the operational surfaces behind an operator token.
+//
+// WHY IT IS OFF BY DEFAULT. M0-M6 were built and verified with the management
+// endpoints wide open, on loopback, and every acceptance script in the
+// repository talks to /admin/* with no credential. Turning this on by default
+// would break all of them and change behaviour for configs already written, so
+// the default is "exactly as before" and the README states the boundary
+// plainly. On anything bound to a routable address, set it.
+type AccessConfig struct {
+	// Enabled turns the token requirement on. It is honoured only when at
+	// least one token is configured -- "enabled but no tokens" is a
+	// misconfiguration that Validate rejects rather than a way to lock
+	// everyone out of their own gateway.
+	Enabled bool `json:"enabled"`
+
+	// Protect lists the path prefixes that require the token. Empty means
+	// DefaultAccessProtect() (the /admin surface and /stats), NOT "protect
+	// nothing": a configured token that guards nothing is never intentional,
+	// and it would look like it worked.
+	//
+	// /healthz and /readyz are deliberately absent from the default even though
+	// they are listed here as protectable: probes do not carry credentials, and
+	// requiring one turns a working deployment into a permanently unhealthy
+	// one.
+	Protect []string `json:"protect"`
+
+	// Header carries the credential, "Authorization" when empty. Configurable
+	// for deployments that sit behind something which already claims that
+	// header.
+	Header string `json:"header"`
+
+	// Tokens are the accepted credentials; any one of them is sufficient. More
+	// than one exists so a rotation is a config edit (add the new token, roll
+	// the callers, drop the old one) rather than a hard cutover.
+	//
+	// Expanded from ${ENV} at load, so the value can stay out of the repository
+	// entirely: tokens: ["${INFERGATE_ADMIN_TOKEN}"].
+	Tokens []string `json:"tokens"`
+
+	// AllowQueryToken also accepts ?access_token=<token>.
+	//
+	// Off by default and worth leaving off: a token in a URL is written to
+	// access logs, proxy logs, and browser history. It exists for the case
+	// where the client is a browser address bar.
+	AllowQueryToken bool `json:"allow_query_token"`
+}
+
+// DefaultAccessProtect is the operational surface a configured token guards:
+// everything that can change state or expose per-tenant detail.
+//
+// /metrics is NOT in this list. It is the Prometheus scrape target and the
+// convention is an open endpoint on a private network; an operator who wants it
+// closed lists it in access.protect explicitly.
+func DefaultAccessProtect() []string { return []string{"/admin", "/stats"} }
 
 // OTLPConfig points at a collector's OTLP/HTTP endpoint.
 //
@@ -1399,6 +1457,24 @@ func (c *Config) Validate() error {
 		c.Tracing.OTLP.Headers = map[string]string{}
 	}
 
+	// Access control. The guard here is narrow on purpose: "enabled with no
+	// tokens" is the one combination that cannot be meant, because it either
+	// locks an operator out of their own gateway or -- if it were interpreted
+	// the other way -- leaves a config that says "protected" guarding nothing.
+	// Both readings are wrong, so the load fails and says which key is missing.
+	if c.Access.Enabled && len(nonEmptyStrings(c.Access.Tokens)) == 0 {
+		return errors.New("access.tokens: access.enabled is true but no token is configured; set access.tokens (e.g. [\"${INFERGATE_ADMIN_TOKEN}\"]) or set access.enabled to false")
+	}
+	// Trailing slashes and stray whitespace are normalised away by the policy,
+	// but a bare "/" would protect the entire gateway including the proxied
+	// surface, which is never what "protect the admin endpoints" means. It is
+	// rejected rather than dropped so the mistake is visible.
+	for _, p := range c.Access.Protect {
+		if strings.TrimSpace(p) == "/" {
+			return errors.New("access.protect: \"/\" would require a token on every request including the OpenAI-compatible surface; list concrete prefixes such as \"/admin\"")
+		}
+	}
+
 	// M6: idempotent replay. Zero means unset for the bounds (a capacity of 0
 	// would store nothing while the config says the feature is on), and a
 	// negative is a typo rather than an intent.
@@ -1540,6 +1616,18 @@ func hasCatchAll(models []string) bool {
 	return false
 }
 
+// nonEmptyStrings drops the entries that are empty or whitespace only, so a
+// caller can ask "is there anything here" without repeating the trim.
+func nonEmptyStrings(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if strings.TrimSpace(s) != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // expandEnv resolves ${VAR} and $VAR inside every string field that can carry a
 // secret. An unset variable is an error rather than an empty string: a backend
 // that silently loses its credential produces 401s that look like upstream
@@ -1566,6 +1654,13 @@ func expandEnv(c *Config) error {
 	c.Cache.Embedding.APIKey = expand("cache.embedding.api_key", c.Cache.Embedding.APIKey)
 	c.Cache.Redis.Password = expand("cache.redis.password", c.Cache.Redis.Password)
 	c.Quota.Redis.Password = expand("quota.redis.password", c.Quota.Redis.Password)
+	// The operator token is the one secret this gateway checks rather than
+	// sends, so it belongs in the same "an unset variable is an error" rule:
+	// a token that silently expands to "" would leave the admin surface
+	// unguarded while the config reads as protected.
+	for i := range c.Access.Tokens {
+		c.Access.Tokens[i] = expand(fmt.Sprintf("access.tokens[%d]", i), c.Access.Tokens[i])
+	}
 	if len(missing) > 0 {
 		return fmt.Errorf("undefined environment variable(s): %s", strings.Join(missing, ", "))
 	}

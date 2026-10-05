@@ -237,3 +237,41 @@ tracing:
     timeout: "5s"
     service_name: "infergate"
     headers: {}
+
+# ---------------------------------------------------------------------------
+# The operational surface: who may read and flush it
+# ---------------------------------------------------------------------------
+# /admin/* can drain the quota counters, flush the cache, forget replayed
+# answers and read every tenant's spend; /stats is the same accounting in
+# aggregate. None of that is behind the providers' API keys -- those are
+# credentials the gateway SENDS, while these endpoints are the ones it ANSWERS.
+#
+# Off by default, because every acceptance script in this repository drives
+# /admin/* without a credential and a gateway on loopback with no management
+# surface exposed is the shape all of them assume. On anything bound to a
+# routable address, turn it on: without it, anyone who can open a TCP connection
+# can read the spend of every tenant and flush the cache.
+access:
+  enabled: false
+  # Accepted credentials; any one of them is enough, so a rotation is "add the
+  # new one, roll the callers, drop the old one" rather than a cutover. The
+  # ${VAR} is expanded at load, and an UNSET variable aborts startup -- a token
+  # that silently became "" would leave the surface open while the file reads as
+  # protected. That check runs even while enabled is false, exactly as it does
+  # for an upstream api_key in a section nothing is using yet, so the block below
+  # is commented out rather than left readable: uncommenting it is one edit, and
+  # a file that cannot be loaded without a secret it does not need is worse.
+  #
+  # tokens:
+  #   - "${INFERGATE_ADMIN_TOKEN}"
+  #
+  # Header that carries the token, "Authorization" (Bearer scheme) when empty.
+  header: ""
+  # Path prefixes that require it. Empty means "/admin" and "/stats" -- NOT
+  # "protect nothing", which is never what a configured token means. /healthz,
+  # /readyz and /metrics are deliberately outside the default, because a probe
+  # and a scraper carry no credential; list them here to close them anyway.
+  protect: []
+  # Also accept ?access_token=<token>. Off, and worth leaving off: a token in a
+  # URL is copied into access logs, proxy logs and browser history.
+  allow_query_token: false

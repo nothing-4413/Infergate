@@ -223,7 +223,111 @@ func TestCacheValidationWhileDisabled(t *testing.T) {
 	}
 }
 
-// Secrets in the cache section expand from the environment exactly like an
+// The access section is off by default and its token expands from the
+// environment like every other secret.
+func TestAccessSectionParsesAndExpands(t *testing.T) {
+	path := writeConfig(t, `
+server:
+  listen: ":8080"
+upstreams:
+  - name: "mock"
+    base_url: "http://127.0.0.1:9000"
+    models:
+      - "/"
+access:
+  enabled: true
+  tokens:
+    - "${IG_TEST_ADMIN_TOKEN}"
+`)
+
+	t.Setenv("IG_TEST_ADMIN_TOKEN", "operator-secret")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Access.Enabled {
+		t.Fatal("access.enabled was not read")
+	}
+	if len(cfg.Access.Tokens) != 1 || cfg.Access.Tokens[0] != "operator-secret" {
+		t.Fatalf("tokens = %q, want the expanded secret", cfg.Access.Tokens)
+	}
+	// Omitted keys keep their documented zero meaning: the default protect set
+	// is applied by the policy, not baked into the struct, so that "empty"
+	// stays distinguishable from "explicitly listed".
+	if len(cfg.Access.Protect) != 0 {
+		t.Fatalf("protect = %q, want empty when omitted", cfg.Access.Protect)
+	}
+	if cfg.Access.Header != "" {
+		t.Fatalf("header = %q, want empty when omitted", cfg.Access.Header)
+	}
+
+	// Unset: an error naming the variable, not a token that silently becomes ""
+	// and leaves the admin surface unguarded while the config reads protected.
+	os.Unsetenv("IG_TEST_ADMIN_TOKEN")
+	if _, err := Load(path); err == nil {
+		t.Fatal("an undefined environment variable must be an error")
+	} else if !strings.Contains(err.Error(), "IG_TEST_ADMIN_TOKEN") {
+		t.Fatalf("error = %q, want it to name the variable", err.Error())
+	}
+}
+
+// TestAccessValidationErrors pins the two configurations that are rejected
+// rather than interpreted: enabling the gate with nothing to check, and
+// protecting the whole gateway.
+func TestAccessValidationErrors(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr string
+	}{
+		{
+			name:    "enabled with no token",
+			mutate:  func(c *Config) { c.Access.Enabled = true },
+			wantErr: "access.tokens",
+		},
+		{
+			name: "enabled with only blank tokens",
+			mutate: func(c *Config) {
+				c.Access.Enabled = true
+				c.Access.Tokens = []string{"", "   "}
+			},
+			wantErr: "access.tokens",
+		},
+		{
+			name: "protecting everything",
+			mutate: func(c *Config) {
+				c.Access.Enabled = true
+				c.Access.Tokens = []string{"t"}
+				c.Access.Protect = []string{"/"}
+			},
+			wantErr: "access.protect",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Upstreams = []UpstreamConfig{{Name: "mock", BaseURL: "http://127.0.0.1:9000", Models: []string{"/"}}}
+			tc.mutate(&cfg)
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("Validate accepted the configuration; want an error naming %s", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %q, want it to mention %q", err.Error(), tc.wantErr)
+			}
+		})
+	}
+
+	// The disabled default must stay valid with no keys at all: this is what
+	// every config written for M0-M6 relies on.
+	cfg := Defaults()
+	cfg.Upstreams = []UpstreamConfig{{Name: "mock", BaseURL: "http://127.0.0.1:9000", Models: []string{"/"}}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate on the default access section: %v", err)
+	}
+}
+
+// secrets in the cache section expand from the environment exactly like an
 // upstream API key, and an unset variable is an error rather than an empty
 // string.
 func TestCacheSecretsExpandFromEnv(t *testing.T) {

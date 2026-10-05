@@ -57,6 +57,11 @@ type Server struct {
 	idempotency *idempotency.Store
 	sessions    *sessions.Ledger
 
+	// access decides which paths require an operator token. It is computed once
+	// at construction (the answer cannot change while the process runs) and is
+	// a no-op unless access.tokens is configured. See access.go.
+	access accessPolicy
+
 	http    *http.Server
 	started time.Time
 	version string
@@ -209,6 +214,7 @@ func NewServer(cfg *config.Config, logger logAdapter) (*Server, error) {
 		// are on, so they are the un-narrowed handles.
 		idempotency: idempotencyStore,
 		sessions:    sessionLedger,
+		access:      newAccessPolicy(cfg.Access),
 		started:     time.Now(),
 	}
 
@@ -246,7 +252,7 @@ func NewServer(cfg *config.Config, logger logAdapter) (*Server, error) {
 
 	s.http = &http.Server{
 		Addr:              cfg.Server.Listen,
-		Handler:           withAccessControl(mux, cfg.Server.MaxBodyBytes),
+		Handler:           s.access.middleware(withAccessControl(mux, cfg.Server.MaxBodyBytes)),
 		ReadHeaderTimeout: cfg.Server.ReadHeaderTimeout.Duration(),
 		IdleTimeout:       cfg.Server.IdleTimeout.Duration(),
 		// ReadTimeout and WriteTimeout are deliberately unset. Both would cap
@@ -269,6 +275,21 @@ func (s *Server) ListenAndServe() error {
 		"version", s.Version(),
 		"upstreams", strings.Join(s.registry.Names(), ","),
 	)
+	// Said once, at startup, in both directions. An operator who configured a
+	// token wants the confirmation that it took effect; one who did not should
+	// not have to read the config back to learn that the admin endpoints are
+	// open. The token itself is never logged.
+	if s.access.enabled {
+		s.log.Info("operator token required",
+			"paths", strings.Join(s.access.protects, ","),
+			"header", s.access.header,
+			"tokens", strconv.Itoa(len(s.access.tokens)),
+		)
+	} else {
+		s.log.Warn("no operator token configured; /admin/* and /stats are open to anyone who can reach this port",
+			"paths", strings.Join(s.access.protects, ","),
+		)
+	}
 	if err := s.http.Serve(ln); err != nil && err != http.ErrServerClosed {
 		return err
 	}
