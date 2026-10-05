@@ -167,6 +167,43 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # TEMPORARY PROBE. Every check run this workflow has touched so far was the one
+  # GitHub creates for a job, and its output is wiped when that job completes. This
+  # job CREATES a check run of its own instead, after the base job is done, and
+  # writes a fixed string into output.summary. If that string is still readable
+  # through the anonymous API once this run has finished, a workflow finally has a
+  # channel to hand a red run's reason to someone who is not signed in.
+  check-run-probe:
+    name: check run probe
+    needs: base
+    if: always()
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - name: create a check run and write to its summary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -x
+          gh --version || true
+          body=$(gh api --method POST "repos/${GITHUB_REPOSITORY}/check-runs" \
+            -f name='ci failure probe' \
+            -f head_sha="${GITHUB_SHA}" \
+            -f status=completed \
+            -f conclusion=failure \
+            -f 'output[title]=ci failure probe' \
+            --raw-field 'output[summary]=PROBE-SUMMARY-MARKER-1f6b323')
+          echo "$body" | head -c 2000
+      - name: read it back in a later step of the same job
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs" \
+            --jq '.check_runs[] | {name, summary: .output.summary}'
+
 
   # The curl gates: real binaries, real processes, real sockets, real curl.exe.
   # 1060 assertions that the Linux job above cannot run at all, because all seven
