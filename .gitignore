@@ -1,0 +1,36 @@
+# Build artifacts
+/bin/
+/dist/
+*.exe
+*.exe~
+*.test
+*.out
+
+# Local runtime state
+/tmp/
+/logs/
+*.log
+*.pid
+
+# Secrets: never commit real keys
+.env
+configs/local.yaml
+configs/*.secret.yaml
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local Go toolchain and caches (see README "本机工具链说明").
+# These are hundreds of MB of extracted toolchain and module cache; they are
+# reproducible from tools/go.cmd and must never be committed.
+/.gotoolchain/
+/.gomodcache/
+/.gocache/
+/.gotmp/
+
+# Generated load-test output: keep the committed baseline JSON, drop the rest.
+/docs/baseline/*.txt
+/docs/baseline/*.log

@@ -1,0 +1,88 @@
+# InferGate M0 configuration — production-shaped example.
+#
+# Copy to configs/local.yaml (git-ignored) and export the referenced variables
+# before starting the gateway:
+#
+#   $env:DEEPSEEK_API_KEY = "sk-..."
+#   $env:OPENAI_API_KEY   = "sk-..."
+#   go run ./cmd/infergate -config configs/infergate.yaml
+#
+# Undefined ${VAR} references are a startup error, not an empty string: a typo in
+# a variable name fails loudly at boot instead of producing anonymous 401s at
+# 3am.
+
+server:
+  listen: ":8080"
+  read_header_timeout: "10s"
+  idle_timeout: "90s"
+  upstream_timeout: "10m"
+  shutdown_timeout: "15s"
+  max_body_bytes: 8388608
+  max_idle_conns_per_host: 256
+
+log:
+  level: "info"
+  format: "json"
+
+upstreams:
+  # A commercial provider that owns specific model names. Requests for any other
+  # model fall through to the catch-all below, so ordering expresses policy.
+  - name: "deepseek"
+    kind: "openai"
+    base_url: "https://api.deepseek.com"
+    api_key: "${DEEPSEEK_API_KEY}"
+    models:
+      - "deepseek-chat"
+      - "deepseek-reasoner"
+
+  - name: "openai"
+    kind: "openai"
+    base_url: "https://api.openai.com"
+    api_key: "${OPENAI_API_KEY}"
+    models:
+      - "gpt-4o"
+      - "gpt-4o-mini"
+
+  # Local inference server. vLLM and Ollama both expose an OpenAI-compatible
+  # surface; the gateway treats them identically, which is what makes "swap the
+  # backend behind a stable API" a configuration change rather than a code
+  # change (this is the M4 seam).
+  - name: "vllm-local"
+    kind: "openai"
+    base_url: "http://127.0.0.1:8000"
+    api_key: ""
+    models:
+      - "Qwen3-8B"
+      - "Qwen3-8B-AWQ"
+
+  # Catch-all last: anything not explicitly claimed above lands here. The
+  # registry uses first-writer-wins for model claims, so a catch-all placed
+  # first would steal traffic from the specific backends listed above it.
+  - name: "ollama-local"
+    kind: "openai"
+    base_url: "http://127.0.0.1:11434"
+    api_key: ""
+    models:
+      - "/"
+
+pricing:
+  # Conservative default: an unpriced model must not silently look free.
+  default:
+    in: 1.0
+    out: 3.0
+  models:
+    deepseek-chat:
+      in: 0.27
+      out: 1.10
+    deepseek-reasoner:
+      in: 0.55
+      out: 2.19
+    gpt-4o:
+      in: 2.50
+      out: 10.00
+    gpt-4o-mini:
+      in: 0.15
+      out: 0.60
+    Qwen3-8B:
+      in: 0.0
+      out: 0.0

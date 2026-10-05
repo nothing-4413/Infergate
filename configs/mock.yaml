@@ -1,0 +1,84 @@
+# InferGate M0 configuration — self-contained local verification.
+#
+# This profile points the gateway at the in-repo mock upstream so the whole path
+# (client -> gateway -> SSE relay -> client) runs with no API key and no network:
+#
+#   go run ./cmd/mockupstream -listen :9000
+#   go run ./cmd/infergate   -config configs/mock.yaml
+#
+# Time values MUST be quoted strings. The loader normalises YAML to JSON, and
+# encoding/json cannot parse "30s" into a time.Duration from a bare token.
+
+server:
+  listen: ":8080"
+
+  # Slowloris defence: a client must finish sending headers within this window.
+  read_header_timeout: "10s"
+
+  # Keep-alive sockets with no in-flight request are reaped after this.
+  idle_timeout: "90s"
+
+  # Bounds one upstream exchange INCLUDING the streaming body. It is the only
+  # gateway-level cap on a stream; the HTTP server deliberately has no
+  # WriteTimeout, because that would truncate a long generation mid-sentence.
+  upstream_timeout: "10m"
+
+  # Grace period for in-flight requests (streams included) on shutdown.
+  shutdown_timeout: "15s"
+
+  # 8 MiB of prompt is far beyond a normal agent request but still finite, so a
+  # hostile client cannot make the gateway allocate without limit.
+  max_body_bytes: 8388608
+
+  # The single most important throughput knob. Go's http.Transport defaults to
+  # only 2 idle connections per host, which forces a fresh TCP (and TLS)
+  # handshake for every concurrent request beyond that — the classic cause of
+  # "the gateway is slower than the model".
+  max_idle_conns_per_host: 256
+
+log:
+  level: "info"
+  format: "text"
+
+upstreams:
+  # The mock speaks the real OpenAI wire protocol, including fragmented
+  # tool_call deltas and a usage block in the final stream frame.
+  #
+  # NOTE ON PATHS: the inbound request path is appended to base_url verbatim.
+  # A client calling /v1/chat/completions here reaches
+  # http://127.0.0.1:9000/v1/chat/completions, which is why the mock registers
+  # both /v1/... and bare /... routes. For a real provider you would normally
+  # write base_url: "https://api.deepseek.com" and let the caller's /v1/... path
+  # complete it; for a local vLLM the convention is
+  # base_url: "http://127.0.0.1:8000" with the same /v1/... path appended.
+  - name: "mock"
+    kind: "openai"
+    base_url: "http://127.0.0.1:9000"
+
+    # Left empty on purpose: with no configured credential the gateway forwards
+    # the caller's Authorization header, which is how a keyless local backend
+    # (vLLM, Ollama, this mock) works without reconfiguration.
+    api_key: ""
+
+    # "/" is the catch-all (the nginx location-prefix idiom). A backend that
+    # serves exactly one model lists that model instead, and the gateway then
+    # rewrites whatever alias the caller sent to that one real name.
+    models:
+      - "/"
+
+# USD per one million tokens. Used only to attach a cost figure to each request;
+# M3 turns this into a quota and a budget gate.
+pricing:
+  default:
+    in: 1.0
+    out: 3.0
+  models:
+    mock-gpt:
+      in: 1.0
+      out: 3.0
+    mock-reasoner:
+      in: 2.0
+      out: 8.0
+    mock-tool:
+      in: 0.5
+      out: 1.5
