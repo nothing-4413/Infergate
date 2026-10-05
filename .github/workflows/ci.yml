@@ -103,6 +103,17 @@ jobs:
   # the same thing the README's "one key acceptance" section describes. The ports
   # are all distinct across scripts; verify-hardening deliberately does not use
   # gateway+1 for its mock, because its mock outlives the sibling gateways.
+  #
+  # WHY continue-on-error AND A WRAPPER. The first red run of this job failed at
+  # M0 in five seconds and skipped M1-M6, so the run proved one gate broken and
+  # said nothing about the other six -- while the fixed bug turned out to be in
+  # tools/go.cmd, which every one of them depends on. continue-on-error runs all
+  # eight regardless, so one red run yields the whole picture. The wrapper
+  # (scripts/lib/run-gate.ps1) is there because a failing step's only readable
+  # copy of its transcript was an artifact behind authentication; piping the text
+  # into the step log makes the FAIL lines visible to anyone who can see the
+  # repository. It captures instead of piping so $LASTEXITCODE survives, and the
+  # step still reports the gate's own exit code.
   curl-gates:
     name: curl gates (M0-M6, operator token)
     runs-on: windows-2022
@@ -120,58 +131,67 @@ jobs:
       # changing behaviour between images.
       - name: M0 passthrough and SSE
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m0.ps1
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\lib\run-gate.ps1 -Path .\scripts\verify-m0.ps1 -Name m0
         working-directory: ${{ github.workspace }}
+        continue-on-error: true
 
       - name: M1 routing and failover
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m1.ps1
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\lib\run-gate.ps1 -Path .\scripts\verify-m1.ps1 -Name m1
         working-directory: ${{ github.workspace }}
+        continue-on-error: true
 
       - name: M2 semantic cache
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m2.ps1
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\lib\run-gate.ps1 -Path .\scripts\verify-m2.ps1 -Name m2
         working-directory: ${{ github.workspace }}
+        continue-on-error: true
 
       - name: M3 quota governance
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m3.ps1
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\lib\run-gate.ps1 -Path .\scripts\verify-m3.ps1 -Name m3
         working-directory: ${{ github.workspace }}
+        continue-on-error: true
 
       - name: M4 tiered routing
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m4.ps1
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\lib\run-gate.ps1 -Path .\scripts\verify-m4.ps1 -Name m4
         working-directory: ${{ github.workspace }}
+        continue-on-error: true
 
       - name: M5 observability
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m5.ps1
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\lib\run-gate.ps1 -Path .\scripts\verify-m5.ps1 -Name m5
         working-directory: ${{ github.workspace }}
+        continue-on-error: true
 
       - name: M6 idempotency and sessions
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m6.ps1
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\lib\run-gate.ps1 -Path .\scripts\verify-m6.ps1 -Name m6
         working-directory: ${{ github.workspace }}
+        continue-on-error: true
 
       # Last on purpose. Every gate above drives the gateway with no credentials,
       # because the operator-token gate is off by default -- which is exactly why
       # none of them can prove it works. This one turns it on, against a real
-      # process, and asks a real curl for a 401. It also fails fast (about 15
-      # seconds) so putting it last costs nothing when a milestone is already red.
+      # process, and asks a real curl for a 401.
       - name: operator token gate
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-hardening.ps1
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\lib\run-gate.ps1 -Path .\scripts\verify-hardening.ps1 -Name hardening
         working-directory: ${{ github.workspace }}
+        continue-on-error: true
 
       # A failed gate leaves bin\ and tmp\ behind, and those logs are the only
-      # place the FAIL lines are explained. Uploaded only on failure so a green
-      # run costs nothing.
-      - name: Upload gate logs on failure
-        if: failure()
+      # place the FAIL lines are explained. Uploaded always, because with
+      # continue-on-error above this step runs whether or not something red came
+      # before it, and a readable copy of each transcript is the point.
+      - name: Upload gate logs
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: curl-gate-logs
           path: |
+            tmp/*.log
             tmp/**.log
             docs/baseline/**.json
           if-no-files-found: ignore
