@@ -147,6 +147,42 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # TEMPORARY PROBE -- delete once it has answered its question.
+  #
+  # Question: does a PATCH of a job-owned check run's output.summary survive that
+  # job's completion? It was PATCHed successfully (the step exited 0, so the API
+  # answered 2xx) from inside the base job on run 37376195840 and again with the
+  # jq-less path on run 37376841910, and both times output.summary read back as
+  # null from outside. Either the API discards the field when the owning job
+  # completes, or that 2xx was never about the field.
+  #
+  # This job runs AFTER the base job has completed and PATCHes the same check run,
+  # then reads it straight back into the log. If the read-back shows the probe text
+  # and an external GET afterwards shows null, the answer is "completion wipes it",
+  # and in-job publishing is dead rather than merely broken.
+  probe-check-run-wipe:
+    name: probe check run wipe
+    needs: base
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - name: PATCH the base job's check run, then read it back
+        run: |
+          set -x
+          id=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs" \
+            --jq '.check_runs[] | select(.name == "build / vet / test / race") | .id' | head -n 1)
+          echo "check run id: ${id}"
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/check-runs/${id}" \
+            -f "output[title]=PROBE TITLE" \
+            -f "output[summary]=PROBE SUMMARY from a job that runs after base completed"
+          echo "=== read back immediately ==="
+          gh api "repos/${GITHUB_REPOSITORY}/check-runs/${id}" \
+            --jq '.output.title, .output.summary'
+
   # The curl gates: real binaries, real processes, real sockets, real curl.exe.
   # 1060 assertions that the Linux job above cannot run at all, because all seven
   # of them are Windows PowerShell scripts that compile the binaries themselves,
