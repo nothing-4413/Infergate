@@ -21,6 +21,24 @@ M4–M6 的验收与实测段落与各自的启动方式写在一起，见 [USAG
 curl 门编译真二进制、拉真进程、用真 `curl.exe` 打真 socket，证的是“部署起来就是这样”。
 两条都绿才算这个里程碑完成。复现命令见 [USAGE.md](USAGE.md) 的 3.4。
 
+### 自动化的那一层（`.github/workflows/ci.yml`）
+
+上表两条路径都是**本机手工跑**的；仓库里自动跑的只有一层，边界写清楚：
+
+| 步骤 | 跑什么 | 状态 |
+| --- | --- | --- |
+| `go build ./...` | 全仓库编译 | 绿 |
+| `go vet ./...` | 静态检查 | 绿 |
+| `go test ./... -count=1 -timeout 20m` | 全部单元/集成测试（Linux，无 `-race`） | 绿 |
+| `go test -race ./... -count=1 -timeout 20m` | 竞态检测（**本机做不到**：无 gcc） | **红**（run 37361004384，退出码 1） |
+| `.\tools\go.cmd run .\cmd\verify*` | 2353 条 Go 端到端断言 | 尚未接入（需要 Windows runner） |
+| `.\scripts\verify-m*.ps1` | 1060 条 curl 端到端断言 | 尚未接入（需要 Windows runner） |
+
+两个 `go test` 步骤在失败时会 `grep` 出 `FAIL` / `--- FAIL` / `DATA RACE` 等行——**这是刻意的**：
+首次上 CI 时 `-race` 那一步只留下了一句 “Process completed with exit code 1”，
+而 GitHub 的 job 日志需要仓库管理员权限才能下载（`GET /actions/jobs/{id}/logs` 返回 403），
+于是失败原因无处可查；改成把关键行写进注解后，下一次红的时候能直接看到是哪个测试。
+
 ---
 
 ## M0 验收口径

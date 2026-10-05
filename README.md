@@ -1,5 +1,8 @@
 # InferGate —— Agent 推理网关（多模型路由 / 语义缓存 / 成本治理）
 
+[![ci](https://github.com/nothing-4413/Infergate/actions/workflows/ci.yml/badge.svg)](https://github.com/nothing-4413/Infergate/actions/workflows/ci.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 面向 Agent / LLM 应用的**推理网关**：统一多 Provider 接入、智能路由、语义缓存、Token 成本治理、
 稳定性治理、本地推理服务化与全链路可观测。它同时是另一个 Agent 项目 Warden 的底层模型接入层。
 
@@ -21,6 +24,22 @@ Go 进程内端到端 **2353** 条断言、真实进程 + 真实 `curl.exe` **10
   并量清了代价（c=128 非流式下网关是瓶颈，比直连少 22.07% QPS）（M5）
 - **Agent 友好**：幂等重放不重复计费（重放期间 provider 调用 **0** 次）、会话成本账本、能力发现；
   Warden 端到端 **26/26** 检查通过（M6）
+
+## 30 秒：它是什么、怎么自己看一遍
+
+没有依赖、没有 `go.sum`、没有外部服务——**一个 Go 进程 + 一个假上游**就是一套完整实验台。
+下面的命令可以原样粘贴（Windows PowerShell；`go` 走仓库里的 shim，原因见第 4 节）：
+
+```powershell
+.\tools\go.cmd test ./...                       # 全绿：约 90 个 Go 文件、无第三方依赖
+.\tools\go.cmd run .\cmd\verify-m6              # 381 条进程内端到端断言，退出码 0 就是过
+.\tools\go.cmd run .\cmd\infergate -config .\configs\mock.yaml -check   # 只校验配置
+```
+
+想要"真进程 + 真 socket"那一侧，是第 3.2 节的两条启动命令加第 3.3 节的一条验收命令（149 条 `curl.exe` 断言）；
+不想开三个终端就 `docker compose up -d --build`，见第 3.5 节。
+
+三条路径的细节在[第 3 节](#3-快速开始)，量化结论在第 5 节，**没做到的事**写在第 10 节。
 
 用法见 [docs/USAGE.md](docs/USAGE.md)，验收口径见 [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md)，
 设计决策见 [docs/DESIGN.md](docs/DESIGN.md)，量化结论见 [docs/RESUME.md](docs/RESUME.md)。
@@ -151,6 +170,24 @@ Makefile 里有等价封装（`make verify-m6` / `make verify-m6-curl` / `make m
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\measure-m5.ps1 -Concurrency 8,32,128 -Requests 3000 -Warmup 300 -Rounds 3 -Timeout 30s
 ```
 
+### 3.5 容器形态（一条命令起整套）
+
+不想开三个终端就用 compose：网关 + mock 上游 + `cmd/miniredis`（共享缓存/配额的后端）三容器，
+`--profile obs` 再加 Prometheus + Grafana。
+
+```powershell
+docker compose up -d --build                 # 网关 :18080、mock :19000、RESP2 :16399
+docker compose --profile obs up -d --build   # 再加 Prometheus :19090、Grafana :13000（匿名 Viewer）
+docker compose down
+```
+
+容器里用的是 `configs/docker.yaml`：上游写服务名 `http://mockupstream:9000`、存储写 `miniredis:6399`
+（写 `127.0.0.1` 会指到网关自己）。端口特意都不是默认值，可用 `INFERGATE_GATEWAY_PORT` 等环境变量覆盖。
+**这一节只做到了"配置正确"这一层**：compose 语法与 `configs/docker.yaml` 都用真实加载器验过，
+`scripts/verify-docker-profile.ps1` 把同一份配置换成本地地址、用真进程跑了 16 项检查全过；
+但**镜像从未被构建过**（写这份文档的机器上 Docker 守护进程没运行），明细见
+[deploy/README.md](deploy/README.md) §7.1。
+
 ---
 
 ## 4. 本机工具链说明（为什么有 `tools/go.cmd`）
@@ -218,7 +255,7 @@ infergate/
 │   ├── mockcollector/      # 假 OTLP collector（M5 验证导出路径）
 │   ├── measure-m2/         # 缓存阈值扫描：26 对语料 → 各阈值下的真/误命中率
 │   └── verify, verify-m1..m6/   # 7 个 Go 端到端验收程序（38 ~ 877 条断言）
-├── configs/                # 13 份逐行注释的示例配置（mock / routing / cache / quota / tiered / agent …）
+├── configs/                # 14 份逐行注释的示例配置（mock / routing / cache / quota / tiered / agent / docker …）
 ├── internal/
 │   ├── config/ miniyaml/ logging/     # 配置加载（YAML→JSON→struct）、手写 YAML 子集、slog
 │   ├── sse/                            # SSE 帧解析 / 写出 / 增量观测（usage、tool_call、首字）
@@ -233,7 +270,10 @@ infergate/
 │   └── server/                         # HTTP 服务与运维端点（/healthz /readyz /stats /metrics /admin）
 ├── scripts/                # 7 个 curl 端到端验收（verify-m0..m6.ps1）+ 6 个实测脚本 + vLLM 量化对比
 ├── docs/                   # DESIGN / USAGE / ACCEPTANCE / RESUME + baseline/（原始测量数据）
-├── deploy/                 # Prometheus + Grafana 配置
+├── deploy/                 # Prometheus + Grafana 配置（本机形态与容器形态各一份，见 deploy/README.md）
+├── .github/workflows/      # ci.yml：Linux 门（build / vet / test / race）
+├── Dockerfile              # 多阶段构建，--build-arg CMD= 选编译哪个 cmd/
+├── docker-compose.yml      # 网关 + mock 上游 + miniredis（+ obs profile）
 └── tools/go.cmd            # 本机工具链 shim（GOROOT / GOCACHE 重定向，见第 4 节）
 ```
 
@@ -288,7 +328,9 @@ pricing:
 
 ## 10. 已知限制与取舍
 
-- **`go test -race` 不可用**（本机无 gcc），并发正确性靠"单 writer 结构 + 非 race 测试"论证。
+- **本机跑不了 `go test -race`**（无 gcc），所以它被放进了 CI 的 Linux 门（`.github/workflows/ci.yml`）——
+  也就是说这条限制是"本机不可复现"，不是"没验过"。首次上 CI 时该步骤失败过（run 37361004384，退出码 1），
+  那次日志需要仓库管理员权限才能下载，所以两个测试步骤都改成了失败时把测试名/`DATA RACE` 直接写进注解。
 - **测量不是容量承诺**：绝对 QPS 依赖这台主机、这个 mock 和这个客户端；带轮间噪声带的结论才算结论。
 - **云层在 M4 里是 stand-in**：分层路由的跨层延迟差是"本地真模型 + 本仓 mock"的差，不是与真实云 API 的对比。
 - **量化对比是 drift 不是精度**：AWQ/GPTQ 与 FP16 的输出差异以文本漂移度衡量，没有人工或自动评分。
