@@ -519,7 +519,7 @@ func checkCapabilityEligibility(c *checker, e *environment) {
 	// The capability rule is not a length rule, and a huge length limit does
 	// not switch it off.
 	wide, _ := newTierRouter(c, config.StrategyTiered, config.TierPolicyConfig{
-		LocalMaxPromptTokens:   100000,
+		LocalMaxPromptTokens:     100000,
 		LocalMaxCompletionTokens: 100000,
 	}, fleet)
 	if wide != nil {
@@ -777,10 +777,10 @@ func checkReasonAndScore(c *checker, e *environment) {
 	}
 
 	cases := []struct {
-		name   string
-		plan   []router.Candidate
+		name    string
+		plan    []router.Candidate
 		reasons []string
-		scores []float64
+		scores  []float64
 	}{
 		{
 			name: "a simple request",

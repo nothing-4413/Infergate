@@ -340,8 +340,8 @@ func checkTieredRequiresLocal(c *checker, e *environment) {
 	// The matrix: for every strategy, a fleet with no local tier is accepted
 	// unless the strategy is tiered.
 	fleets := []struct {
-		name string
-		ups  []config.UpstreamConfig
+		name  string
+		ups   []config.UpstreamConfig
 		local bool
 	}{
 		{name: "cloud only", ups: []config.UpstreamConfig{tierUpstreamCfg("cloud", "cloud")}, local: false},

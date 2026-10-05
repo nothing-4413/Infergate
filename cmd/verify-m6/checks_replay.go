@@ -375,18 +375,18 @@ func checkIdempotencySurface(c *checker) {
 	// Metrics: the families exist, with the right type.
 	metrics := get(c, s.url, "/metrics", "metrics exposition")
 	for name, want := range map[string]string{
-		"infergate_idempotency_lookups_total":      "counter",
-		"infergate_idempotency_hits_total":         "counter",
-		"infergate_idempotency_misses_total":       "counter",
-		"infergate_idempotency_conflicts_total":    "counter",
-		"infergate_idempotency_stored_total":       "counter",
-		"infergate_idempotency_oversize_total":     "counter",
-		"infergate_idempotency_aborted_total":      "counter",
-		"infergate_idempotency_evicted_total":      "counter",
+		"infergate_idempotency_lookups_total":           "counter",
+		"infergate_idempotency_hits_total":              "counter",
+		"infergate_idempotency_misses_total":            "counter",
+		"infergate_idempotency_conflicts_total":         "counter",
+		"infergate_idempotency_stored_total":            "counter",
+		"infergate_idempotency_oversize_total":          "counter",
+		"infergate_idempotency_aborted_total":           "counter",
+		"infergate_idempotency_evicted_total":           "counter",
 		"infergate_idempotency_in_flight_rejects_total": "counter",
-		"infergate_idempotency_entries":            "gauge",
-		"infergate_idempotency_in_flight":          "gauge",
-		"infergate_idempotency_scopes":             "gauge",
+		"infergate_idempotency_entries":                 "gauge",
+		"infergate_idempotency_in_flight":               "gauge",
+		"infergate_idempotency_scopes":                  "gauge",
 	} {
 		c.equal(metricFamilyType(metrics.body, name), want, "metric family %s", name)
 	}

@@ -38,21 +38,21 @@ type Request struct {
 	// from Model: a tiered route rewrites the name for a local box, and a
 	// provider echoes its own snapshot. Without it, "the conversation used
 	// four models" and "the caller asked for one" are indistinguishable.
-	RequestedModel   string    `json:"requested_model,omitempty"`
-	Status           int       `json:"status"`
-	Outcome          string    `json:"outcome,omitempty"`
-	Stream           bool      `json:"stream,omitempty"`
-	PromptTokens     int       `json:"prompt_tokens"`
-	CompletionTokens int       `json:"completion_tokens"`
-	CachedTokens     int       `json:"cached_tokens"`
-	CostUSD          float64   `json:"cost_usd"`
-	ElapsedMS        float64   `json:"elapsed_ms,omitempty"`
-	FirstTokenMS     float64   `json:"first_token_ms,omitempty"`
-	Attempts         int       `json:"attempts,omitempty"`
-	Tried            []string  `json:"tried,omitempty"`
-	Cache            string    `json:"cache,omitempty"`
-	Replay           bool      `json:"idempotent_replay,omitempty"`
-	Reason           string    `json:"reason,omitempty"`
+	RequestedModel   string   `json:"requested_model,omitempty"`
+	Status           int      `json:"status"`
+	Outcome          string   `json:"outcome,omitempty"`
+	Stream           bool     `json:"stream,omitempty"`
+	PromptTokens     int      `json:"prompt_tokens"`
+	CompletionTokens int      `json:"completion_tokens"`
+	CachedTokens     int      `json:"cached_tokens"`
+	CostUSD          float64  `json:"cost_usd"`
+	ElapsedMS        float64  `json:"elapsed_ms,omitempty"`
+	FirstTokenMS     float64  `json:"first_token_ms,omitempty"`
+	Attempts         int      `json:"attempts,omitempty"`
+	Tried            []string `json:"tried,omitempty"`
+	Cache            string   `json:"cache,omitempty"`
+	Replay           bool     `json:"idempotent_replay,omitempty"`
+	Reason           string   `json:"reason,omitempty"`
 }
 
 // ModelTotals aggregates one model inside a session.

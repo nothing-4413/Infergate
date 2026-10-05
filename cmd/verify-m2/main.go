@@ -117,8 +117,10 @@ func (c *checker) assert(ok bool, format string, args ...any) bool {
 	return false
 }
 
-func (c *checker) info(format string, args ...any) { fmt.Fprintf(c.out, "         "+format+"\n", args...) }
-func (c *checker) tally() (int, int)               { return c.pass + c.fail, c.fail }
+func (c *checker) info(format string, args ...any) {
+	fmt.Fprintf(c.out, "         "+format+"\n", args...)
+}
+func (c *checker) tally() (int, int) { return c.pass + c.fail, c.fail }
 
 type environment struct {
 	out     io.Writer
@@ -469,11 +471,11 @@ func checkTenantIsolation(c *checker, e *environment) {
 	scope := cache.ScopeFor("alpha", "mock-gpt")
 	admin := get(c, st.url+"/admin/cache")
 	var doc struct {
-		Enabled bool              `json:"enabled"`
-		Store   string            `json:"store"`
-		Scopes  map[string]int    `json:"scopes"`
-		Stats   map[string]any    `json:"stats"`
-		Config  map[string]any    `json:"config"`
+		Enabled bool           `json:"enabled"`
+		Store   string         `json:"store"`
+		Scopes  map[string]int `json:"scopes"`
+		Stats   map[string]any `json:"stats"`
+		Config  map[string]any `json:"config"`
 	}
 	if c.assert(json.Unmarshal([]byte(admin.body), &doc) == nil, "/admin/cache answers JSON") {
 		c.assert(doc.Enabled, "/admin/cache reports the cache as enabled")
@@ -710,14 +712,14 @@ func checkAdminAndMetrics(c *checker, e *environment) {
 			TTL       string  `json:"ttl"`
 		} `json:"config"`
 		Stats struct {
-			Lookups          int64 `json:"lookups"`
-			Hits             int64 `json:"hits"`
-			ExactHits        int64 `json:"exact_hits"`
-			SemanticHits     int64 `json:"semantic_hits"`
-			Misses           int64 `json:"misses"`
-			Stores           int64 `json:"stores"`
-			SavedPromptToken int64 `json:"saved_prompt_tokens"`
-			SavedCompTokens  int64 `json:"saved_completion_tokens"`
+			Lookups          int64   `json:"lookups"`
+			Hits             int64   `json:"hits"`
+			ExactHits        int64   `json:"exact_hits"`
+			SemanticHits     int64   `json:"semantic_hits"`
+			Misses           int64   `json:"misses"`
+			Stores           int64   `json:"stores"`
+			SavedPromptToken int64   `json:"saved_prompt_tokens"`
+			SavedCompTokens  int64   `json:"saved_completion_tokens"`
 			HitRate          float64 `json:"hit_rate"`
 		} `json:"stats"`
 	}
@@ -748,9 +750,9 @@ func checkAdminAndMetrics(c *checker, e *environment) {
 	scope := cache.ScopeFor("anonymous", "mock-gpt")
 	lookupURL := st.url + "/admin/cache/lookup?prompt=" + url.QueryEscape(promptText) + "&scope=" + url.QueryEscape(scope)
 	var lookup struct {
-		Prompt  string   `json:"prompt"`
+		Prompt   string   `json:"prompt"`
 		Features []string `json:"features"`
-		Matches []struct {
+		Matches  []struct {
 			Key        string  `json:"key"`
 			Similarity float64 `json:"similarity"`
 		} `json:"matches"`
@@ -784,8 +786,8 @@ func checkAdminAndMetrics(c *checker, e *environment) {
 	// /stats and /metrics must describe the cache with the same numbers.
 	var stats struct {
 		Cache struct {
-			Enabled bool           `json:"enabled"`
-			Hits    int64          `json:"hits"`
+			Enabled bool             `json:"enabled"`
+			Hits    int64            `json:"hits"`
 			Saved   map[string]int64 `json:"saved_tokens"`
 		} `json:"cache"`
 	}

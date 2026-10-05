@@ -516,9 +516,9 @@ func (s *Store) Stats() Stats {
 // Capacity, TTL and MaxResponseBytes expose the effective bounds so the admin
 // surface reports what the store actually enforces rather than what the config
 // asked for.
-func (s *Store) Capacity() int             { return s.capacity }
-func (s *Store) TTL() time.Duration        { return s.ttl }
-func (s *Store) MaxResponseBytes() int64   { return s.maxResponseBytes }
+func (s *Store) Capacity() int           { return s.capacity }
+func (s *Store) TTL() time.Duration      { return s.ttl }
+func (s *Store) MaxResponseBytes() int64 { return s.maxResponseBytes }
 func (s *Store) ScopeCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()

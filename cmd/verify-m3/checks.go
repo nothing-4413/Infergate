@@ -59,8 +59,10 @@ func (c *checker) assert(ok bool, format string, args ...any) bool {
 	return false
 }
 
-func (c *checker) info(format string, args ...any) { fmt.Fprintf(c.out, "         "+format+"\n", args...) }
-func (c *checker) tally() (int, int)               { return c.pass + c.fail, c.fail }
+func (c *checker) info(format string, args ...any) {
+	fmt.Fprintf(c.out, "         "+format+"\n", args...)
+}
+func (c *checker) tally() (int, int) { return c.pass + c.fail, c.fail }
 
 type environment struct {
 	out     io.Writer
@@ -541,13 +543,13 @@ func pinnedHdr(tenant, upstream string) map[string]string {
 	return map[string]string{"X-InferGate-Tenant": tenant, "X-InferGate-Upstream": upstream}
 }
 
-func actionOf(res result) string      { return res.header.Get("X-InferGate-Quota") }
-func reasonOf(res result) string      { return res.header.Get("X-InferGate-Quota-Reason") }
-func limitOf(res result) string       { return res.header.Get("X-InferGate-Quota-Limit") }
-func usedOf(res result) string        { return res.header.Get("X-InferGate-Quota-Used") }
-func modelOf(res result) string       { return res.header.Get("X-InferGate-Quota-Model") }
-func capOf(res result) string         { return res.header.Get("X-InferGate-Quota-Max-Tokens") }
-func retryAfterOf(res result) string  { return res.header.Get("Retry-After") }
+func actionOf(res result) string     { return res.header.Get("X-InferGate-Quota") }
+func reasonOf(res result) string     { return res.header.Get("X-InferGate-Quota-Reason") }
+func limitOf(res result) string      { return res.header.Get("X-InferGate-Quota-Limit") }
+func usedOf(res result) string       { return res.header.Get("X-InferGate-Quota-Used") }
+func modelOf(res result) string      { return res.header.Get("X-InferGate-Quota-Model") }
+func capOf(res result) string        { return res.header.Get("X-InferGate-Quota-Max-Tokens") }
+func retryAfterOf(res result) string { return res.header.Get("Retry-After") }
 
 // errorType reads the OpenAI-shaped error envelope's type field. The type is
 // what a client switches on, so it is asserted instead of the message text.

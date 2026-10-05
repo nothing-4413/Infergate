@@ -260,11 +260,11 @@ func (s *Server) handleSessionsFlush(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	rep := s.proxy.CapabilityReport()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"generated_at":  rep.GeneratedAt,
-		"capabilities":  rep.Capabilities,
-		"models":        rep.Models,
-		"upstreams":     rep.Upstreams,
-		"model_count":   len(rep.Models),
+		"generated_at":   rep.GeneratedAt,
+		"capabilities":   rep.Capabilities,
+		"models":         rep.Models,
+		"upstreams":      rep.Upstreams,
+		"model_count":    len(rep.Models),
 		"upstream_count": len(rep.Upstreams),
 	})
 }
@@ -313,7 +313,7 @@ func (s *Server) handleCapabilityProbe(w http.ResponseWriter, r *http.Request) {
 		"accepted":  accepted,
 		"outcomes":  counts,
 		"probes":    probes,
-		"note": "accepted means the backend did not reject the request shape; it is not a statement about answer quality",
+		"note":      "accepted means the backend did not reject the request shape; it is not a statement about answer quality",
 	})
 }
 

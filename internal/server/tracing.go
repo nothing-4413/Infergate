@@ -247,9 +247,9 @@ func (s *Server) handleTracingConfig(w http.ResponseWriter, r *http.Request) {
 			"service_name": tc.OTLP.ServiceName,
 			"headers":      len(tc.OTLP.Headers),
 		},
-		"stored":      0,
-		"dropped":     0,
-		"exporters":   []string{},
+		"stored":       0,
+		"dropped":      0,
+		"exporters":    []string{},
 		"export_stats": map[string]any{},
 	}
 	if s.trace != nil {
