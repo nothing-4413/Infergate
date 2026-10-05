@@ -70,7 +70,7 @@ mock 注入延迟 0），每阶段 1500 请求 + 300 预热，**取 3 轮的 QPS
   `/metrics` 里网关自己的处理耗时只有 1–5us/请求，远小于客户端观测的 1.6–24ms——
   说明这台机器上是**压测客户端（Go HTTP + SSE 解析 + JSON 解码）先成为瓶颈**，不是网关。
   简历上建议写"网关自身处理开销 ~us 级，端到端 P95 增加 X ms"，而不是把客户端等待算成网关的功绩。
-- 原始数据：`docs/baseline/m0-baseline.json`；复现命令见 README 的"压测"一节。
+- 原始数据：`docs/baseline/m0-baseline.json`；复现命令见 [USAGE.md](USAGE.md) 的 3.5。
 
 ---
 

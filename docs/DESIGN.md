@@ -538,7 +538,7 @@ M3 计划里最初写的是"Redis Lua 原子扣减"。落地时改成了**单条
 预算（策略按原名查、计数按转义名记）——这不是理论问题，两个门禁都复现过。
 
 "当天"是 **UTC 当天**（`untilDayEnd` 自己先转 UTC），所以在这台 UTC+8 的机器上，日预算在本地
-08:00 重置；这个副作用写在 README 里，因为它会让"今天的用量"和运维的日历对不上。
+08:00 重置；这个副作用写在 docs/ACCEPTANCE.md 的 M3 验收口径里，因为它会让"今天的用量"和运维的日历对不上。
 
 `SETNX`/`SETEX`/`INCR`/`INCRBY`/`DECR`/`DECRBY`/`MGET`/`HINCRBY`/`ZINCRBY` 是这一轮给
 `internal/mockredis` 补上的，走的都是真实 RESP2 派发路径：验收器因此在协议层被测过，而不是测一个
