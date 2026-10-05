@@ -82,6 +82,11 @@ curl -s https://api.github.com/repos/nothing-4413/Infergate/commits/<sha>/check-
 
 原始 transcript 仍另存为 `go-test-logs` artifact（下载需认证）。
 
+一个查这类问题的坑记在这里：匿名 GitHub API 是 **60 次/小时**，超了之后
+`curl.exe` 返回 `403 rate limit exceeded`，而 PowerShell 的 `ConvertFrom-Json` 会把
+那个 JSON 错误体解析成一个**空对象**——于是"没有 check run"和"没有额度"看起来一模一样，
+`total_count=0` 会被当成"确实没有"。判读前先看 `GET /rate_limit`，或至少检查 HTTP 状态码。
+
 ### 管理面鉴权（`access`）的证据边界
 
 两条独立链，和里程碑一样：Go 进程内（41 条断言，`internal/server/access_test.go` +
