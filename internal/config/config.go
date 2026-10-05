@@ -43,6 +43,7 @@ type Config struct {
 	Pricing   PricingConfig    `json:"pricing"`
 	Cache     CacheConfig      `json:"cache"`
 	Quota     QuotaConfig      `json:"quota"`
+	Tracing   TracingConfig    `json:"tracing"`
 }
 
 // HealthConfig parameterises the per-upstream circuit breaker.
@@ -618,6 +619,64 @@ const (
 	StrategyTiered = "tiered"
 )
 
+// TracingConfig parameterises the in-process trace store and its optional
+// exports. Tracing is off by default: it retains per-request payload metadata
+// in memory, and a deployment should not pay for that unless somebody is going
+// to replay a request.
+//
+// The trace id comes from the inbound traceparent when the caller sends a
+// valid one, so a client that is already tracing sees the gateway's spans
+// inside its own trace rather than beside it.
+type TracingConfig struct {
+	// Enabled turns recording on. While false the section is still validated
+	// but never has to be complete.
+	Enabled bool `json:"enabled"`
+
+	// Capacity is how many traces are retained. The ring drops the oldest when
+	// it is full and counts the drops rather than growing without bound, so a
+	// replay of a request older than the last Capacity requests legitimately
+	// misses - /admin/traces reports that as expired (Dropped), not as "the
+	// gateway never saw this request".
+	Capacity int `json:"capacity"`
+
+	// SampleRatio is the fraction of requests recorded, 0..1. A sampled-out
+	// request is still served, still counted in the metrics and still logged;
+	// only its replay is missing. 0 means "unset" and becomes 1: recording
+	// nothing is what enabled: false is for, and spelling it two ways invites
+	// the wrong one.
+	SampleRatio float64 `json:"sample_ratio"`
+
+	// JSONLPath appends every completed trace as one JSON object per line.
+	// Empty disables the file. The write happens on a background goroutine, so
+	// a slow disk costs dropped traces, never request latency.
+	JSONLPath string `json:"jsonl_path"`
+
+	// OTLP exports spans to an OpenTelemetry collector.
+	OTLP OTLPConfig `json:"otlp"`
+}
+
+// OTLPConfig points at a collector's OTLP/HTTP endpoint.
+//
+// This is a hand-rolled encoder for the trace service, not the OpenTelemetry
+// SDK: the wire format is the standard one, the convenience layer is not. The
+// gateway has no third-party dependency and this milestone does not add one.
+type OTLPConfig struct {
+	// Endpoint is the collector base URL, e.g. http://127.0.0.1:4318. Spans
+	// are POSTed to <endpoint>/v1/traces. Empty disables the exporter.
+	Endpoint string `json:"endpoint"`
+
+	// Timeout bounds one export attempt. Exports are batched in the
+	// background, so this is a collector budget, not request latency.
+	Timeout Duration `json:"timeout"`
+
+	// ServiceName becomes service.name in the exported resource.
+	ServiceName string `json:"service_name"`
+
+	// Headers are sent on every export request, which is how a managed
+	// collector authenticates. A secret belongs here only as ${ENV}.
+	Headers map[string]string `json:"headers"`
+}
+
 // Defaults mirrors configs/infergate.yaml. Load applies them before overlaying
 // the file, so a partially specified file is still a valid configuration.
 func Defaults() Config {
@@ -721,6 +780,18 @@ func Defaults() Config {
 				DialTimeout:  Duration(2 * time.Second),
 				ReadTimeout:  Duration(2 * time.Second),
 				WriteTimeout: Duration(2 * time.Second),
+			},
+		},
+		Tracing: TracingConfig{
+			Enabled: false,
+			// 1024 traces is a few MiB once span attributes are counted: enough
+			// to replay "the request I just made", far short of a log store.
+			Capacity:    1024,
+			SampleRatio: 1,
+			OTLP: OTLPConfig{
+				Timeout:     Duration(5 * time.Second),
+				ServiceName: "infergate",
+				Headers:     map[string]string{},
 			},
 		},
 	}
@@ -1178,6 +1249,34 @@ func (c *Config) Validate() error {
 		for i := range c.Upstreams {
 			c.Upstreams[i].Weight = 1
 		}
+	}
+
+	dt := Defaults().Tracing
+	if c.Tracing.Capacity < 0 {
+		return fmt.Errorf("tracing.capacity: must not be negative")
+	}
+	if c.Tracing.Capacity == 0 {
+		// Zero is "unset", not "retain nothing": a store of capacity 0 would
+		// silently drop every trace while the config says tracing is enabled.
+		c.Tracing.Capacity = dt.Capacity
+	}
+	if c.Tracing.SampleRatio < 0 || c.Tracing.SampleRatio > 1 {
+		return fmt.Errorf("tracing.sample_ratio: must be between 0 and 1, got %v", c.Tracing.SampleRatio)
+	}
+	if c.Tracing.SampleRatio == 0 {
+		c.Tracing.SampleRatio = dt.SampleRatio
+	}
+	if c.Tracing.OTLP.Timeout < 0 {
+		return errors.New("tracing.otlp.timeout: must not be negative")
+	}
+	if c.Tracing.OTLP.Timeout == 0 {
+		c.Tracing.OTLP.Timeout = dt.OTLP.Timeout
+	}
+	if strings.TrimSpace(c.Tracing.OTLP.ServiceName) == "" {
+		c.Tracing.OTLP.ServiceName = dt.OTLP.ServiceName
+	}
+	if c.Tracing.OTLP.Headers == nil {
+		c.Tracing.OTLP.Headers = map[string]string{}
 	}
 	return nil
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -42,6 +43,11 @@ type Server struct {
 	// taking the config apart.
 	quota      *quota.Manager
 	quotaStore string
+
+	// trace owns the M5 trace ring and its exporters. It is always non-nil so
+	// /admin/traces and /admin/tracing can report the configuration even when
+	// tracing is off.
+	trace *tracePlane
 
 	http    *http.Server
 	started time.Time
@@ -133,6 +139,15 @@ func NewServer(cfg *config.Config, logger logAdapter) (*Server, error) {
 		proxyQuota = quotaManager
 	}
 
+	// M5: tracing is built before the proxy because the proxy is handed the
+	// tracer at construction, and a nil tracer is what makes tracing free when
+	// it is off. Unlike the cache and the quota manager, "enabled" also decides
+	// whether the ring exists at all.
+	traceplane, err := buildTracing(cfg, logger)
+	if err != nil {
+		return nil, err
+	}
+
 	proxy := gateway.New(gateway.Options{
 		Upstreams:       registry,
 		Pricing:         priceBook,
@@ -150,6 +165,7 @@ func NewServer(cfg *config.Config, logger logAdapter) (*Server, error) {
 		// body; these two numbers are how it turns bytes into tokens.
 		QuotaCharsPerToken:    cfg.Quota.EstimateCharsPerToken,
 		QuotaCompletionTokens: cfg.Quota.EstimateCompletionTokens,
+		Tracer:                traceplane.tracer,
 	})
 
 	s := &Server{
@@ -163,6 +179,7 @@ func NewServer(cfg *config.Config, logger logAdapter) (*Server, error) {
 		cache:      semanticCache,
 		quota:      quotaManager,
 		quotaStore: quotaStore,
+		trace:      traceplane,
 		started:    time.Now(),
 	}
 
@@ -179,6 +196,9 @@ func NewServer(cfg *config.Config, logger logAdapter) (*Server, error) {
 	mux.HandleFunc("POST /admin/cache/flush", s.handleCacheFlush)
 	mux.HandleFunc("GET /admin/cache/lookup", s.handleCacheLookup)
 	mux.HandleFunc("GET /admin/quota", s.handleQuota)
+	mux.HandleFunc("GET /admin/traces", s.handleTraces)
+	mux.HandleFunc("GET /admin/traces/{id}", s.handleTraceByID)
+	mux.HandleFunc("GET /admin/tracing", s.handleTracingConfig)
 
 	// Everything else is the OpenAI-compatible surface. The catch-all must not
 	// swallow the exact routes above: Go's ServeMux prefers the more specific
@@ -421,6 +441,12 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	samples := s.recorder.RequestLatencySamples()
+	// Sorted once and read five times. The previous shape called percentile()
+	// per quantile, and percentile copied and re-sorted the entire sample set on
+	// every call, so a single /stats scrape paid for five sorts of a slice that
+	// grew with uptime. Sorting here and extracting from the sorted slice keeps
+	// the exact same nearest-rank values at a fifth of the work.
+	sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
 	prompt, completion, cached := s.recorder.TokenTotals()
 
 	firstToken := make([]map[string]any, 0)
@@ -447,11 +473,17 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		"requests": total,
 		"latency": map[string]any{
 			"count": len(samples),
-			"p50":   percentile(samples, 0.50).String(),
-			"p90":   percentile(samples, 0.90).String(),
-			"p95":   percentile(samples, 0.95).String(),
-			"p99":   percentile(samples, 0.99).String(),
-			"max":   percentile(samples, 1.0).String(),
+			// window and dropped describe the population, not the latency: a
+			// p99 over the last 65536 requests is a different claim from a p99
+			// since boot, and only these two keys let a dashboard tell them
+			// apart.
+			"window":  s.recorder.RequestLatencyWindow(),
+			"dropped": s.recorder.RequestLatencyDropped(),
+			"p50":     percentileSorted(samples, 0.50).String(),
+			"p90":     percentileSorted(samples, 0.90).String(),
+			"p95":     percentileSorted(samples, 0.95).String(),
+			"p99":     percentileSorted(samples, 0.99).String(),
+			"max":     percentileSorted(samples, 1.0).String(),
 		},
 		"tokens": map[string]any{
 			"prompt":     prompt,
@@ -558,12 +590,24 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 			row.Route, row.Upstream, row.Model, strconv.Itoa(row.Status), string(row.Outcome), row.Count)
 	}
 
-	b.WriteString("# HELP infergate_request_duration_seconds_sum Total request time by route, upstream and model.\n")
-	b.WriteString("# TYPE infergate_request_duration_seconds_sum counter\n")
-	for _, row := range s.recorder.Snapshot() {
-		fmt.Fprintf(&b, "infergate_request_duration_seconds_sum{route=%q,upstream=%q,model=%q} %g\n",
-			row.Route, row.Upstream, row.Model, row.TotalSeconds)
-	}
+	// Request duration is a histogram, not the `_sum` counter this endpoint used
+	// to export on its own. The mean is the one latency statistic that hides the
+	// event an operator is hunting for -- a slow tail -- so the buckets come
+	// first and `_sum`/`_count` are part of the same family. Keeping the old
+	// standalone `_sum` counter alongside would be an invalid duplicate family.
+	writeHistogramFamily(&b, "infergate_request_duration_seconds",
+		"Request duration by route, upstream and model.",
+		[]string{"route", "upstream", "model"},
+		requestDurationSeries(s.recorder.RequestDurationHistograms()))
+
+	// Attempt duration, which no earlier export carried. It is what separates a
+	// slow backend from a slow gateway: a request that took four seconds because
+	// it was retried three times shows one slow request and three fast attempts,
+	// and only this family makes that visible.
+	writeHistogramFamily(&b, "infergate_upstream_attempt_duration_seconds",
+		"Duration of one outbound upstream attempt, including retries.",
+		[]string{"upstream"},
+		attemptDurationSeries(s.recorder.AttemptDurationHistograms()))
 
 	b.WriteString("# HELP infergate_tokens_total Provider-reported tokens by upstream and model.\n")
 	b.WriteString("# TYPE infergate_tokens_total counter\n")
@@ -574,18 +618,43 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(&b, "infergate_tokens_total{upstream=%q,model=%q,kind=\"requests\"} %d\n", row.Upstream, row.Model, row.Requests)
 	}
 
+	// Completion length is a distribution, not a total: a fleet average of 300
+	// tokens is consistent with every request asking for 300 and with half the
+	// fleet asking for 8 while the other half asks for 600, and only the buckets
+	// distinguish them. That difference decides whether the batching and the
+	// timeout budget are sized right.
+	writeHistogramFamily(&b, "infergate_completion_tokens_per_request",
+		"Completion tokens produced per request.",
+		[]string{"upstream", "model"},
+		completionTokensSeries(s.recorder.CompletionTokensHistograms()))
+
+	// Both stream families declare their metadata before either family's samples:
+	// the exposition interleaves frames and bytes per upstream, and a Prometheus
+	// reader takes the first line it sees for a metric name as the declaration,
+	// so a # TYPE emitted between two sample lines would arrive too late.
 	b.WriteString("# HELP infergate_stream_frames_total SSE frames relayed downstream.\n")
 	b.WriteString("# TYPE infergate_stream_frames_total counter\n")
+	b.WriteString("# HELP infergate_stream_bytes_total SSE bytes relayed downstream.\n")
+	b.WriteString("# TYPE infergate_stream_bytes_total counter\n")
 	for _, row := range s.recorder.StreamSnapshot() {
 		fmt.Fprintf(&b, "infergate_stream_frames_total{upstream=%q} %d\n", row.Upstream, row.Frames)
 		fmt.Fprintf(&b, "infergate_stream_bytes_total{upstream=%q} %d\n", row.Upstream, row.Bytes)
 	}
 
+	// The mean stays a gauge even though the buckets now exist. They are
+	// different family names, so both are valid, and they serve different
+	// readers: a cheap "is the first token fast" panel wants one number, while a
+	// quantile panel wants the buckets and would otherwise have to scan the
+	// whole sample set in the query engine.
 	b.WriteString("# HELP infergate_first_token_seconds_mean Mean time to first streamed token.\n")
 	b.WriteString("# TYPE infergate_first_token_seconds_mean gauge\n")
 	for _, row := range s.recorder.FirstTokenSnapshot() {
 		fmt.Fprintf(&b, "infergate_first_token_seconds_mean{upstream=%q,model=%q} %g\n", row.Upstream, row.Model, row.Mean.Seconds())
 	}
+	writeHistogramFamily(&b, "infergate_first_token_seconds",
+		"Time to first streamed token by upstream and model.",
+		[]string{"upstream", "model"},
+		firstTokenSeries(s.recorder.FirstTokenHistograms()))
 
 	// Failover counters. The status label is what separates "we moved off a
 	// backend that was rate limiting us" from "we moved off a backend that was
@@ -693,7 +762,176 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(&b, "infergate_quota_released_cost_micros_total %d\n", qs.ReleasedCostMicro)
 	}
 
+	// ---------------------------------------------------------------------
+	// Process facts, not request facts.
+	//
+	// Everything above describes traffic; this block describes the process
+	// serving it. They are in one place because they are read together: a
+	// latency regression that arrives with a rising goroutine count or a rising
+	// heap is the gateway's problem, and the same regression with a flat process
+	// is the upstream's. Hand-written from package runtime rather than a
+	// collector library, because this repo takes no third-party dependencies and
+	// the exposition is small enough to read.
+	// ---------------------------------------------------------------------
+	writeRuntimeMetrics(&b)
+
 	_, _ = w.Write([]byte(b.String()))
+}
+
+// histogramSeries is one labelled histogram, flattened out of the Recorder so
+// that the writer does not need to know which accessor produced it.
+type histogramSeries struct {
+	labels  []string
+	count   int64
+	sum     float64
+	buckets []metrics.Bucket
+}
+
+func requestDurationSeries(rows []metrics.RequestDurationHistogram) []histogramSeries {
+	out := make([]histogramSeries, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, histogramSeries{
+			labels: []string{r.Route, r.Upstream, r.Model},
+			count:  r.Count, sum: r.Sum, buckets: r.Buckets(),
+		})
+	}
+	return out
+}
+
+func attemptDurationSeries(rows []metrics.AttemptDurationHistogram) []histogramSeries {
+	out := make([]histogramSeries, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, histogramSeries{
+			labels: []string{r.Upstream},
+			count:  r.Count, sum: r.Sum, buckets: r.Buckets(),
+		})
+	}
+	return out
+}
+
+func firstTokenSeries(rows []metrics.FirstTokenHistogram) []histogramSeries {
+	out := make([]histogramSeries, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, histogramSeries{
+			labels: []string{r.Upstream, r.Model},
+			count:  r.Count, sum: r.Sum, buckets: r.Buckets(),
+		})
+	}
+	return out
+}
+
+func completionTokensSeries(rows []metrics.CompletionTokensHistogram) []histogramSeries {
+	out := make([]histogramSeries, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, histogramSeries{
+			labels: []string{r.Upstream, r.Model},
+			count:  r.Count, sum: r.Sum, buckets: r.Buckets(),
+		})
+	}
+	return out
+}
+
+// writeHistogramFamily renders one Prometheus histogram family.
+//
+// The exposition format is strict here, so the shape is written once rather than
+// per family: a `_bucket` series per boundary carrying `le`, then `_count` and
+// `_sum` derived from the same series. A family with no series still gets its
+// HELP and TYPE lines, which is how a scraper learns the metric exists and is
+// merely idle -- emitting a bare bucket line with no labels instead would be a
+// malformed series.
+func writeHistogramFamily(b *strings.Builder, name, help string, labelNames []string, series []histogramSeries) {
+	fmt.Fprintf(b, "# HELP %s %s\n", name, help)
+	fmt.Fprintf(b, "# TYPE %s histogram\n", name)
+	for _, s := range series {
+		base := make([]string, 0, len(labelNames))
+		for i, ln := range labelNames {
+			base = append(base, fmt.Sprintf("%s=%q", ln, s.labels[i]))
+		}
+		// le is appended per bucket rather than stored, because it is the one
+		// label whose value changes line to line.
+		withLe := func(le string) string {
+			parts := make([]string, len(base), len(base)+1)
+			copy(parts, base)
+			parts = append(parts, fmt.Sprintf("le=%q", le))
+			return strings.Join(parts, ",")
+		}
+		for _, bk := range s.buckets {
+			fmt.Fprintf(b, "%s_bucket{%s} %d\n", name, withLe(bk.Le()), bk.Count)
+		}
+		fmt.Fprintf(b, "%s_count%s %d\n", name, labelSuffix(base), s.count)
+		fmt.Fprintf(b, "%s_sum%s %g\n", name, labelSuffix(base), s.sum)
+	}
+}
+
+// labelSuffix renders a Prometheus label set, or nothing at all for the
+// unlabelled series that a process-level metric produces.
+func labelSuffix(labels []string) string {
+	if len(labels) == 0 {
+		return ""
+	}
+	return "{" + strings.Join(labels, ",") + "}"
+}
+
+// writeRuntimeMetrics renders the process's own numbers.
+//
+// Every value is read once, here, rather than lazily per line: a scrape that
+// reported goroutines from one instant and heap from another would be
+// internally inconsistent, and the whole point of this block is to correlate
+// them.
+func writeRuntimeMetrics(b *strings.Builder) {
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+
+	writeProcessMetric(b, "infergate_runtime_goroutines", "gauge",
+		"Live goroutines in this process.", fmt.Sprintf("%d", runtime.NumGoroutine()))
+	writeProcessMetric(b, "infergate_runtime_num_cpu", "gauge",
+		"Logical CPUs available to this process, as runtime.NumCPU sees them.", fmt.Sprintf("%d", runtime.NumCPU()))
+	writeProcessMetric(b, "infergate_runtime_memstats_alloc_bytes", "gauge",
+		"Bytes of allocated heap objects, including unreachable ones not yet collected.", fmt.Sprintf("%d", ms.Alloc))
+	writeProcessMetric(b, "infergate_runtime_memstats_heap_alloc_bytes", "gauge",
+		"Bytes of allocated heap objects.", fmt.Sprintf("%d", ms.HeapAlloc))
+	writeProcessMetric(b, "infergate_runtime_memstats_heap_inuse_bytes", "gauge",
+		"Heap bytes in spans that have at least one live object.", fmt.Sprintf("%d", ms.HeapInuse))
+	writeProcessMetric(b, "infergate_runtime_memstats_heap_objects", "gauge",
+		"Allocated heap objects.", fmt.Sprintf("%d", ms.HeapObjects))
+	writeProcessMetric(b, "infergate_runtime_memstats_stack_inuse_bytes", "gauge",
+		"Bytes in stack spans.", fmt.Sprintf("%d", ms.StackInuse))
+	writeProcessMetric(b, "infergate_runtime_memstats_sys_bytes", "gauge",
+		"Bytes obtained from the OS for the runtime, including unused spans.", fmt.Sprintf("%d", ms.Sys))
+	writeProcessMetric(b, "infergate_runtime_memstats_total_alloc_bytes", "counter",
+		"Cumulative bytes allocated over the process lifetime, even if freed.", fmt.Sprintf("%d", ms.TotalAlloc))
+	writeProcessMetric(b, "infergate_runtime_memstats_gc_cycles_total", "counter",
+		"Completed GC cycles since process start.", fmt.Sprintf("%d", ms.NumGC))
+	writeProcessMetric(b, "infergate_runtime_gc_pause_seconds_total", "counter",
+		"Cumulative stop-the-world GC pause time.", strconv.FormatFloat(float64(ms.PauseTotalNs)/1e9, 'g', -1, 64))
+
+	// PauseNs is a 256-slot ring of the most recent pauses, newest at
+	// (NumGC+255)%256. Before the first collection every slot is zero, and the
+	// honest answer there is "no pause yet" rather than whichever slot the
+	// arithmetic happens to point at.
+	lastPause := 0.0
+	if ms.NumGC > 0 {
+		lastPause = float64(ms.PauseNs[(ms.NumGC+255)%256]) / 1e9
+	}
+	writeProcessMetric(b, "infergate_runtime_gc_last_pause_seconds", "gauge",
+		"Most recent stop-the-world GC pause; 0 before the first collection.",
+		strconv.FormatFloat(lastPause, 'g', -1, 64))
+
+	// The Go version is the one metric here with a label: it is a build fact
+	// that a fleet-wide dashboard needs to group by when a runtime upgrade rolls
+	// out to half the hosts.
+	b.WriteString("# HELP infergate_runtime_go_version Go runtime the binary was built against, always 1.\n")
+	b.WriteString("# TYPE infergate_runtime_go_version gauge\n")
+	fmt.Fprintf(b, "infergate_runtime_go_version{version=%q} 1\n", runtime.Version())
+}
+
+// writeProcessMetric emits one single-valued process metric with its HELP and
+// TYPE lines. It takes an already-formatted value so that byte counters stay
+// exact integers instead of being rounded through a float64.
+func writeProcessMetric(b *strings.Builder, name, typ, help, value string) {
+	fmt.Fprintf(b, "# HELP %s %s\n", name, help)
+	fmt.Fprintf(b, "# TYPE %s %s\n", name, typ)
+	fmt.Fprintf(b, "%s %s\n", name, value)
 }
 
 // withAccessControl wraps the router with the cross-cutting concerns that
@@ -726,19 +964,20 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = enc.Encode(v)
 }
 
-// percentile returns the p-quantile of samples (p in [0,1]) using the
-// nearest-rank method.
+// percentileSorted returns the p-quantile of an ASCENDING slice (p in [0,1])
+// using the nearest-rank method.
+//
+// The caller sorts. A handler that reports five quantiles of the same population
+// must not pay for five sorts of it, which is what the previous
+// sort-per-quantile helper did.
 //
 // Nearest-rank over interpolation because the number an operator acts on is
 // "how slow was the 99th user", which is one of the observed requests; an
 // interpolated value between two samples is a latency that never occurred.
-func percentile(samples []time.Duration, p float64) time.Duration {
-	if len(samples) == 0 {
+func percentileSorted(sorted []time.Duration, p float64) time.Duration {
+	if len(sorted) == 0 {
 		return 0
 	}
-	sorted := make([]time.Duration, len(samples))
-	copy(sorted, samples)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
 	if p <= 0 {
 		return sorted[0]
 	}

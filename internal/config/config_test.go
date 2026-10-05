@@ -651,3 +651,145 @@ func writeConfig(t *testing.T, body string) string {
 	}
 	return path
 }
+
+// Tracing is off by default, and an omitted section must still leave the
+// store's parameters usable so that turning it on is a one-line change.
+func TestTracingDefaultsWhenOmitted(t *testing.T) {
+	path := writeConfig(t, `
+server:
+  listen: ":8080"
+upstreams:
+  - name: "mock"
+    base_url: "http://127.0.0.1:9000"
+    models:
+      - "/"
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Tracing.Enabled {
+		t.Fatal("tracing is on by default; it retains request metadata and must be opt-in")
+	}
+	if cfg.Tracing.Capacity != 1024 {
+		t.Fatalf("capacity = %d, want 1024", cfg.Tracing.Capacity)
+	}
+	if cfg.Tracing.SampleRatio != 1 {
+		t.Fatalf("sample_ratio = %v, want 1", cfg.Tracing.SampleRatio)
+	}
+	if cfg.Tracing.JSONLPath != "" {
+		t.Fatalf("jsonl_path = %q, want empty", cfg.Tracing.JSONLPath)
+	}
+	if got := cfg.Tracing.OTLP.Timeout.Duration(); got != 5*time.Second {
+		t.Fatalf("otlp.timeout = %v, want 5s", got)
+	}
+	if got := cfg.Tracing.OTLP.ServiceName; got != "infergate" {
+		t.Fatalf("otlp.service_name = %q, want infergate", got)
+	}
+	if cfg.Tracing.OTLP.Headers == nil {
+		t.Fatal("otlp.headers is nil; an exporter that ranges over it should not need a nil check")
+	}
+}
+
+// The section must round-trip from YAML into the struct the wiring reads.
+func TestTracingSectionParses(t *testing.T) {
+	path := writeConfig(t, `
+server:
+  listen: ":8080"
+upstreams:
+  - name: "mock"
+    base_url: "http://127.0.0.1:9000"
+    models:
+      - "/"
+tracing:
+  enabled: true
+  capacity: 512
+  sample_ratio: 0.25
+  jsonl_path: "tmp/traces.jsonl"
+  otlp:
+    endpoint: "http://127.0.0.1:4318"
+    timeout: "2s"
+    service_name: "infergate-m5"
+    headers:
+      "x-api-key": "secret"
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	tc := cfg.Tracing
+	if !tc.Enabled || tc.Capacity != 512 || tc.SampleRatio != 0.25 {
+		t.Fatalf("tracing = %+v, want enabled capacity 512 ratio 0.25", tc)
+	}
+	if tc.JSONLPath != "tmp/traces.jsonl" {
+		t.Fatalf("jsonl_path = %q", tc.JSONLPath)
+	}
+	if tc.OTLP.Endpoint != "http://127.0.0.1:4318" || tc.OTLP.ServiceName != "infergate-m5" {
+		t.Fatalf("otlp = %+v", tc.OTLP)
+	}
+	if got := tc.OTLP.Timeout.Duration(); got != 2*time.Second {
+		t.Fatalf("otlp.timeout = %v, want 2s", got)
+	}
+	if tc.OTLP.Headers["x-api-key"] != "secret" {
+		t.Fatalf("otlp.headers = %v", tc.OTLP.Headers)
+	}
+}
+
+func TestTracingValidationErrors(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr string
+	}{
+		{"negative capacity", func(c *Config) { c.Tracing.Capacity = -1 },
+			"tracing.capacity: must not be negative"},
+		{"negative sample ratio", func(c *Config) { c.Tracing.SampleRatio = -0.1 },
+			"tracing.sample_ratio: must be between 0 and 1"},
+		{"sample ratio above one", func(c *Config) { c.Tracing.SampleRatio = 1.5 },
+			"tracing.sample_ratio: must be between 0 and 1"},
+		{"negative otlp timeout", func(c *Config) { c.Tracing.OTLP.Timeout = Duration(-time.Second) },
+			"tracing.otlp.timeout: must not be negative"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Upstreams = []UpstreamConfig{{Name: "mock", BaseURL: "http://127.0.0.1:9000", Models: []string{"/"}}}
+			tc.mutate(&cfg)
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("Validate accepted %s", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %q, want it to contain %q", err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
+// Zero means "unset" for capacity and sample_ratio, never "record nothing":
+// a store of capacity 0 would drop every trace while the config claims tracing
+// is on, which is the one misreading that looks like a bug in the gateway.
+func TestTracingZeroMeansUnset(t *testing.T) {
+	cfg := Defaults()
+	cfg.Upstreams = []UpstreamConfig{{Name: "mock", BaseURL: "http://127.0.0.1:9000", Models: []string{"/"}}}
+	cfg.Tracing.Enabled = true
+	cfg.Tracing.Capacity = 0
+	cfg.Tracing.SampleRatio = 0
+	cfg.Tracing.OTLP.Timeout = 0
+	cfg.Tracing.OTLP.ServiceName = "   "
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if cfg.Tracing.Capacity != 1024 {
+		t.Fatalf("capacity = %d, want the default 1024", cfg.Tracing.Capacity)
+	}
+	if cfg.Tracing.SampleRatio != 1 {
+		t.Fatalf("sample_ratio = %v, want the default 1", cfg.Tracing.SampleRatio)
+	}
+	if got := cfg.Tracing.OTLP.Timeout.Duration(); got != 5*time.Second {
+		t.Fatalf("otlp.timeout = %v, want the default 5s", got)
+	}
+	if cfg.Tracing.OTLP.ServiceName != "infergate" {
+		t.Fatalf("otlp.service_name = %q, want the default", cfg.Tracing.OTLP.ServiceName)
+	}
+}

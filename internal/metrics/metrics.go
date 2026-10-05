@@ -94,19 +94,110 @@ func (Nop) ObserveFirstToken(string, string, time.Duration) {}
 // ObserveStreamFrames implements Sink.
 func (Nop) ObserveStreamFrames(string, int64, int64) {}
 
+// DefaultLatencyWindow is the number of raw request durations a Recorder keeps
+// for the /stats percentiles.
+//
+// 65536 samples is bounded memory -- 512KiB at 8 bytes per time.Duration -- and
+// roughly a day of traffic at one request per second. That is the point: a
+// percentile must describe the traffic an operator is looking at now, not every
+// request since the process started, and an unbounded slice is a leak whose
+// size the /stats handler pays for again on every scrape (it sorts the whole
+// thing). A run shorter than the window is unaffected, which is what keeps the
+// 3600-request M2/M3 baselines byte-identical.
+const DefaultLatencyWindow = 65536
+
 // Recorder is an in-memory Sink. It backs both tests and the /metrics endpoint,
 // so the numbers a test asserts and the numbers an operator scrapes come from
 // one implementation rather than two that can drift.
+//
+// Every field is guarded by the one mutex. Durations are recorded twice on
+// purpose: as histogram buckets for /metrics (bounded, exportable) and as raw
+// samples in a fixed-size ring for the exact nearest-rank percentiles in
+// /stats. The ring is capped at DefaultLatencyWindow, so the recorder's memory
+// is a constant of the configuration rather than a function of uptime.
 type Recorder struct {
 	mu sync.Mutex
 
-	requests       map[requestKey]*requestStat
-	attempts       map[attemptKey]*attemptStat
-	failovers      map[failoverKey]int64
-	tokens         map[tokenKey]*TokenStat
-	firstToken     map[tokenKey]*latencyStat
-	streams        map[string]*streamStat
-	requestLatency []time.Duration
+	requests   map[requestKey]*requestStat
+	attempts   map[attemptKey]*attemptStat
+	failovers  map[failoverKey]int64
+	tokens     map[tokenKey]*TokenStat
+	firstToken map[tokenKey]*latencyStat
+	streams    map[string]*streamStat
+
+	requestLatency latencyRing
+
+	requestDuration  map[requestDurationKey]*Histogram
+	attemptDuration  map[string]*Histogram
+	firstTokenHist   map[tokenKey]*Histogram
+	completionTokens map[tokenKey]*Histogram
+}
+
+// latencyRing is a fixed-capacity ring of the most recent request durations,
+// readable in insertion order starting at the oldest live sample.
+//
+// It replaces an unbounded append that was the one piece of Recorder state that
+// grew with uptime, and it is evicted rather than truncated so that a
+// percentile still describes a contiguous recent window instead of the first N
+// requests of the process's life.
+type latencyRing struct {
+	buf []time.Duration
+
+	// next is the slot the next observation overwrites. Once the ring is full
+	// that slot holds the oldest sample, which is what makes eviction O(1).
+	next int
+
+	// n is how many slots currently hold a sample. next and n diverge only
+	// after the first wrap.
+	n int
+
+	// dropped counts observations evicted by the window.
+	dropped int64
+}
+
+// observe records one duration, evicting the oldest sample when full.
+func (r *latencyRing) observe(d time.Duration) {
+	if len(r.buf) == 0 {
+		// A Recorder built by hand instead of by NewRecorder has no window. It
+		// must not panic on the request path; it simply records no samples.
+		return
+	}
+	if r.n == len(r.buf) {
+		r.dropped++
+	} else {
+		r.n++
+	}
+	r.buf[r.next] = d
+	r.next++
+	if r.next == len(r.buf) {
+		r.next = 0
+	}
+}
+
+// samples copies the live samples oldest-first.
+//
+// Insertion order (not ring order) is deliberate: a caller that wants
+// percentiles sorts anyway, and a caller that is a test wants a value that does
+// not change when the ring wraps.
+func (r *latencyRing) samples() []time.Duration {
+	out := make([]time.Duration, 0, r.n)
+	start := r.next
+	if r.n < len(r.buf) {
+		// Before the first wrap the samples occupy buf[0:n] and next == n.
+		start = 0
+	}
+	for i := 0; i < r.n; i++ {
+		out = append(out, r.buf[(start+i)%len(r.buf)])
+	}
+	return out
+}
+
+// reset empties the ring but keeps its buffer, so Reset does not force a
+// 512KiB reallocation and a fresh GC cycle.
+func (r *latencyRing) reset() {
+	r.next = 0
+	r.n = 0
+	r.dropped = 0
 }
 
 // failoverKey groups failover decisions by the backend that was abandoned and
@@ -134,6 +225,16 @@ type attemptKey struct {
 }
 
 type tokenKey struct {
+	Upstream string
+	Model    string
+}
+
+// requestDurationKey is the histogram key for request duration. It deliberately
+// omits status and outcome, which requestKey keeps: a latency panel split by
+// outcome answers "how slow are failures", while the question an SLO asks is
+// "how slow were the requests users actually waited for".
+type requestDurationKey struct {
+	Route    string
 	Upstream string
 	Model    string
 }
@@ -166,15 +267,31 @@ type streamStat struct {
 	Bytes  int64
 }
 
-// NewRecorder returns an empty Recorder.
-func NewRecorder() *Recorder {
+// NewRecorder returns an empty Recorder with the default latency window.
+func NewRecorder() *Recorder { return NewRecorderWithWindow(0) }
+
+// NewRecorderWithWindow returns an empty Recorder whose raw-latency window holds
+// at most n samples.
+//
+// n <= 0 selects DefaultLatencyWindow, so NewRecorder and
+// NewRecorderWithWindow(0) build the same recorder. A small n exists for tests
+// that need to prove eviction happens; the gateway always takes the default.
+func NewRecorderWithWindow(n int) *Recorder {
+	if n <= 0 {
+		n = DefaultLatencyWindow
+	}
 	return &Recorder{
-		requests:   map[requestKey]*requestStat{},
-		attempts:   map[attemptKey]*attemptStat{},
-		failovers:  map[failoverKey]int64{},
-		tokens:     map[tokenKey]*TokenStat{},
-		firstToken: map[tokenKey]*latencyStat{},
-		streams:    map[string]*streamStat{},
+		requests:         map[requestKey]*requestStat{},
+		attempts:         map[attemptKey]*attemptStat{},
+		failovers:        map[failoverKey]int64{},
+		tokens:           map[tokenKey]*TokenStat{},
+		firstToken:       map[tokenKey]*latencyStat{},
+		streams:          map[string]*streamStat{},
+		requestLatency:   latencyRing{buf: make([]time.Duration, n)},
+		requestDuration:  map[requestDurationKey]*Histogram{},
+		attemptDuration:  map[string]*Histogram{},
+		firstTokenHist:   map[tokenKey]*Histogram{},
+		completionTokens: map[tokenKey]*Histogram{},
 	}
 }
 
@@ -191,7 +308,15 @@ func (m *Recorder) ObserveRequest(route, upstream, model string, status int, out
 	}
 	st.Count++
 	st.Seconds += secs
-	m.requestLatency = append(m.requestLatency, elapsed)
+	m.requestLatency.observe(elapsed)
+
+	hk := requestDurationKey{Route: route, Upstream: upstream, Model: model}
+	h := m.requestDuration[hk]
+	if h == nil {
+		h = NewHistogram(defaultDurationBuckets)
+		m.requestDuration[hk] = h
+	}
+	h.Observe(secs)
 }
 
 // ObserveTokens implements Sink.
@@ -208,6 +333,17 @@ func (m *Recorder) ObserveTokens(upstream, model string, prompt, completion, cac
 	st.Completion += int64(completion)
 	st.Cached += int64(cached)
 	st.Requests++
+
+	// Completion tokens, not prompt+completion: prompt length is a property of
+	// what the client sent and is already fully described by the token
+	// counters, while completion length is what the gateway waits for and what
+	// a streaming client experiences as duration.
+	h := m.completionTokens[k]
+	if h == nil {
+		h = NewHistogram(defaultTokensPerRequestBuckets)
+		m.completionTokens[k] = h
+	}
+	h.Observe(float64(completion))
 }
 
 // ObserveUpstreamAttempt implements Sink.
@@ -223,6 +359,13 @@ func (m *Recorder) ObserveUpstreamAttempt(upstream string, status int, outcome O
 	}
 	st.Count++
 	st.Seconds += secs
+
+	h := m.attemptDuration[upstream]
+	if h == nil {
+		h = NewHistogram(defaultDurationBuckets)
+		m.attemptDuration[upstream] = h
+	}
+	h.Observe(secs)
 }
 
 // ObserveFailover implements Sink.
@@ -275,6 +418,13 @@ func (m *Recorder) ObserveFirstToken(upstream, model string, elapsed time.Durati
 	}
 	st.Count++
 	st.Seconds += elapsed.Seconds()
+
+	h := m.firstTokenHist[k]
+	if h == nil {
+		h = NewHistogram(defaultFirstTokenBuckets)
+		m.firstTokenHist[k] = h
+	}
+	h.Observe(elapsed.Seconds())
 }
 
 // ObserveStreamFrames implements Sink.
@@ -436,18 +586,207 @@ func (m *Recorder) StreamSnapshot() []StreamSample {
 	return out
 }
 
-// RequestLatencySamples returns a copy of the raw request latencies, for
-// percentile computation by the caller.
+// RequestLatencySamples returns a copy of the raw request latencies the window
+// currently holds, oldest first.
+//
+// Semantics: the percentiles a caller derives from this are over the most
+// recent min(recorded requests, window) requests. A run shorter than the window
+// -- every load test in this repo -- sees exactly the samples it always did, so
+// its results are unchanged; a longer run has lost its oldest samples instead
+// of retaining them forever, and RequestLatencyDropped reports how many.
+//
+// Ordering is insertion order so the value is deterministic regardless of how
+// many times the ring has wrapped.
 func (m *Recorder) RequestLatencySamples() []time.Duration {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := make([]time.Duration, len(m.requestLatency))
-	copy(out, m.requestLatency)
+	return m.requestLatency.samples()
+}
+
+// RequestLatencyWindow reports the configured capacity of the raw-latency
+// window, so /stats can publish the sample population a percentile is computed
+// over without duplicating the default.
+func (m *Recorder) RequestLatencyWindow() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.requestLatency.buf)
+}
+
+// RequestLatencyDropped reports how many request durations the window has
+// evicted since the last Reset.
+//
+// It is exported because a percentile over a truncated window is a different
+// claim from a percentile over everything: a dashboard that shows p99 without
+// this number cannot tell "the last 65536 requests" from "since boot".
+func (m *Recorder) RequestLatencyDropped() int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.requestLatency.dropped
+}
+
+// RequestDurationHistogram is the request-duration histogram for one
+// (route, upstream, model), with the map key flattened into fields so a caller
+// outside this package can read it without depending on an unexported key type.
+type RequestDurationHistogram struct {
+	Route    string
+	Upstream string
+	Model    string
+	Count    int64
+	Sum      float64
+	Counts   []int64
+}
+
+// Bounds returns the finite bucket boundaries this family was recorded with.
+func (RequestDurationHistogram) Bounds() []float64 { return DefaultDurationBuckets() }
+
+// Buckets returns the cumulative buckets, ending with the +Inf catch-all.
+func (r RequestDurationHistogram) Buckets() []Bucket {
+	return cumulativeBuckets(DefaultDurationBuckets(), r.Counts)
+}
+
+// RequestDurationHistograms returns the request-duration histograms in
+// deterministic (route, upstream, model) order.
+func (m *Recorder) RequestDurationHistograms() []RequestDurationHistogram {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]RequestDurationHistogram, 0, len(m.requestDuration))
+	for k, h := range m.requestDuration {
+		s := h.Snapshot()
+		out = append(out, RequestDurationHistogram{
+			Route: k.Route, Upstream: k.Upstream, Model: k.Model,
+			Count: s.Count, Sum: s.Sum, Counts: s.Counts,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.Route != b.Route {
+			return a.Route < b.Route
+		}
+		if a.Upstream != b.Upstream {
+			return a.Upstream < b.Upstream
+		}
+		return a.Model < b.Model
+	})
 	return out
 }
 
-// Reset clears every counter. It exists for tests and for benchmark harnesses
-// that measure a single phase.
+// AttemptDurationHistogram is the upstream-attempt-duration histogram for one
+// upstream.
+//
+// It is the only export of attempt timing: attemptStat carries a count and a sum
+// that /metrics has never rendered, so before this a slow backend that the
+// gateway retried away was invisible in every scrape.
+type AttemptDurationHistogram struct {
+	Upstream string
+	Count    int64
+	Sum      float64
+	Counts   []int64
+}
+
+// Bounds returns the finite bucket boundaries this family was recorded with.
+func (AttemptDurationHistogram) Bounds() []float64 { return DefaultDurationBuckets() }
+
+// Buckets returns the cumulative buckets, ending with the +Inf catch-all.
+func (a AttemptDurationHistogram) Buckets() []Bucket {
+	return cumulativeBuckets(DefaultDurationBuckets(), a.Counts)
+}
+
+// AttemptDurationHistograms returns the attempt-duration histograms in
+// deterministic upstream order.
+func (m *Recorder) AttemptDurationHistograms() []AttemptDurationHistogram {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]AttemptDurationHistogram, 0, len(m.attemptDuration))
+	for k, h := range m.attemptDuration {
+		s := h.Snapshot()
+		out = append(out, AttemptDurationHistogram{Upstream: k, Count: s.Count, Sum: s.Sum, Counts: s.Counts})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Upstream < out[j].Upstream })
+	return out
+}
+
+// FirstTokenHistogram is the time-to-first-token histogram for one
+// (upstream, model).
+type FirstTokenHistogram struct {
+	Upstream string
+	Model    string
+	Count    int64
+	Sum      float64
+	Counts   []int64
+}
+
+// Bounds returns the finite bucket boundaries this family was recorded with.
+func (FirstTokenHistogram) Bounds() []float64 { return DefaultFirstTokenBuckets() }
+
+// Buckets returns the cumulative buckets, ending with the +Inf catch-all.
+func (f FirstTokenHistogram) Buckets() []Bucket {
+	return cumulativeBuckets(DefaultFirstTokenBuckets(), f.Counts)
+}
+
+// FirstTokenHistograms returns the time-to-first-token histograms in
+// deterministic (upstream, model) order.
+func (m *Recorder) FirstTokenHistograms() []FirstTokenHistogram {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]FirstTokenHistogram, 0, len(m.firstTokenHist))
+	for k, h := range m.firstTokenHist {
+		s := h.Snapshot()
+		out = append(out, FirstTokenHistogram{
+			Upstream: k.Upstream, Model: k.Model,
+			Count: s.Count, Sum: s.Sum, Counts: s.Counts,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Upstream != out[j].Upstream {
+			return out[i].Upstream < out[j].Upstream
+		}
+		return out[i].Model < out[j].Model
+	})
+	return out
+}
+
+// CompletionTokensHistogram is the completion-tokens-per-request histogram for
+// one (upstream, model).
+type CompletionTokensHistogram struct {
+	Upstream string
+	Model    string
+	Count    int64
+	Sum      float64
+	Counts   []int64
+}
+
+// Bounds returns the finite bucket boundaries this family was recorded with.
+func (CompletionTokensHistogram) Bounds() []float64 { return DefaultTokensPerRequestBuckets() }
+
+// Buckets returns the cumulative buckets, ending with the +Inf catch-all.
+func (c CompletionTokensHistogram) Buckets() []Bucket {
+	return cumulativeBuckets(DefaultTokensPerRequestBuckets(), c.Counts)
+}
+
+// CompletionTokensHistograms returns the completion-token histograms in
+// deterministic (upstream, model) order.
+func (m *Recorder) CompletionTokensHistograms() []CompletionTokensHistogram {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]CompletionTokensHistogram, 0, len(m.completionTokens))
+	for k, h := range m.completionTokens {
+		s := h.Snapshot()
+		out = append(out, CompletionTokensHistogram{
+			Upstream: k.Upstream, Model: k.Model,
+			Count: s.Count, Sum: s.Sum, Counts: s.Counts,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Upstream != out[j].Upstream {
+			return out[i].Upstream < out[j].Upstream
+		}
+		return out[i].Model < out[j].Model
+	})
+	return out
+}
+
+// Reset clears every counter and every histogram. It exists for tests and for
+// benchmark harnesses that measure a single phase.
 func (m *Recorder) Reset() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -457,5 +796,9 @@ func (m *Recorder) Reset() {
 	m.tokens = map[tokenKey]*TokenStat{}
 	m.firstToken = map[tokenKey]*latencyStat{}
 	m.streams = map[string]*streamStat{}
-	m.requestLatency = nil
+	m.requestLatency.reset()
+	m.requestDuration = map[requestDurationKey]*Histogram{}
+	m.attemptDuration = map[string]*Histogram{}
+	m.firstTokenHist = map[tokenKey]*Histogram{}
+	m.completionTokens = map[tokenKey]*Histogram{}
 }

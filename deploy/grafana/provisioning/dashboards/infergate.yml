@@ -1,0 +1,36 @@
+# InferGate M5 —— Grafana 看板 provider（文件型）
+#
+# 作用：让 Grafana 直接扫描一个目录，把里面的 *.json 注册成看板，不需要"UI 里导入"这一步。
+# 这样仓库里的 deploy/grafana/dashboards/infergate.json 就是看板的唯一真相来源。
+apiVersion: 1
+
+providers:
+  - name: infergate
+    orgId: 1
+    # 看板会落在这个文件夹下（不存在时由 Grafana 自动创建）。
+    folder: InferGate
+    # 文件夹也固定 uid：Grafana 11 起文件夹是带 uid 的一等对象，看板 JSON 里引用
+    # folderUid 时不会因为重新 provision 而漂。
+    folderUid: infergate
+    type: file
+    # 磁盘上的 JSON 被删掉时，看板也一起删（Grafana 的默认值就是 false，显式写出来）。
+    disableDeletion: false
+    # 改完 JSON 最多 30s 生效，不用重启 Grafana。开发看板时把它调小（比如 5）会更好用。
+    updateIntervalSeconds: 30
+    # 文件是唯一真相来源：UI 里改会被标记为 provisioned 且改不动，避免"改了 UI 但仓库没变"。
+    allowUiUpdates: false
+    options:
+      # ---- 容器（docker run）里的路径 ----
+      # 这个路径与 README 里的挂载命令是一对的：
+      #   -v "<repo>\deploy\grafana\provisioning:/etc/grafana/provisioning:ro"
+      #   -v "<repo>\deploy\grafana\dashboards:/etc/grafana/provisioning/dashboards:ro"
+      # 第二个挂载正好落在 provider 扫的这个目录上，所以 JSON 放进去就被注册。
+      path: /etc/grafana/provisioning/dashboards
+
+      # ---- 本机（Windows 直接跑 grafana-server.exe）必须换成下面这行 ----
+      # 容器路径在 Windows 上不存在，provider 会扫到一个空目录且不报错，
+      # 表现为"Grafana 起来了，但一个看板都没有"。provider 只认一个 path，改这行、注释上面那行：
+      # path: C:\Users\20106\Desktop\infergate\deploy\grafana\dashboards
+
+      # 不按子目录结构建文件夹：本目录是平铺的，开着只会多出一层无意义的层级。
+      foldersFromFilesStructure: false

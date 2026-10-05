@@ -1,0 +1,82 @@
+# InferGate M5 —— Prometheus 抓取配置
+#
+# 这个文件只回答一个问题："抓谁"。它不定义任何 Exporter：指标由网关自己在 /metrics 上
+# 以 Prometheus 文本格式暴露（手写 exposition，没有任何第三方 client library）。
+# 怎么把 Prometheus 跑起来见 ../README.md。
+#
+# 端口约定（与 M5 测量脚本一致）：
+#   18999                单实例形态的网关
+#   18999 + 19000..19002 四实例形态的四个网关（同一个 mock 上游后面）
+# 全部写死 127.0.0.1，因为这是"本机形态"的配置。容器形态必须换目标，原因见 README。
+
+global:
+  # 抓取间隔 = 看板 refresh（5s）。面板上的速率都用 [1m] 窗口，5s 抓取下是 12 个样本，
+  # 够 histogram_quantile 用又不会把本机压出开销。
+  scrape_interval: 5s
+  # 本目录没有 recording rule、没有 alert rule，这个值只是留出余量并在语义上完整。
+  evaluation_interval: 15s
+  # 必须严格小于 scrape_interval：否则一轮抓取超时会把下一轮的开始时间顶掉，
+  # 表现为"面板上每隔一段就断一个点"。4s < 5s 是刻意的，显式写出，不吃默认值。
+  scrape_timeout: 4s
+
+# 这些标签会附加到本进程发出的每一条 time series（remote write / federation 也会带）。
+# 目的：单实例形态与四实例形态在历史数据里必须分得清是哪一次运行、哪台机器。
+# 注意 host 是本机名占位符，不是采集到的真实主机名 —— 抓取目标里的 host 标签要另外配。
+external_labels:
+  cluster: infergate-local
+  host: windows-dev
+  milestone: m5
+
+scrape_configs:
+  # ---------------------------------------------------------------------------
+  # 1) 单实例形态：一个网关 + 一个 mock 上游，M5 的默认测量形态。
+  # ---------------------------------------------------------------------------
+  - job_name: infergate-single
+    metrics_path: /metrics
+    scheme: http
+    # honor_labels: false 是默认值：当 /metrics 文本里已经带上 cluster/host 这类标签时，
+    # false 会让"抓取端的 external_labels / target labels"覆盖它。本网关不暴露这两个标签，
+    # 所以当前没有冲突，写出来是为了让这个取舍显式可见。
+    honor_labels: false
+    static_configs:
+      - targets:
+          - "127.0.0.1:18999"
+        labels:
+          # 自己加一个与 job 同义的标签，是为了让 "按 instance_kind 聚合" 这种面板写法
+          # 在两种形态之间可以直接复用。
+          instance_kind: single
+
+  # ---------------------------------------------------------------------------
+  # 2) 四实例形态：同一份配置起 4 个网关进程，指向同一个 mock 上游。
+  #    看板里"集群聚合 QPS"要的就是这一组能否随实例数线性上涨。
+  # ---------------------------------------------------------------------------
+  - job_name: infergate-fleet
+    metrics_path: /metrics
+    scheme: http
+    static_configs:
+      - targets:
+          - "127.0.0.1:18999"
+          - "127.0.0.1:19000"
+          - "127.0.0.1:19001"
+          - "127.0.0.1:19002"
+        labels:
+          instance_kind: fleet
+
+  # ---------------------------------------------------------------------------
+  # 3) 预留：mock 上游（今天抓不了）
+  #
+  # cmd/mockupstream 只实现 OpenAI 兼容的推理面与故障注入头，没有 /metrics，
+  # 也不输出 Prometheus 文本，所以下面这段刻意保持注释状态 —— 打开它只会得到 404。
+  # 什么时候可以打开：mock 加了 metrics 端点，或者换成任何自带 /metrics 的中间层/上游。
+  # 打开时记得按真实端口改 targets。
+  # ---------------------------------------------------------------------------
+  # - job_name: mock-upstream
+  #   metrics_path: /metrics
+  #   scheme: http
+  #   static_configs:
+  #     - targets:
+  #         - "127.0.0.1:9000"
+  #         - "127.0.0.1:9100"
+  #         - "127.0.0.1:9200"
+  #       labels:
+  #         instance_kind: upstream

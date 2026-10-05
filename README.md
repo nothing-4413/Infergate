@@ -788,6 +788,75 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\measure-m4.ps1  # 
   分类与分流、以及本地层确实在被调用（本地答案是真模型的输出且带 `usage`），不代表负载下、
   流式下或估算边界上的行为。
 
+### 3.14 M5 验收与实测：全链路可观测与压测基线
+
+**做了什么**
+
+- `/metrics` 从"只有计数器"补成真直方图：同名替换 `infergate_request_duration_seconds`（原来是带
+  `_sum` 后缀的 TYPE counter，任何面板都算不出分位数），另加 `infergate_upstream_attempt_duration_seconds`、
+  `infergate_first_token_seconds`、`infergate_completion_tokens_per_request`，固定分桶 + `+Inf` 累积桶，
+  仍然零依赖；延迟样本窗口改成 65536 环形缓冲，并把 `latency.window` / `latency.dropped` 报出来
+  （丢样本必须可见，否则"P99 变好了"可能只是样本被丢了）。M2 的缓存族
+  （`infergate_cache_hit_ratio`、`hits_total{kind="exact"|"semantic"}`、`saved_tokens_total`）由同一个
+  `/metrics` 继续暴露，dashboard 里的命中率面板用的就是它。
+- Trace 复用 W3C `traceparent`：入站有就跟随、没有才新建 root（中途换 trace id 会让"客户端 → 网关 →
+  上游"不再是一条 trace）；一条请求 = 一个 `gateway.request` server span + 每次上游尝试一个
+  `upstream.<name>` client span，流式也是一个 span、帧数/字节/首字延迟挂属性；`/admin/traces` 可以按
+  request id 回放（日志里能看到的就是 request id）。导出两个 sink：手写 OTLP/HTTP(JSON) 与 JSONL，
+  都走后台 worker，`Export()` 只入队。
+- 压测由 `cmd/loadtest`（无第三方依赖，自带 SSE 解析与首字计时）驱动，`scripts/measure-m5.ps1` 产出
+  `docs/baseline/m5-summary.json`；`deploy/` 给出 Prometheus 抓取配置（`infergate-single` /
+  `infergate-fleet`）与 33 面板的 Grafana dashboard——**但本机没有 Prometheus / Grafana 二进制，
+  deploy 只验证到"能解析 + 每个指标名与契约逐条对齐"，没有真的抓取、查询或渲染面板**
+  （写在 `deploy/README.md` §6）。
+
+**实测（i9-14900HX / 32 逻辑核，单机回环，后端是仓库内 mock，`log.level: error`，8 臂交错 × 3 轮取中位，
+每相位 3000 请求 + 300 预热）**
+
+| 臂 | 非流式 c=8 / 32 / 128 QPS（P95 ms） | 流式 c=8 / 32 / 128 QPS（P95 ms，TTFT P95 ms） |
+| --- | --- | --- |
+| `direct`（证人臂） | 5834（2.10）/ 5688（7.42）/ 5623（26.00） | 1500（6.41，1.51）/ 3448（11.78，1.55）/ 3437（39.31，1.23） |
+| `gateway` | 4462（2.39）/ 4560（7.88）/ 4382（32.82） | 1366（6.93，1.55）/ 2731（14.15，1.63）/ 2750（56.70，1.59） |
+| `gateway-scraped` | 4110 / 4255 / 3959 | 1320 / 2656 / 2728 |
+| `traced-otlp` | 3922 / 3666 / 3822 | 1338 / 2690 / 2701 |
+| `traced-full`（+JSONL） | 3847 / 3872 / 3720 | 1327 / 2647 / 2731 |
+| `horizontal-2` | 4347 / 4286 / 4415 | 1332 / 2749 / 2829 |
+| `horizontal-4` | 4387 / 4044 / 4340 | 1317 / 2637 / 2749 |
+
+怎么读这几行：
+
+- **网关是限速的那一半（这一次）**：非流式 c=128 少 22.07% QPS（4382 vs 5623，P95 +6.82ms / P99 +4.59ms），
+  流式 c=128 少 20.00%（2750 vs 3437，P95 +17.39ms / P99 +14.96ms）。但这些差值必须配对同轮噪声带读：
+  非流式三个档位都超带，流式 c=8 / c=128 超带、c=32 的 20.79% 落在 26.04% 的带宽内。
+- **绝对值不可跨运行引用，"谁比谁快"也不可单独引用**：同一条命令、同一台机器、相邻两次全量运行，
+  `direct` 非流式 c=8 从 1909 到 5834 QPS（**3.06×**），而"网关 vs 直连"的符号直接翻转
+  （前一次 +15.6 / +16.2 / +16.3%，这一次 −23.5 / −19.8 / −22.1%）。只有同一次运行内、与同轮带宽
+  比较的差值可读；§12.5 的证人臂教训（31.3k → 8.7k QPS）在这里是必答题。
+- **c=128 的流式臂其实测的是客户端**：客户端观测均值 45.60ms 而网关自报 15.05ms，墙钟大半花在压测
+  客户端自己身上（脚本把 8 个这类相位单列进 `limitations`）。
+- **tracing 的成本取决于负载形态**：非流式在 `sample_ratio 1.0` 下 −12.09% / −19.60% / −12.79% QPS
+  （P95 +0.31 / +2.36 / +4.71ms，全部超带）；流式 −2.02% / −1.50% / −1.77%（基本在带内）。
+  再加一个 JSONL sink 在六对比较里都不产生可测开销（−1.93% … +5.63%）——因为导出只入队，
+  采集端慢只会涨 drop 计数。
+- **被抓取是有代价的，但 100ms 常轮询是上界**：6 对里 3 对超带，最大 −9.65% QPS（非流式 c=128，
+  P95 +5.75ms）；抓取器自己实测 9.702 端点 GET/s（请求 10，三轮离散 3.25%）。真实 Prometheus 是
+  5–15s 一次，且差值里有一部分是抓取进程抢 CPU。
+- **水平扩展在单一后端下不涨吞吐**：2 实例加速比 0.94–1.03×、4 实例 0.89–1.00×（理想线性度分别是
+  100%，实测 47–51.5% / 22.2–25.0%），因为所有实例共享同一个 mock 后端；同配置的两个实例本身就差
+  −3.11% … +4.06%，这就是这台机器能分辨的下限。
+- **一致性证据**：144 个相位 `errors=0`；一轮 `gateway` 臂期间 `infergate_requests_total` 恰好
+  +19800 = 18000 派发 + 1800 预热；6 个实例都报 `window=65536`、P50 ≤ P95 ≤ P99、无 open 熔断、
+  都声明 `# TYPE infergate_stream_bytes_total`；OTLP `exported=59400` / `failed=0`，采集端 118714 次
+  POST 全落在配置端点 + `/v1/traces`；JSONL 59400 行与 `export_stats` 对齐。
+- 这份基线**不是**容量承诺：后端是仓库内 mock、单机回环、`log.level: error`（不含 §12.5 那 18% 的
+  日志成本）、导出器异步（量的是建 span + 入队）、`sample_ratio 1.0` 是最坏情况、抓取是上界，
+  固定请求数还意味着机器越快相位越短（本次 c=8 非流式相位约 0.5s）。
+
+验收：Go `cmd/verify-m5` **420** 条断言 + 真实进程 curl `scripts/verify-m5.ps1` **203** 条断言
+（两个真 mock + 仓库自带的 `cmd/mockcollector`）+ `scripts/measure-m5.ps1` **10** 项检查全部通过、
+**0** 条失败断言（72 条在写产物前记录，12 条收尾断言在其后执行，标准输出共 84 条）。设计取舍与全部
+口径见 `docs/DESIGN.md` §12。
+
 ---
 
 ## 4. 本机工具链说明（为什么有 `tools/go.cmd`）
@@ -820,7 +889,7 @@ schannel 取不到凭证，所以验收脚本只打本机回环地址。
 | M2 | 语义缓存：Embedding + 阈值门控 + Redis | **完成** |
 | M3 | Token 配额与成本治理：预算、超限降级、计量对账 | **完成** |
 | M4 | vLLM 本地推理服务化 + 量化对比（FP16 / AWQ / GPTQ）+ 分层路由 | **完成** |
-| M5 | 可观测完善 + 压测基线（QPS / P95 / 首字延迟 / 缓存命中率） | 计划中 |
+| M5 | 可观测完善 + 压测基线（QPS / P95 / 首字延迟 / 缓存命中率 / trace 回放） | **完成** |
 | M6 | 与 Warden 打通：工具调用、会话、成本归因 | 计划中 |
 
 非目标：不做前端控制台、不做计费系统、不做模型训练。

@@ -10,12 +10,12 @@
 
 GO ?= tools/go.cmd
 
-.PHONY: all build vet test verify verify-curl verify-m1 verify-m1-curl verify-m2 verify-m2-curl measure-m2 verify-m3 verify-m3-curl measure-m3 verify-m4 verify-m4-curl measure-m4 loadtest diag run-mock run-gateway run-fleet run-cache run-cache-redis run-miniredis run-quota run-quota-redis run-miniredis-quota run-tiered clean help
+.PHONY: all build vet test verify verify-curl verify-m1 verify-m1-curl verify-m2 verify-m2-curl measure-m2 verify-m3 verify-m3-curl measure-m3 verify-m4 verify-m4-curl measure-m4 verify-m5 verify-m5-curl measure-m5 loadtest diag run-mock run-gateway run-fleet run-cache run-cache-redis run-miniredis run-quota run-quota-redis run-miniredis-quota run-tiered run-observability clean help
 
 all: build vet test
 
 help:
-	@echo "targets: build vet test verify verify-curl verify-m1 verify-m1-curl verify-m2 verify-m2-curl measure-m2 verify-m3 verify-m3-curl measure-m3 verify-m4 verify-m4-curl measure-m4 loadtest diag run-mock run-gateway run-fleet run-cache run-cache-redis run-miniredis run-quota run-quota-redis run-miniredis-quota run-tiered clean"
+	@echo "targets: build vet test verify verify-curl verify-m1 verify-m1-curl verify-m2 verify-m2-curl measure-m2 verify-m3 verify-m3-curl measure-m3 verify-m4 verify-m4-curl measure-m4 verify-m5 verify-m5-curl measure-m5 loadtest diag run-mock run-gateway run-fleet run-cache run-cache-redis run-miniredis run-quota run-quota-redis run-miniredis-quota run-tiered run-observability clean"
 
 ## build: compile every package and emit the two binaries.
 build:
@@ -27,7 +27,17 @@ build:
 vet:
 	$(GO) vet ./...
 
-## test: unit + integration suite.  -race is NOT available on this host (no gcc).
+## test: unit + integration suite.
+##
+## -race is NOT in this target because it needs cgo and a C compiler, which this
+## host does not put on PATH by default -- NOT because it is unavailable.  It
+## works with the ucrt64 gcc that ships with msys64, from PowerShell:
+##   $env:CGO_ENABLED='1'; $env:CC='C:\msys64\ucrt64\bin\gcc.exe'
+##   $env:PATH='C:\msys64\ucrt64\bin;'+$env:PATH
+##   $env:TMP=$env:TEMP=(Resolve-Path .\.gotmp).Path   # cgo cannot write %TEMP%
+##   .\tools\go.cmd test ./internal/tracing/ -race -count=1
+## The %TEMP% override is load-bearing: without it cgo fails with
+## "open ...\AppData\Local\Temp\cgo-gcc-input-<n>: Access is denied."
 test:
 	$(GO) test ./...
 
@@ -139,11 +149,40 @@ verify-m4-curl:
 measure-m4:
 	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/measure-m4.ps1
 
+## verify-m5: observability acceptance (420 assertions, the M5 CI gate).  The
+## exposition is asserted against the Prometheus text contract itself (HELP/TYPE,
+## cumulative buckets, +Inf == _count) and each trace against the span tree it
+## produced, because a metric that is merely present is not observable.
+verify-m5:
+	$(GO) run ./cmd/verify-m5
+
+## verify-m5-curl: the same claims through the real binary and real curl.exe --
+## /metrics, /stats, /admin/traces, /admin/tracing, the JSONL sink, and OTLP read
+## back from a real HTTP collector across a process boundary.  203 assertions.
+verify-m5-curl:
+	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-m5.ps1
+
+## measure-m5: what observability costs -- the gateway's throughput and tail
+## latency at several concurrency levels against a mock upstream, the overhead of
+## tracing at sample_ratio 1.0 (OTLP alone, then OTLP + JSONL), and two gateway
+## instances versus one behind a single round-robin client.  Writes
+## docs/baseline/m5-summary.json.
+measure-m5:
+	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/measure-m5.ps1
+
 ## run-tiered: the M4 sample (configs/tiered-local.yaml) on :8080, local tier
 ## served by vLLM inside WSL on :8000 and cloud tier by a mock on :9100.
 ## Start the mock first:  $(GO) run ./cmd/mockupstream -listen :9100 -name cloud-mock
 run-tiered:
 	$(GO) run ./cmd/infergate -config configs/tiered-local.yaml
+
+## run-observability: the M5 sample (configs/observability.yaml) on :18999 with
+## tracing on (bounded in-memory store, JSONL export).  Needs one mock first:
+##   $(GO) run ./cmd/mockupstream -listen :19900 -name observability-mock
+## Then:  curl -s http://127.0.0.1:18999/admin/traces
+## Prometheus + Grafana for this port are in deploy/ (see deploy/README.md).
+run-observability:
+	$(GO) run ./cmd/infergate -config configs/observability.yaml
 
 ## run-quota: the M3 sample (configs/quota-local.yaml) on :8084, budgets counted
 ## in process memory.  Needs one mock in another shell:

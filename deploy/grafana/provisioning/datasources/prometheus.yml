@@ -1,0 +1,36 @@
+# InferGate M5 —— Grafana 数据源 provisioning
+#
+# Grafana 启动时读 <provisioning>/datasources/*.yml，把这些数据源写进自己的数据库。
+# provisioning 出来的数据源在 UI 里是只读的（editable: false），要改就改这个文件再重启，
+# 或者用 --config 打开 provisioning 的热加载间隔。这样"数据源指着谁"与仓库里的文件一致。
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    # 固定 uid 是这份配置的关键：看板 JSON 里的每一处 datasource.uid 都写
+    # ${DS_PROMETHEUS}（模板变量），变量的默认值就是这个 uid。
+    # 用固定 uid 而不是让 Grafana 自己生成，看板才能在没有"用户手动选数据源"这一步时直接出图。
+    uid: PROMETHEUS
+    type: prometheus
+    access: proxy
+    # proxy = Grafana 服务端去连 Prometheus，浏览器不直连，因此不需要给 Prometheus 配 CORS。
+    url: http://127.0.0.1:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      # 大查询（长 window 的 histogram_quantile）用 POST，避免 URL 长度上限。
+      httpMethod: POST
+      # 与 prometheus.yml 的 scrape_interval 一致。Grafana 用它计算 $__rate_interval，
+      # 也用它做"数据比预期稀疏"的提示。改抓取间隔时这里要一起改。
+      timeInterval: 5s
+      prometheusType: Prometheus
+      # 仅影响 UI 侧的行为提示（Metrics Explorer / 原生直方图）。与抓取无关。
+      prometheusVersion: 2.50.0
+      # exemplars 没有开：这套指标里没有 trace_id，链路追踪不在 M5 范围内。
+
+# 可选：如果这台 Grafana 上已经存在一个同名（Prometheus）但 uid 不同的数据源，
+# 上面这条会新建一个 uid=PROMETHEUS 的条目并设为默认，旧的那条会留着。
+# 想让它消失，取消下面这段注释（会在每次启动时按名字删除，然后重新 provision）：
+# deleteDatasources:
+#   - name: Prometheus
+#     orgId: 1

@@ -20,6 +20,7 @@ import (
 	"github.com/infergate/infergate/internal/metrics"
 	"github.com/infergate/infergate/internal/quota"
 	"github.com/infergate/infergate/internal/router"
+	"github.com/infergate/infergate/internal/tracing"
 	"github.com/infergate/infergate/internal/upstream"
 )
 
@@ -83,6 +84,11 @@ type Proxy struct {
 	// body.
 	quotaCharsPerToken    int
 	quotaCompletionTokens int
+
+	// tracer records one trace per sampled request. Nil disables tracing, which
+	// is the default: the trace store retains request metadata in memory, so it
+	// is a decision an operator makes rather than a cost every deployment pays.
+	tracer *Tracer
 }
 
 // Options configures a Proxy.
@@ -142,6 +148,9 @@ type Options struct {
 	// QuotaCompletionTokens is the completion reservation for a request that
 	// named no ceiling of its own. Zero means the package default (256).
 	QuotaCompletionTokens int
+
+	// Tracer records per-request traces. Nil disables tracing.
+	Tracer *Tracer
 }
 
 // New builds a Proxy.
@@ -172,6 +181,7 @@ func New(opts Options) *Proxy {
 		quota:                 opts.Quota,
 		quotaCharsPerToken:    opts.QuotaCharsPerToken,
 		quotaCompletionTokens: opts.QuotaCompletionTokens,
+		tracer:                opts.Tracer,
 	}
 	p.maxAttempts = opts.MaxAttempts
 	if p.maxAttempts < 1 {
@@ -278,6 +288,16 @@ type record struct {
 	// generated. Its quota meaning is precise: the request consumed a slot but
 	// no provider tokens.
 	servedFromCache bool
+
+	// trace is the in-flight trace for this request. Nil when tracing is
+	// disabled or the request was sampled out.
+	trace *requestTrace
+
+	// traceparent and tracestate are the W3C context propagated to the
+	// upstream. They are computed even when the request is not recorded, so a
+	// caller that is tracing stays connected across this hop.
+	traceparent string
+	tracestate  string
 }
 
 // Usage mirrors sse.Usage without importing it here, keeping the record type
@@ -298,6 +318,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		status:    http.StatusOK,
 		outcome:   metrics.OutcomeSuccess,
 	}
+	// The trace is opened before anything else so that the upstream hop carries
+	// this request's own span as its parent, and the inbound traceparent is
+	// validated before it is trusted.
+	p.tracer.begin(r, rec)
 
 	defer func() {
 		// A panic in any handler goroutine would otherwise kill the process.
@@ -334,6 +358,29 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if rec.firstTokenSet {
 			p.metrics.ObserveFirstToken(rec.upstream, rec.model, rec.firstToken)
 		}
+		// M5: the trace is closed here, after the response has been written and
+		// after the metrics, so a slow exporter cannot delay an answer. The
+		// events below are what make a trace readable without the log line: the
+		// verdicts that explain the outcome, recorded where they are known.
+		if rec.cacheStatus != "" {
+			rec.trace.addEvent("cache."+rec.cacheStatus, map[string]any{
+				"reason": rec.cacheReason,
+			})
+		}
+		if rec.failovers > 0 {
+			rec.trace.addEvent("failover", map[string]any{
+				"failovers": rec.failovers,
+				"tried":     rec.tried,
+			})
+		}
+		if rec.frames > 0 {
+			rec.trace.addEvent("stream.complete", map[string]any{
+				"frames":         rec.frames,
+				"response_bytes": rec.respBytes,
+				"first_token_ms": firstTokenMS(rec),
+			})
+		}
+		rec.trace.finish(rec)
 
 		level := slog.LevelInfo
 		switch rec.outcome {
@@ -693,6 +740,13 @@ func (p *Proxy) attemptUpstream(w http.ResponseWriter, r *http.Request, rec *rec
 		d := p.breakers.Get(target.Name).Allow()
 		allowed, probe = d.Allowed, d.Probe
 		if !allowed {
+			// A rejection is a decision, not an exchange: it gets an event
+			// rather than a client span, because no request left the process
+			// and a zero-duration span would suggest one did.
+			rec.trace.addEvent("breaker.reject", map[string]any{
+				"upstream": target.Name,
+				"reason":   d.Reason,
+			})
 			return &attemptError{err: errors.New(target.Name + ": " + d.Reason), retryable: true}, false
 		}
 	}
@@ -701,6 +755,12 @@ func (p *Proxy) attemptUpstream(w http.ResponseWriter, r *http.Request, rec *rec
 	// report it leaves the breaker stuck half-open forever, because a half-open
 	// breaker admits exactly one attempt and waits.
 	_ = probe
+
+	// One client span per admitted attempt. The defer closes it on every return
+	// path below, including the ones that never reach the network, so a trace
+	// shows the same number of attempts the metrics do.
+	span := rec.trace.startAttempt(target.Name, attemptNo)
+	defer span.finish(rec)
 
 	outBody := body
 	if cand.Model != "" && cand.Model != requestedModel {
@@ -716,7 +776,7 @@ func (p *Proxy) attemptUpstream(w http.ResponseWriter, r *http.Request, rec *rec
 		rec.model = cand.Model
 	}
 
-	req, client, cleanup, err := p.buildRequest(r, target, outBody, budget)
+	req, client, cleanup, err := p.buildRequest(r, target, outBody, budget, rec)
 	if err != nil {
 		return &attemptError{err: err}, false
 	}
@@ -862,12 +922,11 @@ func (p *Proxy) attemptUpstream(w http.ResponseWriter, r *http.Request, rec *rec
 	if !rec.usage.IsEmpty() {
 		p.metrics.ObserveTokens(target.Name, rec.model, rec.usage.Prompt, rec.usage.Completion, rec.usage.Cached)
 	}
-	if rec.firstTokenSet {
-		p.metrics.ObserveFirstToken(target.Name, rec.model, rec.firstToken)
-	}
-	if rec.frames > 0 {
-		p.metrics.ObserveStreamFrames(target.Name, rec.frames, rec.respBytes)
-	}
+	// First token and stream frames are observed ONCE, by the deferred recorder
+	// in ServeHTTP, and not here. They used to be recorded in both places, which
+	// double-counted every streaming request in the two families that describe
+	// streaming; the deferred site is the correct one because it also covers a
+	// cache hit and attributes the sample to the backend that actually served.
 	return nil, false
 }
 
@@ -988,7 +1047,7 @@ func (p *Proxy) readBody(r *http.Request) (body []byte, tooLarge bool, err error
 // deadline, and a small watcher propagates client disconnects explicitly. The
 // result is one place that decides how long an upstream exchange may run, which
 // is also what makes the timeout observable and tunable.
-func (p *Proxy) buildRequest(r *http.Request, target *upstream.Target, body []byte, timeout time.Duration) (*http.Request, *http.Client, context.CancelFunc, error) {
+func (p *Proxy) buildRequest(r *http.Request, target *upstream.Target, body []byte, timeout time.Duration, rec *record) (*http.Request, *http.Client, context.CancelFunc, error) {
 	base := context.Background()
 	// One deadline for this attempt. The cancel function is returned to the
 	// caller (folded into cleanup) so a context.WithTimeout timer is never
@@ -1040,7 +1099,20 @@ func (p *Proxy) buildRequest(r *http.Request, target *upstream.Target, body []by
 	} else if r.Header.Get("Authorization") == "" {
 		req.Header.Del("Authorization")
 	}
-	req.Header.Set("X-Request-Id", requestID(r))
+	// The request id comes from the record, not from a second call to
+	// requestID(r): when the caller sent no id that function MINTS one, so
+	// calling it twice produced two different ids and the upstream saw a
+	// request id the gateway's own log line never mentioned.
+	req.Header.Set("X-Request-Id", rec.requestID)
+	// W3C trace context is propagated so the backend's spans are children of
+	// this request's gateway span. It is set even when the trace is not being
+	// recorded locally, so a traced caller is not disconnected at this hop.
+	if rec.traceparent != "" {
+		req.Header.Set(tracing.HeaderTraceparent, rec.traceparent)
+		if rec.tracestate != "" {
+			req.Header.Set(tracing.HeaderTracestate, rec.tracestate)
+		}
+	}
 
 	transport := p.transportFor(target)
 	if transport == nil {

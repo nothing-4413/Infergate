@@ -1,0 +1,70 @@
+# InferGate M5 观测样例（可直接跑起来的本地配置）
+#
+# 这份配置在 M0–M4 的基础上只加了一段 `tracing`，其余字段是 M1/M2 就有的。
+# 它用仓库自带的 cmd/mockupstream 当后端，所以不需要任何外部服务：
+#
+#   .\tools\go.cmd build -o bin\infergate.exe .\cmd\infergate
+#   .\tools\go.cmd build -o bin\mockupstream.exe .\cmd\mockupstream
+#   .\bin\mockupstream.exe -listen :19900 -name observability-mock -token-delay 0ms
+#   .\bin\infergate.exe -config configs\observability.yaml
+#   curl -s http://127.0.0.1:18999/metrics | Select-String infergate_request_duration
+#   curl -s http://127.0.0.1:18999/admin/traces
+#
+# 三个观测面各有分工，不要混着读：
+#   /metrics        给 Prometheus/Grafana 抓的时序指标（含直方图分桶）
+#   /stats          给人和脚本读的一次性 JSON 快照（分位数、tokens、缓存、配额）
+#   /admin/traces   单次请求的回放面（一次请求的全部 span），按 request_id 也能取
+
+server:
+  # 只监听本机：这个样例是给人手动敲 curl 用的，不该暴露到网络上。
+  listen: "127.0.0.1:18999"
+  # 每次上游尝试的预算，不是整条请求的预算：重试会让最坏耗时乘以尝试次数
+  # （上限由 health.max_failures_per_request 决定）。
+  upstream_timeout: 10s
+  shutdown_timeout: 5s
+  max_body_bytes: 8388608
+  # 上游连接池。默认 64；压测时如果并发高于它，多出来的请求会退化成每次新建连接。
+  max_idle_conns_per_host: 256
+
+log:
+  # info 会为每个请求写一行日志。实测（M5）这一行在本机 32 并发下值约 18% QPS 与 4ms P95：
+  # 追求吞吐的压测请用 error，排查问题再用 info —— 两种都要能跑，别把日志关掉当默认。
+  level: info
+  format: text
+
+upstreams:
+  - name: observability-mock
+    kind: openai
+    base_url: "http://127.0.0.1:19900"
+    # 一个 "/" 表示这个后端接受任何模型名（catch-all）。
+    models: ["/"]
+    capabilities: [chat]
+    priority: 1
+
+routing:
+  strategy: priority
+  default_capabilities: [chat]
+
+# ---------------------------------------------------------------------------
+# M5：链路追踪
+# ---------------------------------------------------------------------------
+# 默认全部关闭时，网关行为与 M4 完全一致（只有一个常驻的环形缓冲，空转）。
+tracing:
+  # 关掉即回到零开销：不解析 traceparent、不建 span、不写 /admin/traces。
+  enabled: true
+  # 保留多少条 trace（环形缓冲，满了挤掉最旧的）。报告里的 dropped 计数就是被挤掉的条数：
+  # trace 是诊断工具，不是账本，所以有界比"一条不丢"重要。
+  capacity: 512
+  # 只对**没有**入站 traceparent 的请求生效；入站带了就跟随它自己的采样位。
+  sample_ratio: 1.0
+  # 每完成一条 trace 追加一行 JSON（空 = 不写文件）。采集端不在时，这是唯一的离线证据。
+  jsonl_path: ""
+  otlp:
+    # OTLP/HTTP(JSON) 的接收地址，例如本机 otel-collector 的 http://127.0.0.1:4318
+    # （网关会 POST 到 <endpoint>/v1/traces）。空 = 不导出。
+    # 这是手写的 OTLP/HTTP JSON 导出（无第三方依赖），与标准 collector 兼容，但不是官方 SDK。
+    endpoint: ""
+    timeout: "5s"
+    service_name: "infergate"
+    # 额外请求头，例如多租户 collector 的 X-Scope-OrgID。这里不做 ${VAR} 展开。
+    headers: {}

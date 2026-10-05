@@ -20,6 +20,13 @@
 // Run with -all to spin up the mock upstream and the real gateway in-process on
 // ephemeral ports and print a baseline table; run with -url to aim it at any
 // already-running deployment.
+//
+// -urls aims one process at SEVERAL already-running deployments and spreads the
+// requests over them round-robin, one request at a time. That is what makes a
+// horizontal-scaling measurement honest: running N copies of this generator
+// would add N-1 copies of the client's own CPU cost between the arms, so the
+// "2 instances" arm would be compared against a 1-instance arm that had a
+// cheaper client. One process, N targets, one client cost.
 package main
 
 import (
@@ -55,7 +62,8 @@ import (
 
 func main() {
 	var (
-		target      = flag.String("url", "", "target base URL; empty means run the in-process baseline with -all")
+		target      = flag.String("url", "", "single target base URL; -urls overrides it when both are given")
+		urls        urlList
 		all         = flag.Bool("all", false, "run the full in-process baseline (direct and via gateway, stream and non-stream)")
 		diag        = flag.Bool("diag", false, "attribute the gateway's cost: compare a bare reverse proxy, a minimal passthrough hop, and the real gateway")
 		concurrency = flag.String("c", "8,32,128", "comma-separated concurrency levels")
@@ -66,6 +74,9 @@ func main() {
 		ttfb        = flag.Duration("ttfb", 0, "mock's artificial delay before its first stream frame")
 		out         = flag.String("out", "", "write the results as JSON to this path")
 	)
+	// -urls is repeatable and each occurrence may itself be a comma-separated
+	// list, so "-urls a,b" and "-urls a -urls b" mean the same thing.
+	flag.Var(&urls, "urls", "comma-separated target base URLs, repeatable (-urls a,b -urls c); requests are spread round-robin and -urls overrides -url")
 	flag.Parse()
 
 	levels, err := parseLevels(*concurrency)
@@ -79,11 +90,20 @@ func main() {
 		}
 		return
 	}
-	if *target == "" && !*all {
-		fatalf("nothing to do: pass -all for the in-process baseline, -diag to attribute gateway cost, or -url http://host:port for a running deployment")
+
+	// Precedence: -urls wins outright when it names anything. Merging the two
+	// flags would silently turn "-url A -urls B" into a two-target run, and the
+	// record could then not say which instruction produced it.
+	targets := urls.list()
+	if len(targets) == 0 && *target != "" {
+		targets = []string{*target}
 	}
-	if *all && *target != "" {
-		fatalf("-all and -url are mutually exclusive")
+
+	if len(targets) == 0 && !*all {
+		fatalf("nothing to do: pass -all for the in-process baseline, -diag to attribute gateway cost, or -url/-urls http://host:port for a running deployment")
+	}
+	if *all && len(targets) > 0 {
+		fatalf("-all and -url/-urls are mutually exclusive")
 	}
 
 	if *all {
@@ -94,7 +114,7 @@ func main() {
 	}
 
 	client := newClient(*timeout)
-	results, err := runMatrix(client, *target, levels, *requests, *warmup, *timeout)
+	results, err := runMatrix(client, targets, levels, *requests, *warmup, *timeout)
 	if err != nil {
 		fatalf("%v", err)
 	}
@@ -146,6 +166,27 @@ type result struct {
 	FirstTokenMean time.Duration `json:"gateway_first_token_mean,omitempty"`
 
 	Wall time.Duration `json:"wall"`
+
+	// Targets is the per-target breakdown of a multi-target (-urls) run, and
+	// holds exactly one entry for a single-target run so a consumer never has to
+	// special-case the two shapes. Field order matters here: Targets is last so
+	// every key the older artifacts already have keeps its position, and the
+	// single-target record stays byte-comparable in structure with them.
+	Targets []targetStat `json:"targets"`
+}
+
+// targetStat is one target's share of a phase. Requests counts the requests
+// DISPATCHED to this target, not the successful ones, because the round-robin
+// guarantee the caller cares about is "the targets were handed out evenly" —
+// that has to stay true even if one of them is failing, and it is what the
+// balance test checks. Errors is the failed subset of Requests, and the
+// per-target QPS is the successful count over the phase wall, so the per-target
+// QPS values sum to the record's top-level QPS.
+type targetStat struct {
+	URL      string  `json:"url"`
+	Requests int     `json:"requests"`
+	Errors   int     `json:"errors"`
+	QPS      float64 `json:"qps"`
 }
 
 type report struct {
@@ -261,7 +302,7 @@ func runBaseline(levels []int, requests, warmup, rounds int, timeout, ttfb time.
 				// Baseline for the gateway-delta below.
 				beforeMean, beforeCount, _, _ := scrapeMetrics(gw.URL, client)
 
-				r, err := runPhase(client, sc.label, sc.target, sc.stream, c, requests, warmup, timeout)
+				r, err := runPhase(client, sc.label, []string{sc.target}, sc.stream, c, requests, warmup, timeout)
 				if err != nil {
 					return err
 				}
@@ -357,6 +398,43 @@ func medianResult(group []result) result {
 	out.TTFTP95 = med(func(r result) time.Duration { return r.TTFTP95 })
 	out.TTFTMean = med(func(r result) time.Duration { return r.TTFTMean })
 	out.Rounds = len(group)
+	out.Targets = medianTargets(sorted)
+	return out
+}
+
+// medianTargets reduces the per-target breakdowns of repeated rounds. It is
+// positional: every round of a phase is handed the same ordered target list, so
+// index i is the same target in every round. Requests and Errors are medians as
+// well, for the same reason the top-level numbers are — one noisy round should
+// not become the quoted count.
+func medianTargets(rounds []result) []targetStat {
+	if len(rounds) == 0 || len(rounds[0].Targets) == 0 {
+		return nil
+	}
+	out := make([]targetStat, len(rounds[0].Targets))
+	for i := range out {
+		out[i].URL = rounds[0].Targets[i].URL
+		qps := make([]float64, 0, len(rounds))
+		reqs := make([]int, 0, len(rounds))
+		errs := make([]int, 0, len(rounds))
+		for _, r := range rounds {
+			if i >= len(r.Targets) {
+				continue
+			}
+			qps = append(qps, r.Targets[i].QPS)
+			reqs = append(reqs, r.Targets[i].Requests)
+			errs = append(errs, r.Targets[i].Errors)
+		}
+		if len(qps) == 0 {
+			continue
+		}
+		sort.Float64s(qps)
+		sort.Ints(reqs)
+		sort.Ints(errs)
+		out[i].QPS = qps[len(qps)/2]
+		out[i].Requests = reqs[len(reqs)/2]
+		out[i].Errors = errs[len(errs)/2]
+	}
 	return out
 }
 
@@ -364,8 +442,9 @@ func medianResult(group []result) result {
 // phase runner
 
 // runMatrix measures an external deployment: both workloads at every
-// concurrency level.
-func runMatrix(client *http.Client, base string, levels []int, requests, warmup int, timeout time.Duration) ([]result, error) {
+// concurrency level. targets is one URL for a plain -url run or the whole
+// -urls fleet, over which every request is spread round-robin.
+func runMatrix(client *http.Client, targets []string, levels []int, requests, warmup int, timeout time.Duration) ([]result, error) {
 	var out []result
 	for _, stream := range []bool{false, true} {
 		label := "non-stream"
@@ -373,17 +452,26 @@ func runMatrix(client *http.Client, base string, levels []int, requests, warmup 
 			label = "stream"
 		}
 		for _, c := range levels {
-			r, err := runPhase(client, label, base, stream, c, requests, warmup, timeout)
+			r, err := runPhase(client, label, targets, stream, c, requests, warmup, timeout)
 			if err != nil {
 				return nil, err
 			}
-			if gm, gc, ft, err := scrapeMetrics(base, client); err == nil {
+			if gm, gc, ft, err := scrapeFleet(targets, client); err == nil {
 				r.GatewayMean, r.GatewayCount, r.FirstTokenMean = gm, gc, ft
 			}
 			out = append(out, r)
 			fmt.Printf("%-12s c=%-4d qps=%9.1f  p50=%-9s p95=%-9s p99=%-9s errs=%d\n",
 				label, c, r.QPS, r.P50.Round(time.Microsecond), r.P95.Round(time.Microsecond),
 				r.P99.Round(time.Microsecond), r.Errors)
+			// With more than one target the row above is a fleet aggregate, so
+			// print what each instance actually carried: a run where one
+			// instance never answered still looks healthy in the aggregate.
+			if len(r.Targets) > 1 {
+				for _, ts := range r.Targets {
+					fmt.Printf("    %-22s reqs=%-6d errs=%-6d qps=%.1f\n",
+						shortURL(ts.URL), ts.Requests, ts.Errors, ts.QPS)
+				}
+			}
 		}
 	}
 	return out, nil
@@ -396,16 +484,29 @@ func runMatrix(client *http.Client, base string, levels []int, requests, warmup 
 // workers exist, so no semaphore is needed and the queue depth is 1. Requests
 // are submitted as fast as workers retire, which keeps the target saturated for
 // the whole measurement window.
-func runPhase(client *http.Client, label, target string, stream bool, concurrency, requests, warmup int, timeout time.Duration) (result, error) {
+//
+// Two deliberate limitations of the multi-target case, both worth knowing
+// before reading a spread run's numbers. A warmup failure against ANY target is
+// fatal to the whole phase, exactly as it was for a single target: a dead
+// deployment in the fleet stops the run rather than quietly measuring the
+// survivors. And `warmup` is an aggregate budget, not per target — with four
+// targets and -warmup 100 each one only sees about 25 warmup requests, so scale
+// the flag with the fleet size when a target's pool takes longer than that to
+// settle.
+func runPhase(client *http.Client, label string, targets []string, stream bool, concurrency, requests, warmup int, timeout time.Duration) (result, error) {
 	if concurrency < 1 {
 		concurrency = 1
 	}
-	base := strings.TrimRight(target, "/")
+	set := newTargetSet(targets)
 
 	// Warmup: connection pool establishment, TLS (if any), route table and log
 	// setup all happen once. Including them would make the first phase look
-	// slow for reasons that never recur.
+	// slow for reasons that never recur. It walks the same round-robin as the
+	// measured phase, so every target's pool is warm and not just the first
+	// one's — otherwise the target that never saw a warmup request would look
+	// slow for the first few measured requests of every target list.
 	for i := 0; i < warmup; i++ {
+		_, base := set.pick()
 		if _, err := doRequest(client, base, stream, timeout); err != nil {
 			return result{}, fmt.Errorf("warmup against %s: %w", base, err)
 		}
@@ -419,7 +520,11 @@ func runPhase(client *http.Client, label, target string, stream bool, concurrenc
 		framesN  int64
 		errs     int
 		firstErr string
+		perStat  = make([]targetStat, len(set.targets))
 	)
+	for i, t := range set.targets {
+		perStat[i] = targetStat{URL: t}
+	}
 	frames := make([]int64, requests)
 
 	jobs := make(chan int)
@@ -431,13 +536,19 @@ func runPhase(client *http.Client, label, target string, stream bool, concurrenc
 		go func() {
 			defer wg.Done()
 			for idx := range jobs {
+				// The target is chosen here, per request, not per worker: the
+				// shared counter is what keeps the hand-out even when one
+				// target is slower than its siblings. See targetSet.
+				ti, base := set.pick()
 				start := time.Now()
 				m, err := doRequest(client, base, stream, timeout)
 				elapsed := time.Since(start)
 
 				mu.Lock()
+				perStat[ti].Requests++
 				if err != nil {
 					errs++
+					perStat[ti].Errors++
 					if firstErr == "" {
 						firstErr = err.Error()
 					}
@@ -471,9 +582,13 @@ func runPhase(client *http.Client, label, target string, stream bool, concurrenc
 	sort.Slice(lat, func(i, j int) bool { return lat[i] < lat[j] })
 	sort.Slice(ttft, func(i, j int) bool { return ttft[i] < ttft[j] })
 
+	for i := range perStat {
+		perStat[i].QPS = float64(perStat[i].Requests-perStat[i].Errors) / wall.Seconds()
+	}
+
 	r := result{
 		Label:       label,
-		Target:      base,
+		Target:      set.label(),
 		Stream:      stream,
 		Concurrency: concurrency,
 		Requests:    len(lat),
@@ -487,6 +602,7 @@ func runPhase(client *http.Client, label, target string, stream bool, concurrenc
 		BytesMean:   bytesN / int64(len(lat)),
 		FramesMean:  float64(framesN) / float64(len(lat)),
 		Wall:        wall,
+		Targets:     perStat,
 	}
 	if len(ttft) > 0 {
 		r.TTFTP50 = pick(ttft, 0.50)
@@ -747,7 +863,7 @@ func runDiagnosis(concurrency, requests, warmup, rounds int, timeout time.Durati
 	collected := make(map[string][]result, len(rows))
 	for round := 0; round < rounds; round++ {
 		for _, row := range rows {
-			r, err := runPhase(client, row.label, row.target, false, concurrency, requests, warmup, timeout)
+			r, err := runPhase(client, row.label, []string{row.target}, false, concurrency, requests, warmup, timeout)
 			if err != nil {
 				return err
 			}
@@ -791,10 +907,15 @@ func runDiagnosis(concurrency, requests, warmup, rounds int, timeout time.Durati
 
 // mockProc is a running cmd/mockupstream child.
 type mockProc struct {
-	url  string
-	cmd  *exec.Cmd
-	log  *os.File
-	done chan struct{}
+	url string
+	cmd *exec.Cmd
+	log *os.File
+	// logPath is where the child's output went, and is EMPTY when the temp
+	// directory was not writable and the output had to be discarded. Callers
+	// and the startup-failure messages read it to tell "the child printed
+	// nothing" apart from "there is no log to read".
+	logPath string
+	done    chan struct{}
 }
 
 // startMock launches cmd/mockupstream on an ephemeral port and waits until it
@@ -826,10 +947,22 @@ func startMock(ttfb time.Duration) (*mockProc, error) {
 	// cannot open the named pipes that exec.Cmd uses for piped stdio, and a
 	// blocked child would look exactly like a slow backend. Files avoid the
 	// whole class of problem and double as a diagnostic when startup fails.
+	//
+	// The log is a debugging aid, so it must never be able to fail a run: under
+	// a restricted TEMP the create below is denied, and returning an error
+	// there would take -all and -diag down over a file nobody needs. Fall back
+	// to the null device — still a real file handle, still not a pipe, so the
+	// sandbox reasoning above still holds — and say so, because a missing log
+	// tail later has to be distinguishable from an empty one.
 	logPath := filepath.Join(os.TempDir(), fmt.Sprintf("infergate-loadtest-mock-%d.log", os.Getpid()))
 	logFile, err := os.Create(logPath)
 	if err != nil {
-		return nil, fmt.Errorf("create mock log: %w", err)
+		fmt.Printf("  note: cannot create mock log %s (%v); the mock's output is discarded\n", logPath, err)
+		logPath = ""
+		logFile, err = os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+		if err != nil {
+			return nil, fmt.Errorf("create mock log: %w (and %s: %v)", err, os.DevNull, err)
+		}
 	}
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
@@ -838,7 +971,7 @@ func startMock(ttfb time.Duration) (*mockProc, error) {
 		return nil, fmt.Errorf("start %s: %w", bin, err)
 	}
 
-	m := &mockProc{url: "http://" + addr, cmd: cmd, log: logFile, done: make(chan struct{})}
+	m := &mockProc{url: "http://" + addr, cmd: cmd, log: logFile, logPath: logPath, done: make(chan struct{})}
 	go func() {
 		_ = cmd.Wait()
 		close(m.done)
@@ -849,9 +982,9 @@ func startMock(ttfb time.Duration) (*mockProc, error) {
 	for time.Now().Before(deadline) {
 		select {
 		case <-m.done:
-			tail, _ := os.ReadFile(logPath)
+			tail := m.logTail()
 			m.stop()
-			return nil, fmt.Errorf("mock exited during startup: %s", strings.TrimSpace(string(tail)))
+			return nil, fmt.Errorf("mock exited during startup: %s", tail)
 		default:
 		}
 		resp, err := client.Get(m.url + "/healthz")
@@ -864,7 +997,24 @@ func startMock(ttfb time.Duration) (*mockProc, error) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	m.stop()
-	return nil, fmt.Errorf("mock at %s did not become healthy within 15s (log: %s)", m.url, logPath)
+	if m.logPath == "" {
+		return nil, fmt.Errorf("mock at %s did not become healthy within 15s (log unavailable, temp dir not writable)", m.url)
+	}
+	return nil, fmt.Errorf("mock at %s did not become healthy within 15s (log: %s)", m.url, m.logPath)
+}
+
+// logTail is what the mock printed, for a startup failure message. When the
+// temp directory was not writable there is no file at all, and saying that is
+// more useful than an empty tail that reads as "the child said nothing".
+func (m *mockProc) logTail() string {
+	if m.logPath == "" {
+		return "log unavailable, temp dir not writable"
+	}
+	tail, err := os.ReadFile(m.logPath)
+	if err != nil {
+		return fmt.Sprintf("log unavailable: %v", err)
+	}
+	return strings.TrimSpace(string(tail))
 }
 
 func (m *mockProc) stop() {
@@ -949,12 +1099,69 @@ func scrapeMetrics(base string, client *http.Client) (mean time.Duration, count 
 	return mean, totalCount, firstToken, nil
 }
 
+// scrapeFleet reads the gateway's own view of request duration from every
+// target. A gateway counts only what was routed to it, so the fleet's mean has
+// to be weighted by each instance's request count — a plain average of the
+// per-instance means would let an idle instance speak as loudly as a busy one.
+// The one-target case is passed straight through so a single-target record
+// keeps the exact number the older artifacts have, without the float
+// round-trip that a weight of count/count would introduce.
+func scrapeFleet(targets []string, client *http.Client) (mean time.Duration, count int, firstToken time.Duration, err error) {
+	if len(targets) == 1 {
+		return scrapeMetrics(targets[0], client)
+	}
+	var (
+		meanNs, firstNs float64
+		firstN          int
+		lastErr         error
+		ok              bool
+	)
+	for _, t := range targets {
+		m, c, ft, e := scrapeMetrics(t, client)
+		if e != nil {
+			lastErr = e
+			continue
+		}
+		ok = true
+		meanNs += float64(m) * float64(c)
+		count += c
+		if ft > 0 {
+			firstNs += float64(ft)
+			firstN++
+		}
+	}
+	if !ok {
+		if lastErr == nil {
+			lastErr = fmt.Errorf("no targets to scrape")
+		}
+		return 0, 0, 0, lastErr
+	}
+	if count > 0 {
+		mean = time.Duration(meanNs / float64(count))
+	}
+	if firstN > 0 {
+		firstToken = time.Duration(firstNs / float64(firstN))
+	}
+	return mean, count, firstToken, nil
+}
+
 // ---------------------------------------------------------------------------
 // reporting
 
 // shortTarget renders a base URL as host:port so the per-phase table stays
-// narrow; "direct" is reserved for the in-process backend baseline.
+// narrow; "direct" is reserved for the in-process backend baseline. A
+// multi-target record carries the whole comma-joined fleet, so each member is
+// shortened separately instead of the parse failing on the commas and printing
+// both full URLs.
 func shortTarget(raw string) string {
+	parts := strings.Split(raw, ",")
+	for i, p := range parts {
+		parts[i] = shortURL(p)
+	}
+	return strings.Join(parts, ",")
+}
+
+func shortURL(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {
 		return raw
@@ -988,6 +1195,15 @@ func printTable(phases []result) {
 		fmt.Printf("| %s | %s | %d | %.1f | %s | %s | %s | %s | %s | %d |\n",
 			strings.ReplaceAll(r.Label, "gateway ", ""), target, r.Concurrency, r.QPS,
 			ms(r.P50), ms(r.P95), ms(r.P99), ttft50, ttft95, r.Errors)
+		// The row above is the fleet total when the run had several targets;
+		// the per-target lines below say how that total was split, which is the
+		// whole point of a horizontal-scaling run.
+		if len(r.Targets) > 1 {
+			for _, ts := range r.Targets {
+				fmt.Printf("    %-22s reqs=%-6d errs=%-6d qps=%.1f\n",
+					shortURL(ts.URL), ts.Requests, ts.Errors, ts.QPS)
+			}
+		}
 	}
 }
 
@@ -1117,6 +1333,94 @@ func parseLevels(s string) ([]int, error) {
 	sort.Ints(out)
 	return out, nil
 }
+
+// ---------------------------------------------------------------------------
+// target set
+
+// urlList collects the -urls flag. It is a flag.Value so the flag can be given
+// more than once, and each occurrence may itself be a comma-separated list:
+// "-urls a,b" and "-urls a -urls b" are the same request. Duplicates are
+// dropped, keeping each target's first position, because the request-index
+// target assignment must be a pure function of the list the caller wrote — a
+// URL repeated by accident would otherwise be handed twice the load and the
+// run would look unbalanced for a reason that is not the gateway's.
+type urlList []string
+
+func (l *urlList) String() string { return strings.Join(*l, ",") }
+
+func (l *urlList) Set(v string) error {
+	for _, part := range strings.Split(v, ",") {
+		if s := strings.TrimSpace(part); s != "" {
+			*l = append(*l, s)
+		}
+	}
+	return nil
+}
+
+// list returns the de-duplicated targets in first-appearance order.
+func (l urlList) list() []string {
+	var out []string
+	seen := make(map[string]bool, len(l))
+	for _, raw := range l {
+		key := normalizeTarget(raw)
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, key)
+	}
+	return out
+}
+
+// normalizeTarget makes two spellings of the same base URL compare equal.
+// Trailing slashes have to go because this generator joins paths onto the base
+// as base+"/v1/chat/completions".
+func normalizeTarget(raw string) string {
+	return strings.TrimRight(strings.TrimSpace(raw), "/")
+}
+
+// targetSet spreads request indices over a fixed, ordered list of targets.
+//
+// The choice is made per REQUEST and the counter is shared by all workers, so
+// the targets receive counts that differ by at most one however the workers
+// interleave. A per-worker split would not survive one target being slower than
+// its siblings: the workers pinned to it would fall behind and the run would
+// measure the client's scheduling instead of the fleet's capacity. For the same
+// reason nothing here is random and nothing depends on how long a request took
+// — request i always goes to targets[i%n] — so two runs of the same command
+// hand out the same requests to the same instances.
+//
+// The explicit lock is deliberate. Each worker already holds its own
+// unsynchronised copy of the counters (they are merged under the phase mutex at
+// the end of a request), but the target counter must be shared or the
+// round-robin becomes per-worker again.
+type targetSet struct {
+	targets []string
+
+	mu   sync.Mutex
+	next int
+}
+
+func newTargetSet(targets []string) *targetSet {
+	return &targetSet{targets: targets}
+}
+
+// pick returns the index of the target for the next request, and its base URL.
+// The counter advances before the request is made, so a failing target costs
+// exactly one request and can never wedge the worker that drew it.
+func (s *targetSet) pick() (int, string) {
+	s.mu.Lock()
+	i := s.next % len(s.targets)
+	s.next++
+	s.mu.Unlock()
+	return i, s.targets[i]
+}
+
+// label is the human-readable target written into a record: for one target it
+// is that URL exactly as the older artifacts spell it, and for several it is
+// the comma-joined list, so a reader of a multi-target record can see the whole
+// fleet in the field that has always named the target.
+func (s *targetSet) label() string { return strings.Join(s.targets, ",") }
 
 // pick returns the nearest-rank percentile of a sorted slice. Nearest-rank (not
 // interpolation) because it always reports a latency that was actually

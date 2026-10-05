@@ -1,0 +1,176 @@
+[
+  {
+    "label": "non-stream",
+    "target": "http://127.0.0.1:19010",
+    "stream": false,
+    "concurrency": 8,
+    "requests": 3000,
+    "errors": 0,
+    "qps": 3871.030177906095,
+    "p50": 2114000,
+    "p95": 2722900,
+    "p99": 4327000,
+    "max": 5526800,
+    "mean": 2060718,
+    "bytes_mean": 274,
+    "gateway_mean": 14861817,
+    "gateway_count": 42900,
+    "gateway_first_token_mean": 155476,
+    "wall": 774987500,
+    "targets": [
+      {
+        "url": "http://127.0.0.1:19010",
+        "requests": 3000,
+        "errors": 0,
+        "qps": 3871.030177906095
+      }
+    ]
+  },
+  {
+    "label": "non-stream",
+    "target": "http://127.0.0.1:19010",
+    "stream": false,
+    "concurrency": 32,
+    "requests": 3000,
+    "errors": 0,
+    "qps": 3665.58613333203,
+    "p50": 8612500,
+    "p95": 10239800,
+    "p99": 11883600,
+    "max": 20173100,
+    "mean": 8682754,
+    "bytes_mean": 274,
+    "gateway_mean": 14349563,
+    "gateway_count": 46200,
+    "gateway_first_token_mean": 155476,
+    "wall": 818423000,
+    "targets": [
+      {
+        "url": "http://127.0.0.1:19010",
+        "requests": 3000,
+        "errors": 0,
+        "qps": 3665.58613333203
+      }
+    ]
+  },
+  {
+    "label": "non-stream",
+    "target": "http://127.0.0.1:19010",
+    "stream": false,
+    "concurrency": 128,
+    "requests": 3000,
+    "errors": 0,
+    "qps": 3667.77938942721,
+    "p50": 33727500,
+    "p95": 41799400,
+    "p99": 44345200,
+    "max": 76566500,
+    "mean": 34125001,
+    "bytes_mean": 274,
+    "gateway_mean": 15422282,
+    "gateway_count": 49500,
+    "gateway_first_token_mean": 155476,
+    "wall": 817933600,
+    "targets": [
+      {
+        "url": "http://127.0.0.1:19010",
+        "requests": 3000,
+        "errors": 0,
+        "qps": 3667.77938942721
+      }
+    ]
+  },
+  {
+    "label": "stream",
+    "target": "http://127.0.0.1:19010",
+    "stream": true,
+    "concurrency": 8,
+    "requests": 3000,
+    "errors": 0,
+    "qps": 1300.5958896834566,
+    "p50": 5915700,
+    "p95": 7513500,
+    "p99": 8720600,
+    "max": 23712300,
+    "mean": 6140464,
+    "ttft_p50": 1038500,
+    "ttft_p95": 1573800,
+    "ttft_mean": 913199,
+    "bytes_mean": 1350,
+    "frames_mean": 7,
+    "gateway_mean": 14804414,
+    "gateway_count": 52800,
+    "gateway_first_token_mean": 150716,
+    "wall": 2306635000,
+    "targets": [
+      {
+        "url": "http://127.0.0.1:19010",
+        "requests": 3000,
+        "errors": 0,
+        "qps": 1300.5958896834566
+      }
+    ]
+  },
+  {
+    "label": "stream",
+    "target": "http://127.0.0.1:19010",
+    "stream": true,
+    "concurrency": 32,
+    "requests": 3000,
+    "errors": 0,
+    "qps": 2690.2811173383147,
+    "p50": 11748000,
+    "p95": 13807900,
+    "p99": 15224100,
+    "max": 22453700,
+    "mean": 11823007,
+    "ttft_p50": 794900,
+    "ttft_p95": 1621100,
+    "ttft_mean": 893061,
+    "bytes_mean": 1350,
+    "frames_mean": 7,
+    "gateway_mean": 14551809,
+    "gateway_count": 56100,
+    "gateway_first_token_mean": 152937,
+    "wall": 1115125100,
+    "targets": [
+      {
+        "url": "http://127.0.0.1:19010",
+        "requests": 3000,
+        "errors": 0,
+        "qps": 2690.2811173383147
+      }
+    ]
+  },
+  {
+    "label": "stream",
+    "target": "http://127.0.0.1:19010",
+    "stream": true,
+    "concurrency": 128,
+    "requests": 3000,
+    "errors": 0,
+    "qps": 2700.7156086148148,
+    "p50": 47352100,
+    "p95": 52331000,
+    "p99": 54226900,
+    "max": 99628700,
+    "mean": 46420774,
+    "ttft_p50": 1029000,
+    "ttft_p95": 1587500,
+    "ttft_mean": 863069,
+    "bytes_mean": 1350,
+    "frames_mean": 7,
+    "gateway_mean": 16061700,
+    "gateway_count": 59400,
+    "gateway_first_token_mean": 155201,
+    "wall": 1110816700,
+    "targets": [
+      {
+        "url": "http://127.0.0.1:19010",
+        "requests": 3000,
+        "errors": 0,
+        "qps": 2700.7156086148148
+      }
+    ]
+  }
+]

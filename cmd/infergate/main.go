@@ -90,6 +90,12 @@ func main() {
 	if err := srv.CloseQuota(); err != nil {
 		logger.Warn("quota close failed", "err", err)
 	}
+	// And for tracing: a trace whose export was still queued when the listener
+	// stopped must reach the sink, because the request it describes already
+	// returned to the caller.
+	if err := srv.CloseTracing(); err != nil {
+		logger.Warn("tracing close failed", "err", err)
+	}
 	logger.Info("stopped cleanly")
 	// Give the log line above a chance to reach the console before exit.
 	time.Sleep(10 * time.Millisecond)
