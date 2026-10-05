@@ -170,18 +170,33 @@ jobs:
       contents: read
       checks: write
     steps:
-      - name: PATCH the base job's check run, then read it back
+      # Exit code 4 on the first attempt is gh's "not authenticated" code, which
+      # points at the token rather than at the API shape. So say what the token is:
+      # present or not, which variable it came from, and what gh thinks of it. No
+      # --jq anywhere, because a failing gh api piped into head loses its status.
+      - name: Report the token and try the PATCH
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          set -x
-          id=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs" \
-            --jq '.check_runs[] | select(.name == "build / vet / test / race") | .id' | head -n 1)
-          echo "check run id: ${id}"
+          set +e
+          echo "GITHUB_TOKEN is ${GITHUB_TOKEN:+set}${GITHUB_TOKEN:-unset}"
+          echo "GH_TOKEN is ${GH_TOKEN:+set}${GH_TOKEN:-unset}"
+          echo "--- gh auth status ---"
+          gh auth status
+          echo "--- anonymous-ish GET of this commit's check runs ---"
+          gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs" > /tmp/cr.json
+          echo "GET exit=$?"
+          id=$(sed -n 's/.*"id": *\([0-9]*\).*/\1/p' /tmp/cr.json | head -n 1)
+          echo "first check run id parsed by sed: ${id}"
+          echo "--- PATCH ---"
           gh api --method PATCH "repos/${GITHUB_REPOSITORY}/check-runs/${id}" \
             -f "output[title]=PROBE TITLE" \
             -f "output[summary]=PROBE SUMMARY from a job that runs after base completed"
-          echo "=== read back immediately ==="
-          gh api "repos/${GITHUB_REPOSITORY}/check-runs/${id}" \
-            --jq '.output.title, .output.summary'
+          echo "PATCH exit=$?"
+          echo "--- read back ---"
+          gh api "repos/${GITHUB_REPOSITORY}/check-runs/${id}"
+          echo "readback exit=$?"
+
 
   # The curl gates: real binaries, real processes, real sockets, real curl.exe.
   # 1060 assertions that the Linux job above cannot run at all, because all seven
