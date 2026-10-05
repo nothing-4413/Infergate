@@ -26,6 +26,12 @@ const (
 	OutcomeCanceled    Outcome = "canceled"
 	OutcomeBadRequest  Outcome = "bad_request"
 	OutcomeInternal    Outcome = "internal_error"
+
+	// OutcomeRateLimited is a request the gateway itself refused for budget
+	// reasons (M3 quota). It is deliberately not folded into bad_request: a
+	// tenant over its daily budget is an operational event with an owner, and
+	// an operator watching error rates needs to see it as its own series.
+	OutcomeRateLimited Outcome = "rate_limited"
 )
 
 // Sink receives gateway observations. Implementations must be safe for

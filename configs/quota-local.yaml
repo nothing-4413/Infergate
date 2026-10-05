@@ -1,0 +1,185 @@
+# InferGate M3 configuration — token and cost governance on a single local backend.
+#
+# The smallest stack that shows the whole M3 story: one in-repo mock upstream,
+# one gateway, budgets counted in process memory. No Redis, no API key, no
+# network.
+#
+#   go run ./cmd/mockupstream -listen :9300 -name local
+#   go run ./cmd/infergate   -config configs/quota-local.yaml
+#
+# Every governed response carries its verdict, so the budget is visible without
+# reading a counter:
+#
+#   curl -s -D - -o /dev/null http://127.0.0.1:8084/v1/chat/completions \
+#     -H 'content-type: application/json' \
+#     -H 'X-InferGate-Tenant: acme' \
+#     -d '{"model":"mock-gpt","max_tokens":64,"messages":[{"role":"user","content":"hello"}]}'
+#
+#   X-InferGate-Quota: allow | degrade | reject
+#
+# A rejected request is answered locally with 429 and
+# type "infergate_quota_exceeded"; it never reaches a provider.
+
+server:
+  listen: ":8084"
+  read_header_timeout: "10s"
+  idle_timeout: "90s"
+  upstream_timeout: "10s"
+  shutdown_timeout: "5s"
+  max_body_bytes: 8388608
+  max_idle_conns_per_host: 256
+
+log:
+  level: "info"
+  format: "text"
+
+routing:
+  strategy: "priority"
+  default_capabilities:
+    - "chat"
+
+health:
+  window: "30s"
+  buckets: 6
+  min_requests: 4
+  failure_ratio: 0.5
+  open_duration: "10s"
+  half_open_probes: 1
+  max_failures_per_request: 2
+  retry_backoff: "20ms"
+
+upstreams:
+  - name: "local"
+    kind: "openai"
+    base_url: "http://127.0.0.1:9300"
+    api_key: ""
+    models:
+      - "/"
+    capabilities:
+      - "chat"
+    priority: 1
+    weight: 1
+
+quota:
+  # Off by default in the code, on here: this file exists to demonstrate it.
+  #
+  # Governance changes what a caller can do -- a request that would have been
+  # answered is refused, or answered by a cheaper model -- so it is an explicit
+  # operator decision, never something an upgrade switches on.
+  enabled: true
+
+  # "memory" is per-process. It is the right store for one replica and the
+  # WRONG one for a fleet: N replicas would each allow the whole daily budget,
+  # so the real spend ceiling would be N times the configured one.
+  # configs/quota-redis.yaml is the shared variant.
+  store: "memory"
+
+  # Fail-closed. This is the important default: a budget that cannot be read is
+  # not a budget, and a gateway that silently stops enforcing spend during a
+  # Redis blip spends without limit exactly when nobody is watching. Set true
+  # only for a deployment where availability outranks cost control -- the
+  # response header always says which mode answered.
+  fail_open: false
+
+  # A reservation is an ESTIMATE made before the provider has answered: the
+  # prompt is measured in bytes and divided by chars-per-token, and the
+  # completion is the caller's max_tokens when it named one, otherwise the
+  # default below. The real usage settles the difference afterwards, which is
+  # why overshoot is reported as its own number instead of being hidden.
+  #
+  # 4 chars/token is the usual English rule of thumb. It UNDERSHOOTS for CJK
+  # (roughly 1-2 chars/token) and for code with long identifiers; a tenant that
+  # writes in those should lower it, at the cost of rejecting some requests
+  # that would have fit.
+  estimate_chars_per_token: 4
+  estimate_completion_tokens: 256
+
+  # Alert when a tenant's spend on a day exceeds this multiple of its own
+  # baseline (the mean of the previous days that had traffic). Alerting never
+  # blocks anything: a spend spike is usually a real workload, and a gateway
+  # that refuses traffic because it looked unusual turns a launch into an
+  # outage. The alert lands in the log and in /metrics/ /admin/quota.
+  anomaly_ratio: 3
+
+  # Applied to a tenant with no entry of its own. The default is deliberately
+  # generous -- an unlisted tenant is more likely to be an internal service
+  # than an abuser -- but not unlimited: an unlisted tenant still cannot spend
+  # without a ceiling.
+  default_policy:
+    tokens_per_day: 1000000
+    requests_per_minute: 600
+    on_exceed: "reject"
+
+  tenants:
+    # A hard daily token budget. This is the ledger an operator reconciles
+    # against: the counter IS the day's usage, so the refusal at request 41 is
+    # not a guess about the 40 before it.
+    - tenant: "acme"
+      tokens_per_day: 2000
+      cost_per_day_usd: 0.05
+      requests_per_minute: 60
+      on_exceed: "reject"
+
+    # A per-minute rate limit. Worth having next to the daily budget because
+    # the two failures look nothing alike: a burst that would exhaust the day
+    # in a minute is a bug (a retry loop, an agent that lost its stop
+    # condition), and refusing it early is how the rest of the day survives.
+    - tenant: "bursty"
+      requests_per_minute: 5
+      on_exceed: "reject"
+
+    # A per-conversation budget, keyed by the caller's X-InferGate-Session
+    # header. Without it, one runaway agent thread can spend a tenant's whole
+    # day before anyone notices; with it, the thread that is looping is the
+    # only thing that stops.
+    - tenant: "agent"
+      tokens_per_day: 500000
+      tokens_per_session: 4000
+      requests_per_minute: 120
+      on_exceed: "reject"
+
+    # The soft landing. When this tenant runs out, requests are still answered
+    # -- by the cheap model, with the completion capped -- instead of refused.
+    # For a product with free-tier users that is usually the right trade: a
+    # slightly worse answer beats an error page, and a downgraded request still
+    # settles, so the accounting stays correct.
+    #
+    # Both levers are set on purpose. downgrade_model alone leaves the
+    # completion length unbounded, and max_tokens_cap alone keeps paying
+    # frontier prices for a capped answer.
+    - tenant: "growth"
+      tokens_per_day: 20000
+      cost_per_day_usd: 1.00
+      requests_per_minute: 120
+      on_exceed: "degrade"
+      downgrade_model: "mock-gpt-mini"
+      max_tokens_cap: 128
+
+  redis:
+    # Used only when store is "redis"; the fields are still validated while the
+    # quota section is enabled, so they are kept coherent here.
+    addr: "127.0.0.1:6398"
+    db: 0
+    prefix: "ig:quota"
+    pool_size: 16
+    dial_timeout: "2s"
+    read_timeout: "2s"
+    write_timeout: "2s"
+    # password: "${REDIS_PASSWORD}"
+
+pricing:
+  # The quota cost dimension is computed from THIS price book, never from a
+  # provider-reported charge: a gateway cannot see an invoice, but it can
+  # multiply tokens by the price the operator configured. A model with no entry
+  # falls back to `default`, which is why leaving it at zero would silently
+  # disable the cost budget.
+  default:
+    in: 1.0
+    out: 3.0
+  models:
+    mock-gpt:
+      in: 1.0
+      out: 3.0
+    mock-gpt-mini:
+      in: 0.15
+      out: 0.6

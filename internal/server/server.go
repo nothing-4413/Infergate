@@ -16,6 +16,7 @@ import (
 	"github.com/infergate/infergate/internal/config"
 	"github.com/infergate/infergate/internal/gateway"
 	"github.com/infergate/infergate/internal/metrics"
+	"github.com/infergate/infergate/internal/quota"
 	"github.com/infergate/infergate/internal/router"
 	"github.com/infergate/infergate/internal/upstream"
 )
@@ -35,9 +36,16 @@ type Server struct {
 	router   *router.Router
 	recorder *metrics.Recorder
 	cache    *cache.Cache
-	http     *http.Server
-	started  time.Time
-	version  string
+
+	// quota enforces M3 budgets and quotaStore names the counter backend
+	// ("memory", "redis" or "disabled") so /admin/quota can report it without
+	// taking the config apart.
+	quota      *quota.Manager
+	quotaStore string
+
+	http    *http.Server
+	started time.Time
+	version string
 }
 
 // SetVersion overrides the version string reported by /healthz, /readyz and
@@ -113,6 +121,18 @@ func NewServer(cfg *config.Config, logger logAdapter) (*Server, error) {
 		proxyCache = semanticCache
 	}
 
+	// M3: budgets are enforced before anything else can spend money, so the
+	// manager is built before the proxy and handed to it. A disabled manager
+	// still exists so /admin/quota can report the configured budgets.
+	quotaManager, quotaStore, err := buildQuota(cfg, logger)
+	if err != nil {
+		return nil, err
+	}
+	var proxyQuota gateway.QuotaGate
+	if cfg.Quota.Enabled {
+		proxyQuota = quotaManager
+	}
+
 	proxy := gateway.New(gateway.Options{
 		Upstreams:       registry,
 		Pricing:         priceBook,
@@ -125,18 +145,25 @@ func NewServer(cfg *config.Config, logger logAdapter) (*Server, error) {
 		MaxAttempts:     cfg.Health.MaxFailuresPerRequest,
 		RetryBackoff:    cfg.Health.RetryBackoff.Duration(),
 		Cache:           proxyCache,
+		Quota:           proxyQuota,
+		// The estimator lives here because only the gateway holds the request
+		// body; these two numbers are how it turns bytes into tokens.
+		QuotaCharsPerToken:    cfg.Quota.EstimateCharsPerToken,
+		QuotaCompletionTokens: cfg.Quota.EstimateCompletionTokens,
 	})
 
 	s := &Server{
-		cfg:      cfg,
-		log:      logger,
-		proxy:    proxy,
-		registry: registry,
-		breakers: breakers,
-		router:   routerInst,
-		recorder: recorder,
-		cache:    semanticCache,
-		started:  time.Now(),
+		cfg:        cfg,
+		log:        logger,
+		proxy:      proxy,
+		registry:   registry,
+		breakers:   breakers,
+		router:     routerInst,
+		recorder:   recorder,
+		cache:      semanticCache,
+		quota:      quotaManager,
+		quotaStore: quotaStore,
+		started:    time.Now(),
 	}
 
 	mux := http.NewServeMux()
@@ -151,6 +178,7 @@ func NewServer(cfg *config.Config, logger logAdapter) (*Server, error) {
 	mux.HandleFunc("GET /admin/cache", s.handleCache)
 	mux.HandleFunc("POST /admin/cache/flush", s.handleCacheFlush)
 	mux.HandleFunc("GET /admin/cache/lookup", s.handleCacheLookup)
+	mux.HandleFunc("GET /admin/quota", s.handleQuota)
 
 	// Everything else is the OpenAI-compatible surface. The catch-all must not
 	// swallow the exact routes above: Go's ServeMux prefers the more specific
@@ -431,8 +459,36 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		"first_token_mean": firstToken,
 		"streams":          streams,
 		"cache":            s.statsCache(r.Context()),
+		"quota":            s.statsQuota(r.Context()),
 		"uptime":           time.Since(s.started).Round(time.Second).String(),
 	})
+}
+
+// statsQuota renders the M3 governance block for /stats.
+//
+// It reports the manager's own counters, not the config: during an incident
+// the question is "how many requests did we refuse in the last hour", and a
+// config echo cannot answer it. The configured budgets live in /admin/quota.
+func (s *Server) statsQuota(_ context.Context) map[string]any {
+	if s.quota == nil || !s.quota.Enabled() {
+		return map[string]any{"enabled": false}
+	}
+	st := s.quota.Stats()
+	return map[string]any{
+		"enabled":               true,
+		"store":                 s.quotaStore,
+		"allowed":               st.Allowed,
+		"degraded":              st.Degraded,
+		"rejected":              st.Rejected,
+		"store_errors":          st.StoreErrors,
+		"alerts":                st.Alerts,
+		"reserved_tokens":       st.ReservedTokens,
+		"settled_tokens":        st.SettledTokens,
+		"released_tokens":       st.ReleasedTokens,
+		"released_cost_micros":  st.ReleasedCostMicro,
+		"overshoot_tokens":      st.OvershootTokens,
+		"overshoot_cost_micros": st.OvershootCostMicro,
+	}
 }
 
 // statsCache renders the M2 cache block for /stats. A nil or disabled cache
@@ -600,6 +656,39 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(&b, "# TYPE infergate_cache_saved_tokens_total counter\n")
 		fmt.Fprintf(&b, "infergate_cache_saved_tokens_total{kind=\"prompt\"} %d\n", cs.SavedPromptTokens)
 		fmt.Fprintf(&b, "infergate_cache_saved_tokens_total{kind=\"completion\"} %d\n", cs.SavedCompletionTokens)
+	}
+
+	// M3 quota counters. rejected against allowed is the ratio an operator
+	// alerts on, and overshoot_tokens is what says whether the budgets are
+	// actually holding: a reservation is an estimate, so a nonzero and growing
+	// overshoot means the estimates are systematically low.
+	if s.quota != nil && s.quota.Enabled() {
+		qs := s.quota.Stats()
+		b.WriteString("# HELP infergate_quota_decisions_total Admission decisions by outcome.\n")
+		b.WriteString("# TYPE infergate_quota_decisions_total counter\n")
+		b.WriteString("# HELP infergate_quota_store_errors_total Counter operations that failed.\n")
+		b.WriteString("# TYPE infergate_quota_store_errors_total counter\n")
+		b.WriteString("# HELP infergate_quota_alerts_total Tenant spend anomalies observed.\n")
+		b.WriteString("# TYPE infergate_quota_alerts_total counter\n")
+		b.WriteString("# HELP infergate_quota_tokens_total Reserved, settled and released token counts.\n")
+		b.WriteString("# TYPE infergate_quota_tokens_total counter\n")
+		b.WriteString("# HELP infergate_quota_overshoot_tokens_total Tokens spent beyond the reservation.\n")
+		b.WriteString("# TYPE infergate_quota_overshoot_tokens_total counter\n")
+		b.WriteString("# HELP infergate_quota_overshoot_cost_micros_total Spend beyond the reservation, in micro-dollars.\n")
+		b.WriteString("# TYPE infergate_quota_overshoot_cost_micros_total counter\n")
+		b.WriteString("# HELP infergate_quota_released_cost_micros_total Reserved spend returned to the tenant, in micro-dollars.\n")
+		b.WriteString("# TYPE infergate_quota_released_cost_micros_total counter\n")
+		fmt.Fprintf(&b, "infergate_quota_decisions_total{action=\"allow\"} %d\n", qs.Allowed)
+		fmt.Fprintf(&b, "infergate_quota_decisions_total{action=\"degrade\"} %d\n", qs.Degraded)
+		fmt.Fprintf(&b, "infergate_quota_decisions_total{action=\"reject\"} %d\n", qs.Rejected)
+		fmt.Fprintf(&b, "infergate_quota_store_errors_total %d\n", qs.StoreErrors)
+		fmt.Fprintf(&b, "infergate_quota_alerts_total %d\n", qs.Alerts)
+		fmt.Fprintf(&b, "infergate_quota_tokens_total{kind=\"reserved\"} %d\n", qs.ReservedTokens)
+		fmt.Fprintf(&b, "infergate_quota_tokens_total{kind=\"settled\"} %d\n", qs.SettledTokens)
+		fmt.Fprintf(&b, "infergate_quota_tokens_total{kind=\"released\"} %d\n", qs.ReleasedTokens)
+		fmt.Fprintf(&b, "infergate_quota_overshoot_tokens_total %d\n", qs.OvershootTokens)
+		fmt.Fprintf(&b, "infergate_quota_overshoot_cost_micros_total %d\n", qs.OvershootCostMicro)
+		fmt.Fprintf(&b, "infergate_quota_released_cost_micros_total %d\n", qs.ReleasedCostMicro)
 	}
 
 	_, _ = w.Write([]byte(b.String()))

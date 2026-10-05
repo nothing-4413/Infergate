@@ -320,10 +320,29 @@ func tenantFor(r *http.Request) string {
 		return t
 	}
 	if auth := strings.TrimSpace(r.Header.Get("Authorization")); auth != "" {
-		sum := sha256.Sum256([]byte(auth))
+		sum := sha256.Sum256([]byte(normaliseCredential(auth)))
 		return "key-" + hex.EncodeToString(sum[:8])
 	}
 	return "anonymous"
+}
+
+// normaliseCredential folds the case of an authentication scheme.
+//
+// "Bearer X" and "bearer X" are the same credential, and HTTP treats the scheme
+// as case-insensitive while treating the token as opaque; hashing the header
+// verbatim would hand one caller two cache scopes and - since M3 - two separate
+// budgets, depending only on how its HTTP client capitalised a word. Only a
+// case-variant of a known scheme is rewritten, so the canonical spelling keeps
+// deriving exactly the key it derived before this existed.
+func normaliseCredential(auth string) string {
+	scheme, rest, found := strings.Cut(auth, " ")
+	if !found || scheme == "Bearer" {
+		return auth
+	}
+	if strings.EqualFold(scheme, "Bearer") {
+		return "Bearer " + rest
+	}
+	return auth
 }
 
 // capabilitiesFor reads the capability constraint off the request. Two requests

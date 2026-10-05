@@ -106,6 +106,11 @@ func (p *Proxy) serveCached(w http.ResponseWriter, r *http.Request, rec *record,
 	if res.Kind == cache.KindSemantic {
 		rec.cacheStatus = cacheStatusHitSemantic
 	}
+	// M3: the quota settle reads this. A replayed answer consumed a request slot
+	// and no provider tokens, and the difference matters: charging the stored
+	// usage would bill a tenant for tokens the provider never generated, which
+	// is the exact opposite of what a cache is for.
+	rec.servedFromCache = true
 	rec.status = e.Status
 	if rec.status == 0 {
 		rec.status = http.StatusOK

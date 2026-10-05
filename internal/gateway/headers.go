@@ -79,6 +79,39 @@ const (
 	// directive was honoured.
 	HeaderCache = "X-InferGate-Cache"
 
+	// HeaderSession names one logical conversation inside a tenant, and is what
+	// a per-session token budget is charged against. It is a REQUEST header
+	// only: a client that controls its own session id can start a new budget,
+	// which is why the per-session dimension is a fairness control between
+	// cooperating callers and never a security boundary. The daily and
+	// per-minute dimensions - which no header can reset - are what bound a
+	// caller who lies about this one.
+	HeaderSession = "X-InferGate-Session"
+
+	// HeaderQuota reports the admission verdict: "allow", "degrade" or
+	// "reject". Like HeaderCache it is deliberately meaningful in one
+	// direction, and it is sent on EVERY governed request rather than only on
+	// a refusal, because a limit whose remaining budget is invisible cannot be
+	// planned against.
+	HeaderQuota = "X-InferGate-Quota"
+
+	// HeaderQuotaReason names the dimension that decided the verdict
+	// ("within-budget", "tokens_per_day", "requests_per_minute", ...).
+	HeaderQuotaReason = "X-InferGate-Quota-Reason"
+
+	// HeaderQuotaLimit and HeaderQuotaUsed are the limit that applies and what
+	// the tenant had already spent in that window. They are omitted when no
+	// single dimension was named, so a caller never reads a zero as a limit.
+	HeaderQuotaLimit = "X-InferGate-Quota-Limit"
+	HeaderQuotaUsed  = "X-InferGate-Quota-Used"
+
+	// HeaderQuotaModel and HeaderQuotaMaxTokens report what a degraded request
+	// was rewritten to, so the caller can see that the answer came from a
+	// smaller model or a shortened completion instead of wondering why quality
+	// changed.
+	HeaderQuotaModel     = "X-InferGate-Quota-Model"
+	HeaderQuotaMaxTokens = "X-InferGate-Quota-Max-Tokens"
+
 	// HeaderCacheAge reports the age of a served cached entry in whole
 	// milliseconds. An answer with an age is a different thing from an answer,
 	// which is why the number is always sent with a hit rather than left for

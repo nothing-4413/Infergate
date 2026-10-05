@@ -55,14 +55,17 @@ infergate/
 │   ├── measure-m2/         # 阈值扫描：语料 26 对，输出各阈值下的真命中率 / 误命中率
 │   ├── verify/             # M0 Go 端到端验收（38 条断言，CI 门禁）
 │   ├── verify-m1/          # M1 Go 端到端验收：路由 / 故障转移 / 熔断（64 条断言）
-│   └── verify-m2/          # M2 Go 端到端验收：语义缓存 / 存储降级 / 管理面（103 条断言）
+│   ├── verify-m2/          # M2 Go 端到端验收：语义缓存 / 存储降级 / 管理面（103 条断言）
+│   └── verify-m3/          # M3 Go 端到端验收：配额准入 / 降级 / 账目 / fail-open（470 条断言）
 ├── configs/
 │   ├── infergate.yaml      # 生产形态示例（OpenAI / DeepSeek / 本地兜底）
 │   ├── mock.yaml           # 本地形态示例（指向 mockupstream，单上游 = M0 路径）
 │   ├── routing.yaml        # 生产形态多 Provider 路由（成本/延迟/可靠性权重 + 健康度窗口）
 │   ├── routing-local.yaml  # 本地三副本路由（primary/secondary/tools，供 curl 验收与压测）
 │   ├── cache-local.yaml    # M2 本地形态：单上游 + 内存缓存（逐行注释的配置说明）
-│   └── cache-redis.yaml    # M2 共享形态：同一套缓存策略换 Redis store
+│   ├── cache-redis.yaml    # M2 共享形态：同一套缓存策略换 Redis store
+│   ├── quota-local.yaml    # M3 本地形态：四租户四维度预算，计数在进程内存
+│   └── quota-redis.yaml    # M3 共享形态：同一套预算换 Redis 计数（多副本唯一正确选择）
 ├── internal/
 │   ├── config/             # 配置加载：YAML -> JSON -> struct，环境变量覆盖，启动即校验
 │   ├── miniyaml/           # 手写 YAML 子集解析器（代价与收益见 docs/DESIGN.md）
@@ -77,21 +80,24 @@ infergate/
 │   ├── redis/              # 手写 RESP2 客户端（连接池、pipeline、超时、统计）
 │   ├── mockredis/          # 进程内 RESP2 服务端（测试用，支持 hash / zset）
 │   ├── evalset/            # 26 对中英标注语料（13 对同义改写 + 13 对近似但不同）
-│   ├── metrics/            # 内存指标聚合（请求 / 尝试 / token / 首字 / 流分片 / 缓存 / 熔断）
+│   ├── quota/              # M3 配额治理：预扣 + 结算账本、四维度策略、memory / Redis 两个 store
+│   ├── metrics/            # 内存指标聚合（请求 / 尝试 / token / 首字 / 流分片 / 缓存 / 熔断 / 配额）
 │   ├── mockbackend/        # 进程内假上游（验收程序用，可按后端注入故障与停顿）
 │   ├── logging/            # slog 初始化
 │   └── server/             # HTTP 服务与运维端点（/healthz /readyz /stats /metrics /admin）
 ├── scripts/
 │   ├── verify-m0.ps1       # M0 curl 端到端验收（47 条断言，真实进程 + 真实 curl）
 │   ├── verify-m1.ps1       # M1 curl 端到端验收：优先级/能力/指定/熔断/恢复（56 条断言）
-│   ├── verify-m2.ps1       # M2 curl 端到端验收：内存 store 与 Redis store 两条路径
+│   ├── verify-m2.ps1       # M2 curl 端到端验收：内存 store 与 Redis store 两条路径（157 条）
+│   ├── verify-m3.ps1       # M3 curl 端到端验收：内存与 Redis 计数、降级、fail-closed（323 条）
 │   ├── measure-m1.ps1      # M1 实测：路由开销、故障吸收、熔断省下的延迟
-│   └── measure-m2.ps1      # M2 实测：命中率、token/成本节省、命中 vs 未命中延迟
+│   ├── measure-m2.ps1      # M2 实测：命中率、token/成本节省、命中 vs 未命中延迟
+│   └── measure-m3.ps1      # M3 实测：准入开销、预扣准确度、预算挡下的上游调用（57 条断言）
 ├── tools/go.cmd            # 本机工具链 shim（GOROOT / GOCACHE 重定向，见第 4 节）
 └── docs/
     ├── DESIGN.md           # 模块划分、请求生命周期、关键决策与踩坑记录
     ├── RESUME.md           # 每个里程碑对应的简历项目描述（含量化指标占位）
-    └── baseline/           # 压测原始数据（m0-baseline.json、m1-*.json、m2-summary.json）
+    └── baseline/           # 压测原始数据（m0-baseline.json、m1-*.json、m2-summary.json、m3-summary.json）
 ```
 
 ---
@@ -182,7 +188,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m0.ps1   # 
 .\tools\go.cmd run .\cmd\verify-m1                                     # M1，64 条断言
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m1.ps1   # M1 curl，56 条
 .\tools\go.cmd run .\cmd\verify-m2                                     # M2，103 条断言
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m2.ps1   # M2 curl（内存 + Redis）
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m2.ps1   # M2 curl，157 条（内存 + Redis）
+.\tools\go.cmd run .\cmd\verify-m3                                     # M3，470 条断言
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m3.ps1   # M3 curl，323 条（内存 + 真 Redis 协议）
 ```
 
 `scripts/verify-m0.ps1` 会自行编译两个二进制、拉起两个真实进程、跑完 47 条断言，并在 `finally` 中
@@ -484,7 +492,7 @@ curl.exe -s -X POST http://127.0.0.1:8082/admin/cache/flush          # 清空（
 
 ```powershell
 .\tools\go.cmd run .\cmd\verify-m2                                   # Go 门禁，103 条断言
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m2.ps1     # curl 门禁（内存 + 真 Redis 协议）
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m2.ps1     # curl 门禁，157 条（内存 + 真 Redis 协议，约 20s）
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\measure-m2.ps1    # 命中率 / 延迟 / 成本实测
 .\tools\go.cmd run .\cmd\measure-m2                                  # 阈值扫描（语料 26 对）
 ```
@@ -538,6 +546,138 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\measure-m2.ps1    
   （模型口径下节省 $0.000807）。差的 $0.000367 记为 `cost_cross_check_delta_usd`，不藏。
 - 三轮交错只给区间不给置信区间：本机轮间抖动最坏 47.1%（两次跑出来的 P95 差了一倍，
   所以文档里只引用同一次运行内部"命中 vs 未命中"的对比，不跨次引用绝对值）。
+
+### 3.11 Token 配额与成本治理（M3）
+
+配额判定（准入）插在**缓存查找之前、路由之前**，且只治理生成类路径。顺序是承重的：开在缓存
+之前，命中虽然不花 token、但仍占每分钟请求配额、仍进租户报表；只治理 `/chat/completions`、
+`/completions`、`/embeddings`，是因为把 `/v1/models` 也计入会因为一个零成本请求拒绝调用方，
+并让 token 维度在没有任何 prompt 的请求上变成虚构。默认**关闭**。
+
+```powershell
+# 起一个小栈：一个 mock 上游 + 一个网关（配置见 configs\quota-local.yaml，内存计数）
+.\tools\go.cmd run .\cmd\mockupstream -listen :9300 -name local
+.\tools\go.cmd run .\cmd\infergate   -config configs\quota-local.yaml
+```
+
+```powershell
+# 请求体一律写文件、用 --data-binary @file 发送（PS 5.1 会吃掉原生参数里的引号，见 3.3）
+# 1) 正常请求：X-InferGate-Quota 为 allow，并带 X-InferGate-Quota-Reason: within-budget
+#    （放行不带限额/已用头，见下表最后一行：只有越界那次才知道限额是多少）
+curl.exe -s -D - -o NUL http://127.0.0.1:8084/v1/chat/completions -H "content-type: application/json" -H "X-InferGate-Tenant: acme" --data-binary "@tmp\body.json"
+
+# 2) 额度用尽：429 + infergate_quota_exceeded + Retry-After；此时上游一次都没有被调用
+# 3) 每分钟限流：bursty 租户（requests_per_minute: 5）第 6 次开始 429
+# 4) 降级：growth 租户超预算后**仍然是 200**，响应头说明降级到哪个模型、上限压到多少；
+#    真正的证据在后端收到的请求体里（模型名与 max_tokens 被改写了），不在响应头里
+```
+
+响应头与请求头：
+
+| 头 | 取值 | 含义 |
+| --- | --- | --- |
+| `X-InferGate-Quota`（响应） | `allow` / `degrade` / `reject` | 这次判定是放行、降级放行还是拒绝；**每个受治理请求都有** |
+| `X-InferGate-Quota-Reason` | `within-budget` / `tokens_per_day` / `cost_per_day_usd` / `tokens_per_session` / `requests_per_minute` / `store-error` … | 为什么这样判定（机器可读；降级时同时说明是哪个维度越界） |
+| `X-InferGate-Quota-Limit` / `-Used` | 数字 | 越界那一维度的限额与已用量；**只有越界（拒绝或降级）时才出现**——放行时网关手上没有该维度的实时余量（那需要一次额外读），所以"还剩多少额度"只能看 `/admin/quota` |
+| `X-InferGate-Quota-Model` / `-Max-Tokens` | 模型名 / 数字 | 降级实际改成了什么（`-Max-Tokens` 是压完之后的完成上限） |
+| `Retry-After` | 秒 | 拒绝时**总是**给出；没有窗口信息时给 1，因为不带退避提示的 429 会被 SDK 立刻重试 |
+| `X-InferGate-Tenant`（请求） | 任意字符串 | 配额与缓存共用的租户身份；不设则按 `Authorization` 的哈希前缀分租户 |
+| `X-InferGate-Session`（请求） | 任意字符串 | 会话身份，用来支持"每个会话多少钱"的预算；日预算按 **UTC 当天**计，UTC+8 的机器上本地 08:00 重置 |
+
+三个观测面（"被拒绝"和"被降级"在客户端看来都是少花了一次上游调用，所以必须能只看配额）：
+
+```powershell
+curl.exe -s http://127.0.0.1:8084/admin/quota                       # 配置 + 各维度决策计数 + 预扣/结算/超支
+curl.exe -s "http://127.0.0.1:8084/admin/quota?tenant=acme&session=sess-1"   # 该租户当天/当分钟/当会话用量与策略
+```
+
+`/metrics` 上的 `infergate_quota_*`（`decisions_total{action}` / `store_errors_total` / `alerts_total` /
+`tokens_total{kind="reserved"|"settled"|"released"}` / `overshoot_tokens_total` /
+`overshoot_cost_micros_total` / `released_cost_micros_total`）与 `/stats` 的 `quota` 块同源。
+
+配置项（`configs/quota-local.yaml` 是逐行注释的内存版，`configs/quota-redis.yaml` 是共享计数版）：
+
+| 键 | 默认 | 说明 |
+| --- | --- | --- |
+| `quota.enabled` | `false` | 显式开关；关着时配置仍会被校验，但不要求配全 |
+| `quota.store` | `memory` | `memory`（进程内）或 `redis`（跨副本共享）。多副本用 `memory` 等于每个副本各发一整份预算 |
+| `quota.fail_open` | `false` | 计数器读不到时默认**拒绝**（503 + `infergate_quota_unavailable`）；读不到的预算不是预算 |
+| `quota.estimate_chars_per_token` | `4` | 只用于**预扣**的 prompt 估算；provider 的真实 `usage` 一到就以它为准 |
+| `quota.estimate_completion_tokens` | `256` | 调用方没声明完成上限时按这个预扣，结算时释放没用完的部分 |
+| `quota.anomaly_ratio` | `3` | 当日用量超过此前有流量几日均值的倍数就告警；**只告警，不拦流量**，0 关闭 |
+| `quota.default_policy` | 全 0 | 没单独配的租户用它；`tokens_per_day` / `cost_per_day_usd` / `requests_per_minute` / `tokens_per_session` 为 0 表示该维度不限 |
+| `quota.tenants[]` | — | 每租户一份策略：四个维度 + `on_exceed`（`reject` / `degrade`）+ `downgrade_model` + `max_tokens_cap`；租户名重复是配置错误而不是后者覆盖前者 |
+| `quota.redis.*` | `127.0.0.1:6379` / `ig:quota` | 共享计数；本机没有 Redis 时用 `cmd/miniredis`（默认 :6399） |
+
+共享计数的最小本地栈（无需安装 Redis）：
+
+```powershell
+.\tools\go.cmd run .\cmd\miniredis    -listen :6398
+.\tools\go.cmd run .\cmd\mockupstream -listen :9301 -name local
+.\tools\go.cmd run .\cmd\infergate    -config configs\quota-redis.yaml
+```
+
+计数键的布局（`GET` 就能读当天用量，跨天不需要迁移）：
+
+```
+ig:quota:<tenant>:day:<YYYYMMDD>:tokens        预扣与结算都打在这个键上
+ig:quota:<tenant>:day:<YYYYMMDD>:cost_micros   成本按微美元（1e-6 USD）整数记账，避免浮点累加漂移
+ig:quota:<tenant>:minute:<YYYYMMDDHHmm>:requests
+ig:quota:<tenant>:session:<id>:tokens
+```
+
+上面的 `<tenant>` 是**转义后**的租户名（`X-InferGate-Tenant` 是调用方控制的，而它是 key 的一部分）：
+`_` 写成 `__`，其它非 `[A-Za-z0-9.-]` 字符写成 `_x` + 固定六位十六进制，所以 `acme:inc` →
+`acme_x00003ainc`、`acme_inc` → `acme__inc`：两个名字不可能共用一本账。转义是**单射**的（固定宽度），
+变宽编码会让 `U+10FFF`+`"ff"` 和 `U+10FFFF`+`"f"` 撞成同一个 key。
+
+`on_exceed: degrade` 的两个杠杆都可以单独用；两个都没配时**配置校验期**就报错，而不是在运行时
+"降级"成一个什么都没改的请求。降级请求**保留预扣**（它仍然是一次请求、仍然要结算），
+便宜模型没用完的额度在结算时还回去。
+
+### 3.12 M3 验收与实测
+
+两条验收路径（都是真进程）：
+
+```powershell
+.\tools\go.cmd run .\cmd\verify-m3                                             # Go 门禁，470/470 断言
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m3.ps1     # curl 门禁，323/323 断言（约 40s）
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\measure-m3.ps1    # 实测，57/57 断言（约 70s）→ docs\baseline\m3-summary.json
+```
+
+curl 门禁自己编译三个二进制、拉起内存与 Redis 两条栈、并**杀掉 miniredis** 来验 fail-closed：
+`X-InferGate-Quota-Reason` 从 `within-budget` 变成 `store-error`、客户端拿到 503、上游一次都没被
+调用，重启 store 后同一个网关进程（PID 不变，无需重启）恢复 200。
+
+治理到底花了多少、挡住了多少（`docs/baseline/m3-summary.json`，3 轮交错，n=800/warmup=100）：
+
+| 测点 | 结果 |
+| --- | --- |
+| 准入开销（治理 vs 不治理，非流式） | 并发 8：2533 QPS / P95 5.42ms vs 2439 / 4.83ms；并发 32：2589 / 14.49ms vs 2632 / 15.05ms，**错误数 0** |
+| `/stats` 自视（同一批请求） | 治理 p50 4.41 / p95 15.48ms，不治理 p50 4.74 / p95 15.49ms |
+| memory vs Redis 计数 | 并发 8：2960 QPS / P95 3.97ms vs 2257 / 5.49ms；并发 32：3346 / 13.54ms vs 2743 / 13.84ms（每次预扣/结算多一次回环 RESP2 往返） |
+| 预扣 vs 真实用量（12 请求） | reserved 2872（= 逐请求公式之和）、settled 320（= 真实 usage 之和）、released 2608、overshoot 56 tokens / 171 微美元；`reserved − released + overshoot == settled` 成立 |
+| 估算偏差 | 平均绝对偏差 222 tokens，平均有符号 **+212.7**（系统性高估：completion 预扣 256，mock 只产 4 个词） |
+| 预算挡下的上游调用 | 同 40 个请求：无预算 40/40 到上游（40×200）；`tokens_per_day: 280` 时 1×200 + 39×429（97.5% 被拒），**上游调用从 40 降到 1** |
+| fail-closed | 停掉 miniredis：20/20 得到 503 `store-error`，上游调用 **0**，`store_errors` 20；重启后 10/10 200（网关未重启） |
+| fail-open | 同一故障只把 `fail_open` 翻成 true：5/5 得到 200，5 次上游调用 |
+| 降级梯子 | `growth` 超预算：200 + `degrade` + `mock-gpt-mini` + 上限头 64，后端日志确认收到的就是 `mock-gpt-mini` |
+| Redis 里的真实计数 | 裸 RESP2 `GET`：日 token 32238 → 64305 → 96327（每轮 Δ 约 32064），分钟请求键 7200 |
+
+怎么读这几行：
+
+- **治理的开销落在这台机器的轮间抖动之内**。治理臂并发 8 的三轮是 5230 / 2262 / 2533 QPS，跨度
+  2.3×；同一次运行内部对比是有效的，跨次引用绝对值没有意义。
+- 上游是**仓库内的 mock**（本地、免费、没有 provider 账单），所以这里量到的是"网关自身多做的工作"
+  （扫 body + 估算 + 一次 store 往返），不是 provider 延迟的节省；成本一律按配置价目表外推。
+- mock 的 token 口径是"空格分词"（prompt = 词数 + 4），不是真 tokenizer，所以上面那条 +212.7 的
+  系统性高估是这个配对的属性，不是估算公式的普适结论。
+- 降级把 `max_tokens` 改写进了转发体，但 `cmd/mockupstream` 完全忽略 `max_tokens`，所以
+  "降级省了多少 token"这一项测不出来（只能证明模型名与上限被改写、预扣照旧）。
+- Redis 臂走的是仓库内 `cmd/miniredis`（回环 RESP2）：验的是代码路径与键布局，不是生产 Redis。
+- fail-open 的计数天然不完整（store 没记上那几笔），所以它的可信度低于 fail-closed 臂。
+- 日成本键只在"配了钱"的租户上打开；压测租户用默认策略（不限钱），所以 RESP2 里读不到 cost 键，
+  钱的部分从 `/admin/quota` 的 `released_cost_micros` 读。
 
 ---
 
@@ -689,3 +829,47 @@ M2 的取舍与已知边界（同样写在代码注释里）：
    `max_entries_per_scope` 就是让这个假设成立的上界。
 7. **重放不算生成**：命中时不写 `first_token` 直方图——把接近 0 的重放混进去，会让这个指标
    在缓存用得最狠的时候"变好"。
+
+---
+
+## 9. 已验证结论（M3 验收口径）
+
+| 验收项 | 结论 | 证据 |
+| --- | --- | --- |
+| 单元 / 集成测试 | 全绿 | `go test ./internal/... -count=1` exit 0（含 `internal/quota`） |
+| 静态检查 | 全绿 | `go vet ./...` exit 0 |
+| Go 端到端 | 470/470 断言通过 | `go run ./cmd/verify-m3` |
+| curl 端到端 | 323/323 断言通过 | `scripts/verify-m3.ps1`（内存 + 真 Redis 协议服务） |
+| 日 token 预算 | 第三次 40-token 请求被拒（`tokens_per_day`），计数器停在已准入的量 | `checkDailyTokenBudget`、`TestDailyTokenBudgetRejects` |
+| 日成本预算 | 同一套逻辑走微美元账目，拒绝原因为 `cost_per_day_usd` | `checkCostBudget` |
+| 每分钟限流 | 第 N+1 次拒绝（`requests_per_minute`），分钟计数不涨 | `checkMinuteRateLimit` |
+| 每会话预算 | 会话独立计量，会话缺失时不预扣 | `checkSessionBudget` |
+| 降级仍是一次请求 | 200 + `degrade` + 改写模型/上限，预扣保留、结算返还差额 | `checkDegrade`、`TestDegradeKeepsTheReservation` |
+| 账本按条目配平 | 混合流量（日 + 会话两个 token 维度、拒绝、缓存命中）下 `reserved − released + overshoot == settled` | verify-m3 `identityOK`、verify-m3-curl 段 11 |
+| 拒绝不产生上游调用 | 拒绝时上游调用计数不变（预算挡下的正是 provider 账单） | `checkUpstreamNotCalled`、实测 `provider_calls_prevented: 39` |
+| 缓存命中仍占配额 | 命中按 `Usage{Requests: 1}` 结算，token 记 0 | `checkCacheHitSettlesRequestsOnly` |
+| fail-closed 是默认 | store 不可读 → 503 `infergate_quota_unavailable`，且 **Redis 连不上时启动失败** | `checkFailClosedOpen`、`TestNewServerFailsWhenQuotaRedisIsDown` |
+| fail-open 可显式打开 | 同一次故障下 5/5 放行，`store_errors` 照记，且决策计数记 `allow` | `checkFailClosedOpen`、`docs/baseline/m3-summary.json` 的 `fail_open` |
+| 键隔离与单射转义 | 配置里 `acme:inc` 与 `acme_inc` 各记各的账 | `checkKeyIsolation`、`TestKeyLayoutAndBucketFormats` |
+| 三个观测面 | `/admin/quota`、`/stats` 的 `quota` 块、`/metrics` 七个 `infergate_quota_*` 族三者同源 | `checkSurfaces` |
+| 非生成路径不受治理 | `/v1/models` 不带任何配额头 | `checkUngovernedRoutes` |
+| 配置校验 | 负值、重复租户、`degrade` 却没有任何杠杆、`anomaly_ratio < 1` 都在**加载期**报错 | `internal/config` 的配额用例 |
+| 预算挡下多少实测 | 40 个请求：无预算 40 次上游调用；`tokens_per_day: 280` 时 1 次（97.5% 被拒） | `docs/baseline/m3-summary.json` 的 `budget` |
+| 预扣准确度实测 | 12 请求：reserved 2872 / settled 320 / released 2608 / overshoot 56 tokens，恒等式成立 | 同上 `accuracy` |
+| 故障实测 | fail-closed 20/20 503 且上游 0 调用；重启 store 后同进程 10/10 恢复 | 同上 `fail_closed`、`fail_open` |
+
+M3 的取舍与已知边界（同样写在代码注释里）：
+
+1. **日预算是 UTC 天**：`untilDayEnd` 先转 UTC，所以 UTC+8 的机器上本地 08:00 重置。跨时区团队
+   要么接受这一点，要么以后加 `timezone` 配置项——沉默地按本地时间算只会让对账更难受。
+2. **放行不带 `-Limit`/`-Used`**：网关只在越界那次知道限额（放行要报余量就得额外读一次 store，
+   那是给每个请求加一次开销）。要实时余量请查 `/admin/quota`。
+3. **预扣是乐观记账，软限额是软的**：估算高估会让额度被"临时占用"，估算低估（长 CJK、短
+   `max_tokens`）会穿透到 `overshoot_tokens`。这个计数器就是用来量"限额到底有多软"的。
+4. **预扣不是跨维度事务**：`internal/redis` 没有 `MULTI`/`EVAL`（也没有会话概念），所以保证的是
+   "每个维度一次原子 `INCRBY`"，不是"四个维度一起成功"；某维度失败时已扣的维度会被释放回滚。
+5. **`memory` store 是每进程的**：多副本共用一份预算必须用 `redis`，否则 N 个副本各发一整份；
+   所以 Redis 连不上时**启动失败**，而不是静默退化成进程内存。
+6. **异常指纹只告警不拦流量**：花钱突然变多通常是真实业务，拦流量的是预算，不是这个比值。
+7. **降级的 token 收益未测**：`cmd/mockupstream` 忽略 `max_tokens`，所以只证明了改写发生了
+   （后端收到的模型名与上限），没证明省钱——换真 provider 才能量到。

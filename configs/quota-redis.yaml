@@ -1,0 +1,122 @@
+# InferGate M3 configuration — token and cost governance shared through Redis.
+#
+# Same budgets as configs/quota-local.yaml; the difference is WHERE the
+# counters live. On the memory store every replica keeps its own tally, so a
+# two-replica deployment enforces twice the configured budget. With Redis the
+# counter is one INCRBY, so the budget is the cluster's, not the process's.
+#
+# Any RESP2 server will do. On this host there is no Docker daemon and no Redis
+# installed, so the in-repo subset server is used for verification:
+#
+#   go run ./cmd/miniredis    -listen :6398
+#   go run ./cmd/mockupstream -listen :9301 -name local
+#   go run ./cmd/infergate    -config configs/quota-redis.yaml
+#
+# In production the line below is the only change:
+#
+#   docker compose up -d redis        # then point addr at redis:6379
+#
+# WHY THIS IS ATOMIC WITHOUT LUA. Every reservation is a SINGLE Redis command
+# (INCRBY on a key that names the window and the dimension), so the read-modify-
+# write happens inside Redis and two replicas cannot both see "40 of 100 used"
+# and both admit. The window is part of the KEY, never a TTL on a fixed key:
+# a day bucket that expires by TTL can be recreated mid-day by a late request,
+# which silently resets the budget. What is deliberately NOT used is
+# MULTI/EXEC or WATCH: the gateway's Redis client pools a connection per call,
+# so a transaction would span several connections and would not be a
+# transaction at all -- a checked-then-write sequence over that client is a
+# race that looks like correctness.
+
+server:
+  listen: ":8085"
+  read_header_timeout: "10s"
+  idle_timeout: "90s"
+  upstream_timeout: "10s"
+  shutdown_timeout: "5s"
+  max_body_bytes: 8388608
+  max_idle_conns_per_host: 256
+
+log:
+  level: "info"
+  format: "text"
+
+routing:
+  strategy: "priority"
+  default_capabilities:
+    - "chat"
+
+health:
+  window: "30s"
+  buckets: 6
+  min_requests: 4
+  failure_ratio: 0.5
+  open_duration: "10s"
+  half_open_probes: 1
+  max_failures_per_request: 2
+  retry_backoff: "20ms"
+
+upstreams:
+  - name: "local"
+    kind: "openai"
+    base_url: "http://127.0.0.1:9301"
+    api_key: ""
+    models:
+      - "/"
+    capabilities:
+      - "chat"
+    priority: 1
+    weight: 1
+
+quota:
+  enabled: true
+  store: "redis"
+  fail_open: false
+  estimate_chars_per_token: 4
+  estimate_completion_tokens: 256
+  anomaly_ratio: 3
+
+  default_policy:
+    tokens_per_day: 1000000
+    requests_per_minute: 600
+    on_exceed: "reject"
+
+  tenants:
+    # Small on purpose, so the verification script can exhaust a tenant in a
+    # handful of requests and observe the refusal plus the ERROR reply from the
+    # counter store rather than a plausible-looking allowance.
+    - tenant: "acme"
+      tokens_per_day: 300
+      requests_per_minute: 60
+      on_exceed: "reject"
+
+    - tenant: "growth"
+      tokens_per_day: 300
+      on_exceed: "degrade"
+      downgrade_model: "mock-gpt-mini"
+      max_tokens_cap: 64
+
+  redis:
+    # cmd/miniredis listens on :6399 by default so it can never shadow a real
+    # Redis on this host; :6398 is used here so a quota run and a cache run can
+    # be started side by side without sharing counters. Swap this one line for
+    # the production address.
+    addr: "127.0.0.1:6398"
+    db: 0
+    prefix: "ig:quota"
+    pool_size: 16
+    dial_timeout: "2s"
+    read_timeout: "2s"
+    write_timeout: "2s"
+    # password: "${REDIS_PASSWORD}"
+
+pricing:
+  default:
+    in: 1.0
+    out: 3.0
+  models:
+    mock-gpt:
+      in: 1.0
+      out: 3.0
+    mock-gpt-mini:
+      in: 0.15
+      out: 0.6

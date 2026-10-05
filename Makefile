@@ -10,12 +10,12 @@
 
 GO ?= tools/go.cmd
 
-.PHONY: all build vet test verify verify-curl verify-m1 verify-m2 verify-m2-curl measure-m2 loadtest diag run-mock run-gateway run-fleet run-cache run-cache-redis run-miniredis clean help
+.PHONY: all build vet test verify verify-curl verify-m1 verify-m2 verify-m2-curl measure-m2 verify-m3 verify-m3-curl measure-m3 loadtest diag run-mock run-gateway run-fleet run-cache run-cache-redis run-miniredis run-quota run-quota-redis run-miniredis-quota clean help
 
 all: build vet test
 
 help:
-	@echo "targets: build vet test verify verify-curl verify-m1 verify-m2 verify-m2-curl measure-m2 loadtest diag run-mock run-gateway run-fleet run-cache run-cache-redis run-miniredis clean"
+	@echo "targets: build vet test verify verify-curl verify-m1 verify-m2 verify-m2-curl measure-m2 verify-m3 verify-m3-curl measure-m3 loadtest diag run-mock run-gateway run-fleet run-cache run-cache-redis run-miniredis run-quota run-quota-redis run-miniredis-quota clean"
 
 ## build: compile every package and emit the two binaries.
 build:
@@ -49,6 +49,7 @@ verify-m1:
 ## verify-m1-curl: the same claims through the real binary and real curl.exe,
 ## over a real three-replica fleet on :19100-19102 (the M0 lesson: the in-process
 ## gate proves the gateway is correct, a real fleet proves it is operable).
+## 56 assertions.
 verify-m1-curl:
 	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-m1.ps1
 
@@ -69,7 +70,7 @@ verify-m2:
 
 ## verify-m2-curl: the same claims through the real binary and real curl.exe,
 ## against both the memory store (the default) and a real Redis protocol server
-## (cmd/miniredis), on :18280/:18281 with mocks on :19500/:19501.
+## (cmd/miniredis), on :18280/:18281 with mocks on :19500/:19501.  157 assertions.
 verify-m2-curl:
 	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-m2.ps1
 
@@ -94,6 +95,43 @@ run-miniredis:
 ## Start `make run-miniredis` and a mock on :9201 in other shells first.
 run-cache-redis:
 	$(GO) run ./cmd/infergate -config configs/cache-redis.yaml
+
+## verify-m3: token and cost governance acceptance (470 assertions, the M3 CI
+## gate).  Budgets are checked against the counters they produce, not against the
+## gateway's opinion: a refusal is proved by the upstream never being called
+## again, and a degrade is proved by the body the backend actually received.
+verify-m3:
+	$(GO) run ./cmd/verify-m3
+
+## verify-m3-curl: the same claims through the real binary and real curl.exe,
+## against both the memory store and a real Redis protocol server (cmd/miniredis),
+## because a budget that is only enforced in one process is not a budget.
+## 323 assertions.
+verify-m3-curl:
+	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-m3.ps1
+
+## measure-m3: what governance costs and what it catches -- admission overhead on
+## the governed versus ungoverned path, the accuracy of the reservation against
+## real usage, and how much of a runaway tenant's spend a budget actually stops.
+## Writes docs/baseline/m3-summary.json.  57 assertions of its own.
+measure-m3:
+	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/measure-m3.ps1
+
+## run-quota: the M3 sample (configs/quota-local.yaml) on :8084, budgets counted
+## in process memory.  Needs one mock in another shell:
+##   $(GO) run ./cmd/mockupstream -listen :9300 -name local
+run-quota:
+	$(GO) run ./cmd/infergate -config configs/quota-local.yaml
+
+## run-miniredis-quota: the in-repo RESP2 server on :6398, so a quota run and a
+## cache run can be started side by side without sharing counters.
+run-miniredis-quota:
+	$(GO) run ./cmd/miniredis -listen :6398
+
+## run-quota-redis: the shared-budget sample (configs/quota-redis.yaml) on :8085.
+## Start `make run-miniredis-quota` and a mock on :9301 in other shells first.
+run-quota-redis:
+	$(GO) run ./cmd/infergate -config configs/quota-redis.yaml
 
 ## loadtest: the M0 baseline.  Medians of 3 rounds, spreads included, because a
 ## single pass on a shared laptop is not reproducible (see docs/RESUME.md).

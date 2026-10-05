@@ -32,6 +32,18 @@ const (
 	TypeTimeout      = "infergate_upstream_timeout"
 	TypeInternal     = "infergate_internal_error"
 	TypeBodyTooLarge = "infergate_request_too_large"
+
+	// TypeQuotaExceeded is a budget refusal (HTTP 429). It is distinct from a
+	// provider's own rate limit because the caller's remedy differs: a provider
+	// 429 says "this backend is busy, retry or fail over", while this one says
+	// "this tenant has spent its allowance, and no other backend will help".
+	TypeQuotaExceeded = "infergate_quota_exceeded"
+
+	// TypeQuotaStore is a refusal because the budget could not be read (HTTP
+	// 503). It is a gateway fault, not the caller's, and it is reported
+	// separately so an operator can tell a broken Redis from an exhausted
+	// tenant.
+	TypeQuotaStore = "infergate_quota_unavailable"
 )
 
 // writeError emits an OpenAI-shaped error response.

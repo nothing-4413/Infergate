@@ -18,6 +18,7 @@ import (
 	"github.com/infergate/infergate/internal/breaker"
 	"github.com/infergate/infergate/internal/cache"
 	"github.com/infergate/infergate/internal/metrics"
+	"github.com/infergate/infergate/internal/quota"
 	"github.com/infergate/infergate/internal/router"
 	"github.com/infergate/infergate/internal/upstream"
 )
@@ -69,6 +70,19 @@ type Proxy struct {
 	// matched, which parameters must agree) are part of this package's
 	// correctness argument, not of the store's.
 	cache *cache.Cache
+
+	// quota is the M3 admission controller. Nil means no budget is enforced,
+	// which is the M0-M2 behaviour and the default: a gateway that suddenly
+	// starts refusing traffic because a config section it never had is now
+	// empty would be a worse failure than an unbudgeted one.
+	quota QuotaGate
+
+	// quotaCharsPerToken and quotaCompletionTokens size a reservation when the
+	// request itself does not say. They live here rather than in the manager
+	// because estimation is a request-path concern: only the gateway holds the
+	// body.
+	quotaCharsPerToken    int
+	quotaCompletionTokens int
 }
 
 // Options configures a Proxy.
@@ -116,6 +130,18 @@ type Options struct {
 	// caching entirely (the M0/M1 behaviour), which is also why enabling it is
 	// an explicit configuration decision rather than a default.
 	Cache *cache.Cache
+
+	// Quota enforces per-tenant token, spend and request budgets. Nil means no
+	// budget is enforced.
+	Quota QuotaGate
+
+	// QuotaCharsPerToken turns the inbound body into a prompt-token estimate.
+	// Zero means the package default (4).
+	QuotaCharsPerToken int
+
+	// QuotaCompletionTokens is the completion reservation for a request that
+	// named no ceiling of its own. Zero means the package default (256).
+	QuotaCompletionTokens int
 }
 
 // New builds a Proxy.
@@ -133,16 +159,19 @@ func New(opts Options) *Proxy {
 		maxBody = 8 << 20
 	}
 	p := &Proxy{
-		upstreams:   opts.Upstreams,
-		pricing:     opts.Pricing,
-		metrics:     sink,
-		log:         logger,
-		client:      &http.Client{}, // no Timeout: streaming bodies must not be cut off by the client
-		maxBody:     maxBody,
-		upstreamTTL: opts.UpstreamTimeout,
-		router:      opts.Router,
-		breakers:    opts.Breakers,
-		cache:       opts.Cache,
+		upstreams:             opts.Upstreams,
+		pricing:               opts.Pricing,
+		metrics:               sink,
+		log:                   logger,
+		client:                &http.Client{}, // no Timeout: streaming bodies must not be cut off by the client
+		maxBody:               maxBody,
+		upstreamTTL:           opts.UpstreamTimeout,
+		router:                opts.Router,
+		breakers:              opts.Breakers,
+		cache:                 opts.Cache,
+		quota:                 opts.Quota,
+		quotaCharsPerToken:    opts.QuotaCharsPerToken,
+		quotaCompletionTokens: opts.QuotaCompletionTokens,
 	}
 	p.maxAttempts = opts.MaxAttempts
 	if p.maxAttempts < 1 {
@@ -219,6 +248,36 @@ type record struct {
 	// cacheReason explains a skip or an error, for the log rather than the
 	// response.
 	cacheReason string
+
+	// tenant is the budget and cache isolation namespace, recorded so one log
+	// line says whose request this was. It is derived from a client header or
+	// from hashed credentials, never from the body.
+	tenant string
+
+	// session is the caller-declared conversation id, when it sent one. Only a
+	// per-session budget reads it.
+	session string
+
+	// quotaRes is the lease admission opened for this request. Its presence is
+	// what tells the deferred settle that this request was governed at all.
+	quotaRes *quota.Reservation
+
+	// quotaAction / quotaReason are the verdict, and quotaLimit / quotaUsed /
+	// quotaRequested the dimension that decided it.
+	quotaAction, quotaReason string
+	quotaLimit, quotaUsed    int64
+	quotaRequested           int64
+	quotaSettleError         string
+
+	// degradedModel is what a degraded request was rewritten to, so the log can
+	// say "this answer came from the cheap model" rather than leaving an
+	// unexplained quality change.
+	degradedModel string
+
+	// servedFromCache records that the answer was replayed rather than
+	// generated. Its quota meaning is precise: the request consumed a slot but
+	// no provider tokens.
+	servedFromCache bool
 }
 
 // Usage mirrors sse.Usage without importing it here, keeping the record type
@@ -261,6 +320,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		elapsed := time.Since(rec.start)
 		p.metrics.ObserveRequest(rec.route, rec.upstream, rec.model, rec.status, rec.outcome, elapsed)
+		// M3: the budget lease is closed here rather than in the happy path, so
+		// that every exit - a refusal, a failed failover, a panic, a client that
+		// vanished mid-stream - settles exactly once.
+		p.settleQuota(r.Context(), rec)
 		// Attempts are observed where they happen (attemptUpstream), not here:
 		// a request that failed over must contribute one attempt sample per
 		// backend, otherwise the failed backend's error rate stays invisible and
@@ -317,6 +380,31 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				attrs = append(attrs, slog.String("cache_reason", rec.cacheReason))
 			}
 		}
+		if rec.tenant != "" {
+			attrs = append(attrs, slog.String("tenant", rec.tenant))
+		}
+		if rec.session != "" {
+			attrs = append(attrs, slog.String("session", rec.session))
+		}
+		if rec.quotaAction != "" {
+			attrs = append(attrs, slog.String("quota", rec.quotaAction))
+			if rec.quotaReason != "" {
+				attrs = append(attrs, slog.String("quota_reason", rec.quotaReason))
+			}
+			if rec.quotaLimit > 0 {
+				attrs = append(attrs,
+					slog.Int64("quota_limit", rec.quotaLimit),
+					slog.Int64("quota_used", rec.quotaUsed),
+					slog.Int64("quota_requested", rec.quotaRequested),
+				)
+			}
+			if rec.degradedModel != "" {
+				attrs = append(attrs, slog.String("degraded_to", rec.degradedModel))
+			}
+			if rec.quotaSettleError != "" {
+				attrs = append(attrs, slog.String("quota_settle_error", rec.quotaSettleError))
+			}
+		}
 		if rec.attempts > 1 {
 			attrs = append(attrs, slog.Int("attempts", rec.attempts))
 		}
@@ -370,6 +458,25 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, rec *record) {
 	rec.model = parsed.Model
 	rec.explicitModel = parsed.Model
 	rec.stream = parsed.Stream && isStreamPath(r.URL.Path)
+
+	// M3: admission runs BEFORE the cache lookup, and the order is load-bearing
+	// in both directions. A cache hit is free but it is not invisible: it
+	// consumes a per-minute slot and it belongs in the tenant's report, so the
+	// lease is opened first and settled afterwards with a zero-token usage. And
+	// a request that is about to be refused must not have been answered from
+	// the cache first, or a tenant over budget would keep receiving traffic.
+	//
+	// Only completion routes are governed. A budget that counted /v1/models
+	// listings would refuse callers for traffic that costs nothing, and the
+	// token dimension would be pure fiction on a request with no prompt.
+	if p.quota != nil && p.quota.Enabled() && isCompletionPath(r.URL.Path) {
+		var admitted bool
+		body, parsed, admitted = p.admitQuota(w, r, rec, body, parsed)
+		if !admitted {
+			return
+		}
+		rec.model = parsed.Model
+	}
 
 	// M2: the cache answers before routing is even considered, because a hit
 	// makes the routing decision moot. The identity is derived from the body as

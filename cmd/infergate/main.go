@@ -85,6 +85,11 @@ func main() {
 	if err := srv.CloseCache(); err != nil {
 		logger.Warn("cache close failed", "err", err)
 	}
+	// Same reasoning for the quota store: a settle that is still in flight must
+	// be able to reach its counters.
+	if err := srv.CloseQuota(); err != nil {
+		logger.Warn("quota close failed", "err", err)
+	}
 	logger.Info("stopped cleanly")
 	// Give the log line above a chance to reach the console before exit.
 	time.Sleep(10 * time.Millisecond)
