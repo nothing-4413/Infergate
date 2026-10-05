@@ -48,6 +48,21 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      # The repository was not gofmt-clean when this step was added: seven files
+      # under cmd/ and internal/ had misaligned struct and map literals, and
+      # nothing noticed because gofmt was run by hand, per file, when someone
+      # remembered. gofmt -l prints the offending files, so a red run names them
+      # rather than leaving a diff to be reconstructed.
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l ./cmd ./internal)"
+          if [ -n "$unformatted" ]; then
+            echo "these files are not gofmt-clean:"
+            echo "$unformatted"
+            echo "run: gofmt -w ./cmd ./internal"
+            exit 1
+          fi
+
       # -timeout 20m is well under the job timeout and well over the suite's real
       # cost; if a package ever hangs, the panic names the test instead of the job
       # dying silently.
@@ -65,6 +80,87 @@ jobs:
           set -o pipefail
           go test -race ./... -count=1 -timeout 20m 2>&1 | tee /tmp/go-test-race.log | grep -E '^(ok|FAIL|---|\s+---)|panic:|DATA RACE|WARNING: DATA RACE'
 
-  # Step 2 (separate commit): the real-process verification gates. The curl
-  # gates live in PowerShell and build/start/tear down real stacks, so they need
-  # a Windows runner; see scripts/verify-m*.ps1.
+  # The curl gates: real binaries, real processes, real sockets, real curl.exe.
+  # 1060 assertions that the Linux job above cannot run at all, because all seven
+  # of them are Windows PowerShell scripts that compile the binaries themselves,
+  # start a gateway plus a mock upstream, drive them over TCP and tear both down
+  # in a finally block.
+  #
+  # These are the gates the repository has been claiming in its README since M0
+  # while they only ever ran on the author's machine. That is exactly the kind of
+  # claim CI exists to stop making.
+  #
+  # HOW THE LOCAL TOOLCHAIN PROBLEM DISAPPEARS HERE: the scripts do not call
+  # `go` directly, they call tools\go.cmd (README section 4). That shim prefers
+  # the vendored .gotoolchain when it exists -- and it never exists on a clone,
+  # because it is gitignored and hundreds of MB. So on this runner the shim falls
+  # through to the Go on PATH that setup-go installed, with the runner's own
+  # cache. Nothing else about the scripts changes.
+  #
+  # Each script is its own step on purpose: a red X then points at the milestone
+  # that broke, and the previous ones still show they passed. Each script assigns
+  # its own ports, and each stops what it started, so running them in sequence is
+  # the same thing the README's "one key acceptance" section describes.
+  curl-gates:
+    name: curl gates (M0-M6)
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      # -ExecutionPolicy Bypass is required, not cosmetic: the runner's default
+      # policy refuses to run these files. -NoProfile keeps a runner profile from
+      # changing behaviour between images.
+      - name: M0 passthrough and SSE
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m0.ps1
+        working-directory: ${{ github.workspace }}
+
+      - name: M1 routing and failover
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m1.ps1
+        working-directory: ${{ github.workspace }}
+
+      - name: M2 semantic cache
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m2.ps1
+        working-directory: ${{ github.workspace }}
+
+      - name: M3 quota governance
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m3.ps1
+        working-directory: ${{ github.workspace }}
+
+      - name: M4 tiered routing
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m4.ps1
+        working-directory: ${{ github.workspace }}
+
+      - name: M5 observability
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m5.ps1
+        working-directory: ${{ github.workspace }}
+
+      - name: M6 idempotency and sessions
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m6.ps1
+        working-directory: ${{ github.workspace }}
+
+      # A failed gate leaves bin\ and tmp\ behind, and those logs are the only
+      # place the FAIL lines are explained. Uploaded only on failure so a green
+      # run costs nothing.
+      - name: Upload gate logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: curl-gate-logs
+          path: |
+            tmp/**.log
+            docs/baseline/**.json
+          if-no-files-found: ignore
+          retention-days: 7
