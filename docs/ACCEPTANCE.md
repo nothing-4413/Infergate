@@ -51,27 +51,36 @@ curl 门编译真二进制、拉真进程、用真 `curl.exe` 打真 socket，�
 | `.\scripts\verify-m*.ps1` | 1060 条 curl 端到端断言 | **绿**：`curl gates (M0-M6, operator token)` job 在 run 37374000997 上 119 秒跑完，8 个门（M0–M6 + 管理面令牌门）全过 |
 
 两个 `go test` 步骤把整份 transcript 写进 `/tmp`，再由 `scripts/ci-summarize-go-test.sh`
-捕出失败测试与**完整的 DATA RACE 报告**，写进**该 job 的 step summary**（`$GITHUB_STEP_SUMMARY`）；
-每一步都带 `if: always()`，所以这条路在红的那一次也走得通。
+捕出失败测试与**完整的 DATA RACE 报告**，写进一个分片文件（`/tmp/ci-summary-*.md`）。这个文件随后被
+**读两次、内容完全相同**：append 进该 job 的 **step summary**（`$GITHUB_STEP_SUMMARY`，登录可读），
+并由 `scripts/ci-publish-failure-check.sh` **创建一个自己的 check run** 写进它的 `output.summary`（**匿名可读**）。
+每一步都带 `if: always()` / `if: failure()`，所以这条路在红的那一次也走得通。
 
-**读这份摘要要登录 GitHub**，这一点必须明说，因为三个"让匿名读者也能读到"的做法都试过、都失败了：
+**匿名读法**（无需 token、无需下载）：
 
-**唯一匿名可读的东西是步骤清单**（`GET /actions/runs/{id}/jobs` 里的 `steps[]`，含每步的名字与
-success/failure）。所以 race 那一关**逐个包跑**：`go test -race ./...` 只会给出"整个模块里有一个包
-被检测器拒绝"，而按包循环之后，红的那一步**以包名命名**（`for pkg in $(go list ./...)`，失败继续跑下一个，
-最后统一 `exit 1`）。代价是两行 shell，换来的是"去哪找"这个匿名读者唯一能拿到的答案。
+```
+curl -s https://api.github.com/repos/nothing-4413/Infergate/commits/<sha>/check-runs
+```
 
-1. **job 日志**（`GET /actions/jobs/{id}/logs`）与 **artifact 下载**都返回 403（原文
-   `{"message":"Must have admin rights to Repository.", "status":403}`），已匿名验证。
-   第一版就是为此加 `| grep`，但它只帮到本来就有权限打开日志的人。
-2. **step summary 不进 check-runs 的 `output.summary`**：加了它的那次 run，check-run API 与
-   匿名拉到的 job 页面 HTML 里都是空的。它确实渲染在 UI 里，但要先登录。
-3. **工作流自己 `PATCH /check-runs/{id}`**：写 `output.summary` 会返回 2xx（`gh` 需要显式
-   `GH_TOKEN`，否则退出码 4），**但 job 一结束该字段就被清空**。run 37377940124 里一个在 base job
-   之后运行、专门 PATCH 并读回该字段的探测 job 证实了这一点：从外部读回来仍是 `null`。
+在那份 JSON 里会多出一个名为 `ci failure: build / vet / test / race` 的 check run，`output.summary`
+就是失败测试名与 race 报告。这是 run 37379724217 测定出来的：**创建一个 check run** 与
+**修改 GitHub 为本 job 创建的那个 check run** 是两回事，后者会被回收。
 
-所以现在留在仓库里的说法是诚实的：`curl gates` 与 `go test` 的结论对**登录后的读者**可见（Actions 页）；
-失败原因在 job 的 step summary 里，原始 transcript 另存为 `go-test-logs` artifact。不再声称匿名可读。
+四条被测定为死路、不要再试的做法：
+
+1. **`grep` 进步骤日志**：job 日志（`GET /actions/jobs/{id}/logs`）与 **artifact 下载**对匿名读者都返回
+   403（原文 `{"message":"Must have admin rights to Repository.", "status":403}`，已匿名验证）。
+   只帮到本来就有权限打开日志的人。
+2. **`$GITHUB_STEP_SUMMARY`**：渲染在 UI 里，但**不进 check-runs 的 `output.summary`**，也不在匿名
+   job 页面 HTML 里（那个页面 221KB，只有 UI 外壳，没有日志正文）。
+3. **`PATCH` 本 job 自己的 check run**：写 `output.summary` 返回 2xx（`gh` 需显式 `GH_TOKEN`，否则退出码 4），
+   **但 job 一结束该字段就被清空**。run 37377940124 里一个在 base job 之后运行、专门 PATCH 并读回该字段的
+   探测 job 证实了这一点：从外部读回来仍是 `null`。
+4. **指望步骤清单暴露包名**：`GET /actions/runs/{id}/jobs` 的 `steps[]` 只会给出步骤名（`go test -race`），
+   循环体内打印的 `=== <pkg>` 只进日志。所以 race 那一步**按包循环**的理由是"一次 run 报告全部被拒的包"，
+   不是"匿名读者能看见包名"。
+
+原始 transcript 仍另存为 `go-test-logs` artifact（下载需认证）。
 
 ### 管理面鉴权（`access`）的证据边界
 

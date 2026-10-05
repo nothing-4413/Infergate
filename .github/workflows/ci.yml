@@ -36,11 +36,14 @@ jobs:
   # workflow is wiped when the job completes. There is no anonymous channel here.
   base:
     name: build / vet / test / race
-    # Read-only. A `checks: write` scope was added while this job was PATCHing its
-    # own check run with the failure summary; that scope went away with the
-    # publishing step, and nothing here needs it back.
+    # `checks: write` is here for ONE reason: the last step creates a check run of
+    # its own to carry this job's failure output. That is not the check run GitHub
+    # creates for this job -- writing to that one returns 2xx and is wiped when the
+    # job completes (run 37377940124), which is why it is not used. `contents: read`
+    # is the default scope for everything else.
     permissions:
       contents: read
+      checks: write
     # Pinned rather than ubuntu-latest: the label announced a migration to Ubuntu
     # 26 (runner-images#14748), and a silent distro change is not something a gate
     # should inherit.
@@ -95,23 +98,33 @@ jobs:
           set -o pipefail
           go test ./... -count=1 -timeout 20m 2>&1 | tee /tmp/go-test.log
 
+      # The summarizer writes its fragment to a file rather than to the runner's
+      # summary, because the same text is published twice: into $GITHUB_STEP_SUMMARY
+      # below (for anyone who signs in) and into a check run (for anyone who does
+      # not). Writing the summary file into a file first is what makes those two
+      # copies identical instead of two filters that drift apart.
+      #
+      # The file itself is copied into $GITHUB_STEP_SUMMARY by the next step. This
+      # step's own stdout is not a channel: it is the step log, which needs admin
+      # rights.
       - name: summarize go test
         if: always()
-        run: bash scripts/ci-summarize-go-test.sh /tmp/go-test.log "$GITHUB_STEP_SUMMARY" "go test"
+        run: |
+          bash scripts/ci-summarize-go-test.sh /tmp/go-test.log /tmp/ci-summary-test.md "go test"
+          cat /tmp/ci-summary-test.md >> "$GITHUB_STEP_SUMMARY"
 
       # The local machine cannot run this: `-race` needs cgo and there is no gcc
       # (README section 4 / section 10). A hosted runner can, which is the whole
       # reason this step exists -- and on its first real run it did fail, so it is
       # not a formality.
       #
-      # ONE PACKAGE PER INVOCATION, on purpose. The step list is the one piece of a
-      # red run an anonymous reader can see (the job log and the artifact both need
-      # admin rights, and the step summary above needs a sign-in). `go test -race
-      # ./...` reports one status for the whole module, so the failure arrives as
-      # "the race detector is unhappy somewhere in 23 packages". Looping per package
-      # costs a couple of lines and makes the answer a red step NAMED after the
-      # package -- which is exactly the granularity a reader needs to go looking.
-      # The loop keeps going after a failure so the whole picture is in one run.
+      # ONE PACKAGE PER INVOCATION. This was tried first as a way to get the failing
+      # PACKAGE out of the step list, and that reason was wrong: the step list names
+      # the step ("go test -race"), not anything a loop prints inside it, and the job
+      # page an anonymous reader gets has no log body at all. What the loop does give
+      # a reader who signs in is the complete picture in one run -- every rejected
+      # package, instead of the one that happened to be reached first -- and it costs
+      # a few seconds of per-package startup. The transcript is unchanged.
       - name: go test -race
         run: |
           set -o pipefail
@@ -133,7 +146,9 @@ jobs:
 
       - name: summarize go test -race
         if: always()
-        run: bash scripts/ci-summarize-go-test.sh /tmp/go-test-race.log "$GITHUB_STEP_SUMMARY" "go test -race"
+        run: |
+          bash scripts/ci-summarize-go-test.sh /tmp/go-test-race.log /tmp/ci-summary-race.md "go test -race"
+          cat /tmp/ci-summary-race.md >> "$GITHUB_STEP_SUMMARY"
 
       # WHERE A RED RUN'S REASON ACTUALLY LIVES, after three attempts to put it
       # somewhere better:
@@ -149,13 +164,26 @@ jobs:
       #   job and from a later job, with the token in GH_TOKEN) and is then WIPED
       #   when the job completes: a job that ran afterwards and wrote
       #   output.summary read it back as null from outside, on run 37377940124.
-      #   Check-runs output is not a channel a workflow can hand anything to an
-      #   anonymous reader through. Do not try again.
+      #   Writing to THAT check run is the dead end.
       #
-      # What that leaves is honest and small: the summary for anyone who signs in,
-      # the full transcript in the artifact, and this job's own red/green state for
-      # everyone. internal/repofmt/ci_wiring_test.go keeps the summary wiring in
-      # place and keeps the check-run detour from coming back.
+      # The last step below is the variant that is not a dead end. It CREATES a
+      # check run of its own with POST /check-runs, under a name nobody else owns,
+      # and that one keeps its output: run 37379724217 created a probe check run
+      # whose 28-byte summary was still readable through the anonymous API after the
+      # whole run had completed. So a red run's failing test names are now available
+      # to anyone, with no token and no download:
+      #
+      #   curl -s https://api.github.com/repos/nothing-4413/Infergate/commits/<sha>/check-runs
+      #
+      # internal/repofmt/ci_wiring_test.go keeps the summary wiring in place and
+      # keeps the wiped-channel variant from coming back.
+      - name: publish the failure summary where anonymous readers can reach it
+        if: failure()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/ci-publish-failure-check.sh "ci failure: build / vet / test / race" /tmp/ci-summary-test.md /tmp/ci-summary-race.md
+
       - name: Upload test transcripts
         if: always()
         uses: actions/upload-artifact@v4
@@ -166,43 +194,6 @@ jobs:
             /tmp/go-test-race.log
           if-no-files-found: ignore
           retention-days: 7
-
-  # TEMPORARY PROBE. Every check run this workflow has touched so far was the one
-  # GitHub creates for a job, and its output is wiped when that job completes. This
-  # job CREATES a check run of its own instead, after the base job is done, and
-  # writes a fixed string into output.summary. If that string is still readable
-  # through the anonymous API once this run has finished, a workflow finally has a
-  # channel to hand a red run's reason to someone who is not signed in.
-  check-run-probe:
-    name: check run probe
-    needs: base
-    if: always()
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      checks: write
-    steps:
-      - name: create a check run and write to its summary
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -x
-          gh --version || true
-          body=$(gh api --method POST "repos/${GITHUB_REPOSITORY}/check-runs" \
-            -f name='ci failure probe' \
-            -f head_sha="${GITHUB_SHA}" \
-            -f status=completed \
-            -f conclusion=failure \
-            -f 'output[title]=ci failure probe' \
-            --raw-field 'output[summary]=PROBE-SUMMARY-MARKER-1f6b323')
-          echo "$body" | head -c 2000
-      - name: read it back in a later step of the same job
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs" \
-            --jq '.check_runs[] | {name, summary: .output.summary}'
 
 
   # The curl gates: real binaries, real processes, real sockets, real curl.exe.

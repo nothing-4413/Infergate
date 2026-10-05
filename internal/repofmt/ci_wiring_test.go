@@ -27,19 +27,19 @@ import (
 // The third attempt PATCHed the job's own check run, which does work -- `gh api`
 // returned 2xx with the token supplied explicitly -- and is then wiped when the job
 // completes. A job that ran afterwards PATCHed `output.summary` and read it back as
-// null from outside (run 37377940124). Check-runs output is not a channel a workflow
-// can hand an anonymous reader anything through, and the assertions below exist so
-// that detour does not come back.
+// null from outside (run 37377940124). Patching GitHub's own check run for a job is
+// not a channel a workflow can hand an anonymous reader anything through.
 //
-// So the honest chain is what this test now pins: the transcript lands in a file,
-// the summarizer turns it into the job's step summary (readable to any signed-in
-// reader, without downloading anything), the raw transcript is uploaded as an
-// artifact, and every step that has to run after a failure carries `if: always()`.
+// What that leaves, and what this test pins, is two channels plus one invariant:
 //
-// And one thing that IS anonymous, which is why the race gate runs package by
-// package: the step list of a run comes back from the plain public API. A single
-// `go test -race ./...` reports one status for the whole module, which answers "is
-// the detector unhappy" and not "where"; a red step named after the package does.
+//   - the transcript lands in a file, the summarizer turns it into a fragment, and
+//     that fragment is APPENDED to $GITHUB_STEP_SUMMARY (any signed-in reader, no
+//     download) -- and published, unchanged, into a check run the workflow CREATES
+//     (any anonymous reader via the public API). Creating is the difference that
+//     matters: run 37379724217 created a probe check run whose summary was still
+//     readable from outside after the run had finished.
+//   - the raw transcript is uploaded as an artifact.
+//   - every step that has to run after a failure carries `if: always()`.
 func TestRedRunPublishesAReadableTranscript(t *testing.T) {
 	root := repoRoot(t)
 	workflow := readFile(t, filepath.Join(root, ".github", "workflows", "ci.yml"))
@@ -77,14 +77,19 @@ func TestRedRunPublishesAReadableTranscript(t *testing.T) {
 	runs := strings.Join(executable, "\n")
 
 	// Link 2: the summary is written, and it is written where the UI reads it. The
-	// second argument has to be the runner's own summary file -- writing to a
-	// fragment and PATCHing a check run with it is the detour described above.
-	// Scanned on the whole file rather than on `runs`: the write happens inside a
+	// summarizer writes a fragment file, and ci.yml appends that same file to the
+	// runner's summary, so the signed-in copy and the anonymous copy cannot drift.
+	// Scanned on the whole file rather than on `runs`: both writes happen inside a
 	// `run: |` block, which the tokenizer deliberately treats as opaque shell.
 	if !strings.Contains(workflow, "GITHUB_STEP_SUMMARY") ||
 		!strings.Contains(workflow, "scripts/ci-summarize-go-test.sh") {
 		t.Error("ci.yml no longer passes $GITHUB_STEP_SUMMARY to the summarizer; a red " +
 			"run's failing test names then reach no reader at all")
+	}
+	if !strings.Contains(workflow, "/tmp/ci-summary-race.md") ||
+		!strings.Contains(workflow, "ci-publish-failure-check.sh") {
+		t.Error("ci.yml no longer publishes the race fragment into a check run; that is " +
+			"the only copy of the failure text an anonymous reader can fetch")
 	}
 
 	// A pipe through grep was the first attempt.
@@ -94,36 +99,39 @@ func TestRedRunPublishesAReadableTranscript(t *testing.T) {
 		}
 	}
 
-	// Link 3: the race gate has to fail per package. The step list is the only part
-	// of a red run someone without admin rights can read, so `go test -race ./...`
-	// would say "somewhere in 23 packages" while a per-package loop names the one.
+	// Link 3: the race gate enumerates the packages it runs. This buys a complete
+	// picture in one run for a reader who signs in -- every rejected package rather
+	// than the first one -- and NOT an anonymous package name, which the step list
+	// does not expose. See the comment on the step.
 	if !strings.Contains(workflow, "go list ./...") {
-		t.Error("the race step no longer enumerates packages: a red run would then not " +
-			"say WHICH package the detector rejected, and the step list is the only " +
-			"anonymous channel there is")
+		t.Error("the race step no longer enumerates packages, so one run stops at the " +
+			"first rejected package instead of reporting all of them")
 	}
 
-	// Link 4: the detour must not return. This is a negative assertion about a
-	// channel that was measured: the field is wiped when the owning job completes.
-	// The one exception is a deliberately marked probe job (see ci.yml), which is
-	// the only untried variant: a check run the workflow CREATES rather than one it
-	// patches. Delete the exemption with the probe.
-	if strings.Contains(runs, "check-runs") || strings.Contains(runs, "checks: write") {
-		if !strings.Contains(workflow, "ci failure probe") {
-			t.Error("ci.yml is publishing to check runs again; a job's check-run output is " +
-				"wiped when the job completes, so that text reaches nobody (see the comment " +
-				"above the summarize steps)")
-		} else {
-			t.Log("check-run publishing is present, but only inside the marked `ci failure probe` job")
-		}
+	// Link 4: the wiped channel must not come back, and the working one must keep
+	// using POST. PATCHing GitHub's own check run for this job returns 2xx and is
+	// erased when the job ends (run 37377940124); creating a check run of our own
+	// is what survives (run 37379724217).
+	publisher := readFile(t, filepath.Join(root, "scripts", "ci-publish-failure-check.sh"))
+	if !strings.Contains(publisher, "--method POST") {
+		t.Error("the publisher no longer CREATES its check run; patching an existing " +
+			"check run is the variant that gets wiped when the job completes")
+	}
+	if strings.Contains(runs, "--method PATCH") || strings.Contains(runs, "ci-publish-failure-summary.sh") {
+		t.Error("ci.yml is patching a check run again; the output of GitHub's own check " +
+			"run for a job is wiped when that job completes (run 37377940124)")
 	}
 
 	// Link 5: the summary has to be produced on the failing run. This is the mistake
 	// that leaves the gate silent precisely when it matters.
-	if n := strings.Count(workflow, "if: always()"); n < 3 {
-		t.Errorf("ci.yml has %d `if: always()` steps; both summarize steps and the "+
-			"artifact upload need one, or the summary only appears when nothing "+
-			"failed", n)
+	if n := strings.Count(workflow, "if: always()"); n < 4 {
+		t.Errorf("ci.yml has %d `if: always()` steps; both summarize steps, the artifact "+
+			"upload and the publish step need one, or the summary only appears when "+
+			"nothing failed", n)
+	}
+	if !strings.Contains(workflow, "if: failure()") {
+		t.Error("the publish step no longer runs on failure; that is the only case in " +
+			"which there is anything to publish")
 	}
 
 	// The summarizer has to carry the race report, not just the words "DATA RACE".
