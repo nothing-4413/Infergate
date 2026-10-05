@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -251,14 +252,21 @@ func TestVectorEncodingRoundTripsExactly(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHTTPEmbedderPairsVectorsByIndex(t *testing.T) {
+	// The handler runs on the httptest server's goroutine and the assertions run
+	// on the test goroutine, so everything it publishes is guarded. Responding
+	// over a socket is not a happens-before edge the race detector honours, and
+	// this file previously had no synchronization at all.
+	var mu sync.Mutex
 	var gotReq embedRequest
 	var gotAuth, gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		gotAuth = r.Header.Get("Authorization")
-		if err := json.NewDecoder(r.Body).Decode(&gotReq); err != nil {
+		var req embedRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Errorf("decode request: %v", err)
 		}
+		mu.Lock()
+		gotPath, gotAuth, gotReq = r.URL.Path, r.Header.Get("Authorization"), req
+		mu.Unlock()
 		// Deliberately out of order and deliberately unnormalised: the embedder
 		// must sort by index and normalise, because a mismatched pairing writes
 		// a vector next to the wrong text and the cache then "remembers" a
@@ -278,14 +286,17 @@ func TestHTTPEmbedderPairsVectorsByIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Embed: %v", err)
 	}
-	if gotPath != "/v1/embeddings" {
-		t.Fatalf("path = %q, want /v1/embeddings (the base URL's trailing slash must not double up)", gotPath)
+	mu.Lock()
+	path, auth, req := gotPath, gotAuth, gotReq
+	mu.Unlock()
+	if path != "/v1/embeddings" {
+		t.Fatalf("path = %q, want /v1/embeddings (the base URL's trailing slash must not double up)", path)
 	}
-	if gotAuth != "Bearer secret" {
-		t.Fatalf("Authorization = %q", gotAuth)
+	if auth != "Bearer secret" {
+		t.Fatalf("Authorization = %q", auth)
 	}
-	if gotReq.Model != "m" || len(gotReq.Input) != 2 || gotReq.Input[1] != "second" {
-		t.Fatalf("request body = %+v", gotReq)
+	if req.Model != "m" || len(req.Input) != 2 || req.Input[1] != "second" {
+		t.Fatalf("request body = %+v", req)
 	}
 	if math.Abs(Cosine(got[0], []float32{0, 0, 1})-1) > 1e-6 {
 		t.Fatalf("input 0 got the wrong vector: %v (want [0,0,1] after normalisation)", got[0])
@@ -302,9 +313,14 @@ func TestHTTPEmbedderPairsVectorsByIndex(t *testing.T) {
 }
 
 func TestHTTPEmbedderTruncatesLongInput(t *testing.T) {
+	var mu sync.Mutex
 	var gotReq embedRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewDecoder(r.Body).Decode(&gotReq)
+		var req embedRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		mu.Lock()
+		gotReq = req
+		mu.Unlock()
 		_, _ = w.Write([]byte(`{"data":[{"index":0,"embedding":[1]}]}`))
 	}))
 	defer srv.Close()
@@ -316,7 +332,10 @@ func TestHTTPEmbedderTruncatesLongInput(t *testing.T) {
 	if _, err := e.Embed(context.Background(), []string{strings.Repeat("中", 40)}); err != nil {
 		t.Fatalf("Embed: %v", err)
 	}
-	if n := len([]rune(gotReq.Input[0])); n != 10 {
+	mu.Lock()
+	req := gotReq
+	mu.Unlock()
+	if n := len([]rune(req.Input[0])); n != 10 {
 		t.Fatalf("truncated to %d runes, want 10 (a 413 from the embedder must not become a failed client request)", n)
 	}
 }

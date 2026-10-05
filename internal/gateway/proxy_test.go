@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -216,15 +217,20 @@ func TestCallerAuthorizationFallback(t *testing.T) {
 
 // TestModelRoutingSendsRequestToOwningUpstream is the core of M0's routing
 // table: two providers, one requested model, and only the owner may see it.
+//
+// The counters are atomic because the handler runs on the httptest server's own
+// goroutine and the test reads them right after the response arrives. A socket
+// round trip is not a happens-before edge the race detector honours, so a plain
+// int here is a genuine data race under -race and a green test everywhere else.
 func TestModelRoutingSendsRequestToOwningUpstream(t *testing.T) {
-	var aHits, bHits int
+	var aHits, bHits atomic.Int64
 	beA := newBackend(t, func(w http.ResponseWriter, r *http.Request) {
-		aHits++
+		aHits.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"provider":"a"}`))
 	})
 	beB := newBackend(t, func(w http.ResponseWriter, r *http.Request) {
-		bHits++
+		bHits.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"provider":"b"}`))
 	})
@@ -241,8 +247,8 @@ func TestModelRoutingSendsRequestToOwningUpstream(t *testing.T) {
 
 	mustPost(t, p, "/v1/chat/completions", `{"model":"deepseek-chat","messages":[]}`)
 
-	if aHits != 0 || bHits != 1 {
-		t.Fatalf("hits a=%d b=%d, want a=0 b=1", aHits, bHits)
+	if a, b := aHits.Load(), bHits.Load(); a != 0 || b != 1 {
+		t.Fatalf("hits a=%d b=%d, want a=0 b=1", a, b)
 	}
 	snap := rec.Snapshot()
 	if len(snap) != 1 || snap[0].Upstream != "b" {
@@ -285,10 +291,15 @@ func TestUnknownModelWithoutCatchAllReturns400(t *testing.T) {
 
 // TestExplicitUpstreamHeaderOverridesModelRouting covers the operator escape
 // hatch used to pin traffic during an incident.
+//
+// hits is atomic for the same reason as in
+// TestModelRoutingSendsRequestToOwningUpstream: the backend handler runs on the
+// httptest server's goroutine, and the socket round trip that carries the
+// response back is not a happens-before edge under -race.
 func TestExplicitUpstreamHeaderOverridesModelRouting(t *testing.T) {
-	var hits int
+	var hits atomic.Int64
 	be := newBackend(t, func(w http.ResponseWriter, r *http.Request) {
-		hits++
+		hits.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{}`))
 	})
@@ -313,8 +324,8 @@ func TestExplicitUpstreamHeaderOverridesModelRouting(t *testing.T) {
 	if res.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", res.Code)
 	}
-	if hits != 1 {
-		t.Errorf("pinned upstream hits = %d, want 1", hits)
+	if n := hits.Load(); n != 1 {
+		t.Errorf("pinned upstream hits = %d, want 1", n)
 	}
 }
 

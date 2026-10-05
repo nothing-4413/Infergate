@@ -95,10 +95,14 @@ type Router struct {
 	health   config.HealthConfig
 	price    PriceFunc
 
-	// now and rand are injectable so that the weighted strategy and the
-	// half-open timing can be tested deterministically.
-	now  func() time.Time
-	rand *rand.Rand
+	// now is injectable so that half-open timing can be tested deterministically.
+	//
+	// There is deliberately no rand field. A *rand.Rand is not safe for
+	// concurrent use, and a Router is built once and then asked to Plan from
+	// every request goroutine, so the weighted strategy used to write shared
+	// generator state from concurrent requests. The package-level helpers below
+	// take the same lock internally and are safe to call from anywhere.
+	now func() time.Time
 }
 
 // Options configures a Router.
@@ -123,7 +127,6 @@ func New(opts Options) *Router {
 		health:   opts.Health,
 		price:    opts.Price,
 		now:      time.Now,
-		rand:     rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 	if r.cfg.Strategy == "" {
 		r.cfg.Strategy = config.StrategyPriority
@@ -584,7 +587,7 @@ func (r *Router) orderWeighted(cands []Candidate) []Candidate {
 		}
 		pick := 0
 		if total > 0 {
-			roll := r.rand.Float64() * total
+			roll := rand.Float64() * total
 			acc := 0.0
 			for i, c := range remaining {
 				acc += c.Target.Weight()
@@ -594,7 +597,7 @@ func (r *Router) orderWeighted(cands []Candidate) []Candidate {
 				}
 			}
 		} else {
-			pick = r.rand.Intn(len(remaining))
+			pick = rand.Intn(len(remaining))
 		}
 		out = append(out, remaining[pick])
 		remaining = append(remaining[:pick], remaining[pick+1:]...)
