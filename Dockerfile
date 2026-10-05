@@ -1,9 +1,9 @@
 # InferGate container image.
 #
-# One Dockerfile, two binaries: CMD selects which command to compile, so
-# `docker build --build-arg CMD=infergate` and `--build-arg CMD=mockupstream`
-# share this stage instead of duplicating a second file. docker-compose.yml uses
-# exactly that for its two services.
+# One Dockerfile, any command: CMD selects which one to compile, so
+# `--build-arg CMD=infergate`, `CMD=mockupstream` and `CMD=miniredis` share this
+# stage instead of duplicating a file per service -- docker-compose.yml uses
+# exactly that for its three services.
 #
 # Local build (Docker Desktop on Windows, or any Linux host):
 #
@@ -53,8 +53,16 @@ FROM alpine:3.20 AS runtime
 
 # ca-certificates is the one package that matters: talking to a real provider
 # (https://api.deepseek.com and friends) needs a trust store. wget comes from
-# busybox and is what the compose healthchecks use.
-RUN apk add --no-cache ca-certificates
+# busybox and is what the gateway's own healthcheck uses.
+#
+# netcat-openbsd is here for the OTHER healthchecks. The gateway answers HTTP, so
+# busybox's wget covers it, but miniredis speaks RESP2 -- a protocol wget cannot
+# probe -- and a compose `depends_on: condition: service_healthy` needs a probe
+# that actually opens the socket. This is the smallest way to get one; the
+# alternative (writing a tiny Go probe as a fourth command) is more code in the
+# repository and a fourth CONFIG.md-style doc entry for one boolean. Public
+# alpine images install this as a matter of routine.
+RUN apk add --no-cache ca-certificates netcat-openbsd
 
 # Non-root. The gateway needs no writable path of its own: the cache and the
 # quota counters live in Redis (or process memory), and traces go to stdout, an

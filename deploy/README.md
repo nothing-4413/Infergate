@@ -242,8 +242,28 @@ docker compose down                          # 收工（无 named volume，状�
   在容器里写 `127.0.0.1` 会指到网关自己，于是"缓存永远 miss、配额永远连不上"。
 * `configs/mock.yaml` / `cache-redis.yaml` / `quota-redis.yaml` —— 本机画像，保持 loopback 不变。
 
-镜像只有一个 `Dockerfile`，用 `--build-arg CMD=` 选择编译哪个 `cmd/`（网关 / mock 上游 / miniredis），
+镜像只有一个 `Dockerfile`，用 `--build-arg CMD=` 选择编译哪个 `cmd/`（网关 / mock 上游 / miniredis 三个都行），
 compose 的三个服务就是这么来的。构建细节写在 `Dockerfile` 顶部注释里。
+
+### 7.0 三个健康检查，以及为什么镜像里装了 netcat
+
+`depends_on` 用的是 `condition: service_healthy`，不是 `service_started`，这是一个真实的启动竞争：
+
+* 配额默认 **fail-closed**。网关读不到自己的存储时会**拒绝启动**，不是一个能慢慢重试的软失败。
+  容器"存在"不等于"能连"——miniredis 起来到监听 6399 之间有一个窗口，网关在这个窗口里启动就是起不来。
+* 所以三个服务各有一个探针，且都是"真的用那个协议敲一下"：
+
+| 服务 | 探针 | 为什么是它 |
+| --- | --- | --- |
+| `gateway` | `wget -qO- http://127.0.0.1:8080/readyz` | 强探针：路由表与两个 store 都就绪才算 healthy，不只是端口在听 |
+| `mockupstream` | `wget -qO- http://127.0.0.1:9000/v1/models` | mock 的 HTTP 面，与网关同一个套路 |
+| `miniredis` | `nc -z 127.0.0.1 6399` | **RESP2 协议不能用 wget 探**；打开 socket 再关掉是唯一简单的"在听"证据 |
+
+`netcat-openbsd` 就是为最后一行装的（`Dockerfile` 的 runtime 阶段）。替代方案是再写一个 `cmd/healthcheck`
+之类的探针程序，但那是"为了一个布尔值多一个命令、多一份文档、多一个 `configs/` 条目"，
+而 alpine 镜像里装 netcat 属于常规操作。**这一条没有被执行验证过**（守护进程没运行），
+判据很简单：`docker compose up -d` 之后 `docker compose ps` 里三个服务都应该是 `healthy`；
+只要 miniredis 卡在 `starting`，就说明 `nc -z` 在这个镜像里不可用。
 
 ### 7.1 这一节里被验证过、与没被验证过的
 

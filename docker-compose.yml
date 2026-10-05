@@ -40,10 +40,14 @@ services:
       # a container has no business writing into the repository.
       - ./configs:/app/configs:ro
     depends_on:
+      # service_started would be a race this gateway loses: with quota
+      # fail-closed (the default) a gateway that cannot reach its store refuses
+      # to start, so "the container exists" is not good enough for either of
+      # these. Both now report healthy.
       mockupstream:
-        condition: service_started
+        condition: service_healthy
       miniredis:
-        condition: service_started
+        condition: service_healthy
     healthcheck:
       # /readyz is the strong probe (routing table + stores), so "healthy" here
       # means "can actually serve", not just "the listener is up".
@@ -84,6 +88,13 @@ services:
       # Published so you can hit the upstream directly and compare with the
       # gateway path (the M5 bottleneck question: "is the gateway the limit?").
       - "${INFERGATE_MOCK_PORT:-19000}:9000"
+    healthcheck:
+      # The mock answers HTTP like the gateway, so this is the same probe.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9000/v1/models >/dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 3s
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
@@ -104,6 +115,17 @@ services:
       - "6399"
     ports:
       - "${INFERGATE_REDIS_PORT:-16399}:6399"
+    healthcheck:
+      # A RESP2 server cannot be probed with wget, so this opens the socket and
+      # closes it (netcat-openbsd, installed in the runtime stage for exactly
+      # this). Without it the gateway's service_healthy condition would have
+      # nothing to wait for -- and with quota fail-closed, a gateway that starts
+      # before its store is reachable refuses to start at all.
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 6399 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 3s
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
