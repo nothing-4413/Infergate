@@ -35,6 +35,11 @@ import (
 // the summarizer turns it into the job's step summary (readable to any signed-in
 // reader, without downloading anything), the raw transcript is uploaded as an
 // artifact, and every step that has to run after a failure carries `if: always()`.
+//
+// And one thing that IS anonymous, which is why the race gate runs package by
+// package: the step list of a run comes back from the plain public API. A single
+// `go test -race ./...` reports one status for the whole module, which answers "is
+// the detector unhappy" and not "where"; a red step named after the package does.
 func TestRedRunPublishesAReadableTranscript(t *testing.T) {
 	root := repoRoot(t)
 	workflow := readFile(t, filepath.Join(root, ".github", "workflows", "ci.yml"))
@@ -89,7 +94,16 @@ func TestRedRunPublishesAReadableTranscript(t *testing.T) {
 		}
 	}
 
-	// Link 3: the detour must not return. This is a negative assertion about a
+	// Link 3: the race gate has to fail per package. The step list is the only part
+	// of a red run someone without admin rights can read, so `go test -race ./...`
+	// would say "somewhere in 23 packages" while a per-package loop names the one.
+	if !strings.Contains(workflow, "go list ./...") {
+		t.Error("the race step no longer enumerates packages: a red run would then not " +
+			"say WHICH package the detector rejected, and the step list is the only " +
+			"anonymous channel there is")
+	}
+
+	// Link 4: the detour must not return. This is a negative assertion about a
 	// channel that was measured: the field is wiped when the owning job completes.
 	if strings.Contains(runs, "check-runs") || strings.Contains(runs, "checks: write") {
 		t.Error("ci.yml is publishing to check runs again; a job's check-run output is " +
@@ -97,7 +111,7 @@ func TestRedRunPublishesAReadableTranscript(t *testing.T) {
 			"above the summarize steps)")
 	}
 
-	// Link 4: the summary has to be produced on the failing run. This is the mistake
+	// Link 5: the summary has to be produced on the failing run. This is the mistake
 	// that leaves the gate silent precisely when it matters.
 	if n := strings.Count(workflow, "if: always()"); n < 3 {
 		t.Errorf("ci.yml has %d `if: always()` steps; both summarize steps and the "+

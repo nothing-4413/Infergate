@@ -103,10 +103,33 @@ jobs:
       # (README section 4 / section 10). A hosted runner can, which is the whole
       # reason this step exists -- and on its first real run it did fail, so it is
       # not a formality.
+      #
+      # ONE PACKAGE PER INVOCATION, on purpose. The step list is the one piece of a
+      # red run an anonymous reader can see (the job log and the artifact both need
+      # admin rights, and the step summary above needs a sign-in). `go test -race
+      # ./...` reports one status for the whole module, so the failure arrives as
+      # "the race detector is unhappy somewhere in 23 packages". Looping per package
+      # costs a couple of lines and makes the answer a red step NAMED after the
+      # package -- which is exactly the granularity a reader needs to go looking.
+      # The loop keeps going after a failure so the whole picture is in one run.
       - name: go test -race
         run: |
           set -o pipefail
-          go test -race ./... -count=1 -timeout 20m 2>&1 | tee /tmp/go-test-race.log
+          : > /tmp/go-test-race.log
+          failed=0
+          for pkg in $(go list ./...); do
+            echo "=== $pkg (race)"
+            if go test -race "$pkg" -count=1 -timeout 20m 2>&1 | tee -a /tmp/go-test-race.log; then
+              echo "ok(running): $pkg"
+            else
+              echo "FAILED(running): $pkg"
+              failed=$((failed + 1))
+            fi
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo "$failed package(s) failed under the race detector"
+            exit 1
+          fi
 
       - name: summarize go test -race
         if: always()

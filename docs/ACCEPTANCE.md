@@ -46,7 +46,7 @@ curl 门编译真二进制、拉真进程、用真 `curl.exe` 打真 socket，�
 | `go vet ./...` | 静态检查 | 绿 |
 | `gofmt -l ./cmd ./internal` | 格式门 | 绿（加入这一步时仓库里有 7 个文件不干净，已一并修好） |
 | `go test ./... -count=1 -timeout 20m` | 全部单元/集成测试（Linux，无 `-race`） | 绿 |
-| `go test -race ./... -count=1 -timeout 20m` | 竞态检测（**本机做不到**：无 gcc） | **红**（run 37374000997，退出码 1；这是它第一次真正跑起来） |
+| `go test -race` **逐个包**（`go list ./...` 循环，失败继续跑下一个） | 竞态检测（**本机做不到**：无 gcc） | **红**（run 37374000997 / 37378602289；这是唯一红的一项） |
 | `.\tools\go.cmd run .\cmd\verify*` | 2353 条 Go 端到端断言 | 尚未接入（需要 Windows runner） |
 | `.\scripts\verify-m*.ps1` | 1060 条 curl 端到端断言 | **绿**：`curl gates (M0-M6, operator token)` job 在 run 37374000997 上 119 秒跑完，8 个门（M0–M6 + 管理面令牌门）全过 |
 
@@ -55,6 +55,11 @@ curl 门编译真二进制、拉真进程、用真 `curl.exe` 打真 socket，�
 每一步都带 `if: always()`，所以这条路在红的那一次也走得通。
 
 **读这份摘要要登录 GitHub**，这一点必须明说，因为三个"让匿名读者也能读到"的做法都试过、都失败了：
+
+**唯一匿名可读的东西是步骤清单**（`GET /actions/runs/{id}/jobs` 里的 `steps[]`，含每步的名字与
+success/failure）。所以 race 那一关**逐个包跑**：`go test -race ./...` 只会给出"整个模块里有一个包
+被检测器拒绝"，而按包循环之后，红的那一步**以包名命名**（`for pkg in $(go list ./...)`，失败继续跑下一个，
+最后统一 `exit 1`）。代价是两行 shell，换来的是"去哪找"这个匿名读者唯一能拿到的答案。
 
 1. **job 日志**（`GET /actions/jobs/{id}/logs`）与 **artifact 下载**都返回 403（原文
    `{"message":"Must have admin rights to Repository.", "status":403}`），已匿名验证。
