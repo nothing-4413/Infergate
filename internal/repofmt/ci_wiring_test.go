@@ -101,6 +101,17 @@ func TestRedRunPublishesAReadableTranscript(t *testing.T) {
 		t.Error("the publisher builds its JSON without --rawfile; an interpolated " +
 			"transcript would break on the first quote or backslash in a Go stack trace")
 	}
+	// jq is optional and must stay optional. The publisher's first real run reported
+	// success while leaving output.summary empty: it demanded jq, jq was not there,
+	// and the step exited 0 without saying so publicly. The gh-only fallback is what
+	// makes it work on such a runner; dropping it empties the summary again.
+	if !strings.Contains(publish, "command -v jq") {
+		t.Error("the publisher no longer treats jq as optional; on a runner without " +
+			"it the step still exits 0 and publishes nothing")
+	}
+	if !strings.Contains(publish, "--raw-field") {
+		t.Error("the publisher lost the gh-only path that builds the JSON without jq")
+	}
 
 	// Link 4: publishing has to happen on the failing run. This is the mistake that
 	// leaves the gate silent precisely when it matters.

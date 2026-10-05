@@ -68,13 +68,11 @@ fi
 # This step publishes; it does not gate. Everything below therefore reports and
 # exits 0 rather than failing the job -- a broken publisher must not be able to turn
 # a passing test run red.
-for tool in gh jq; do
-    if ! command -v "$tool" > /dev/null; then
-        echo "$tool is not on this runner, so the check run cannot be updated; the"
-        echo "failure output is still in the step summary and the artifact ($(wc -c < "$combined") bytes)"
-        exit 0
-    fi
-done
+if ! command -v gh > /dev/null; then
+    echo "gh is not on this runner, so the check run cannot be updated; the"
+    echo "failure output is still in the step summary and the artifact ($(wc -c < "$combined") bytes)"
+    exit 0
+fi
 
 # The check run for THIS job. head_sha narrows it to this commit; if the API returns
 # more than one match, the name breaks the tie. The two variables are defaulted
@@ -86,11 +84,34 @@ id=$(gh api "repos/${repo}/commits/${sha}/check-runs" \
 if [ -z "$id" ]; then
     echo "could not find the check run named '${job}' for ${sha}; the step"
     echo "summary is still in the job UI ($(wc -c < "$combined") bytes)"
+    # This step's stdout is not readable without admin rights either, so put the
+    # facts where they are: an annotation on the check run, which the public API
+    # does serve. The first real run of this publisher reported success and left
+    # output.summary empty, and there was no way to tell whether it had published
+    # at all -- this is that way.
+    diag="repo=${repo} sha=${sha} job=${job} token=${GITHUB_TOKEN:+set}"
+    echo "diag: $diag"
+    gh api --method POST "repos/${repo}/check-runs/${id}/annotations" \
+        -f "path=.github/workflows/ci.yml" \
+        -f "start_line=1" -f "end_line=1" \
+        -f "annotation_level=warning" \
+        -f "message=publisher did not find its check run (${diag})" > /dev/null || true
     exit 0
 fi
 
-jq -n --rawfile summary "$truncated" --arg title "${job}" \
-    '{output: {title: $title, summary: $summary}}' \
-    | gh api --method PATCH "repos/${repo}/check-runs/${id}" --input - > /dev/null
+if command -v jq > /dev/null; then
+    # jq is the reliable way to put a multi-megabyte, quote-riddled Go stack trace
+    # into JSON. It is NOT a given: this publisher first ran green on ubuntu-24.04
+    # without it, because the emptiness check above only looked for gh.
+    jq -n --rawfile summary "$truncated" --arg title "${job}" \
+        '{output: {title: $title, summary: $summary}}' \
+        | gh api --method PATCH "repos/${repo}/check-runs/${id}" --input - > /dev/null
+else
+    # gh builds the JSON itself here. --raw-field handles newlines; it does not
+    # escape, so a transcript that jq would have encoded is still sent intact.
+    gh api --method PATCH "repos/${repo}/check-runs/${id}" \
+        -f "output[title]=${job}" \
+        --raw-field "output[summary]=$(cat "$truncated")" > /dev/null
+fi
 
 echo "published $(wc -c < "$truncated") bytes to check run ${id} (${job})"
