@@ -16,6 +16,16 @@
 # would go green on a red gate. Capturing into a variable keeps $LASTEXITCODE
 # intact, and the wrapper still exits with the gate's own code.
 #
+# WHY IT ALSO WRITES A MARKER. Every gate step in ci.yml sets
+# continue-on-error: true so that one red gate does not hide the other seven --
+# and GitHub documents what that flag costs: "When a continue-on-error step
+# fails, the outcome is failure, but the final conclusion is success." So this
+# step's exit code cannot fail the job, and the eight gates could all be red
+# while the run, the badge and the anonymous jobs API said success.
+# scripts/lib/summarize-gates.ps1 reads these markers and is the step that is
+# allowed to fail. A file is used because environment variables do not travel
+# between steps and a child process cannot write its parent's $GITHUB_OUTPUT.
+#
 # Usage:  scripts/lib/run-gate.ps1 -Path scripts\verify-m5.ps1 -Name m5
 param(
     [Parameter(Mandatory = $true)][string]$Path,
@@ -24,6 +34,7 @@ param(
 
 $repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $logPath = Join-Path $repo "tmp\$Name.log"
+$markerPath = Join-Path $repo "tmp\gate-$Name.exit"
 
 $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $Path 2>&1 | Out-String
 $code = $LASTEXITCODE
@@ -35,6 +46,11 @@ New-Item -ItemType Directory -Force -Path (Split-Path -Parent $logPath) | Out-Nu
 # WriteAllText rather than Out-File / Set-Content: those prefix a BOM, which turns
 # the first line of the copy into noise.
 [System.IO.File]::WriteAllText($logPath, $out, [System.Text.UTF8Encoding]::new($false))
+
+# The marker is written before the exit code is reported, and a failure to write
+# it is not swallowed: an absent marker counts as red downstream, which is the
+# safe direction for a gate.
+[System.IO.File]::WriteAllText($markerPath, "$code", [System.Text.UTF8Encoding]::new($false))
 
 if ($code -ne 0) {
     Write-Host ""

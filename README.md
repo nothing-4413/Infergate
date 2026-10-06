@@ -403,6 +403,17 @@ access:
   的「自动化的那一层」一节有完整取证与判据。
   - job 日志（`GET /actions/jobs/{id}/logs`）与 artifact 下载对匿名读者都是 **403**
     （`{"message":"Must have admin rights to Repository.", "status":403}`）。
+- **八个 curl 门都带 `continue-on-error: true`，所以它们自己从来不能让 job 变红**：job 里全是允许失败的
+  步骤，等于整条 Windows 验收链（1060 条断言）即使全红，job、run、徽章、匿名 jobs API 也都会报
+  `success`。GitHub 的定义就是针对这种情况写的（contexts 参考，`steps.<step_id>.conclusion`）：
+  *"When a `continue-on-error` step fails, the `outcome` is `failure`, but the final `conclusion` is
+  `success`."* 这个 flag 故意留着，因为它换来"一次红 run 报出全部八个门"；代价由新增的
+  `every gate must have passed` 步骤付掉——它是 job 里**唯一**不允许失败的一步，跑
+  `scripts/lib/summarize-gates.ps1`，读 `run-gate.ps1` 为每个门写的 `tmp\gate-<name>.exit` marker，
+  把"marker 缺失 / 内容不可解析 / 非 0"三种都判成红，并把失败门与日志尾部写进
+  `tmp\gate-failures.md`（随 artifact 上传）再 `exit 1`。钉住它的是 `internal/repofmt/curl_gates_test.go`：
+  `TestEveryCurlGateCanFailTheJob` 断言"八个门都带 flag、恰好一个 checker 不带、两份门名单完全一致"，
+  `TestSummarizeGatesFailsClosed` 真跑脚本核对五种情形下的退出码与摘要内容。
 - **测量不是容量承诺**：绝对 QPS 依赖这台主机、这个 mock 和这个客户端；带轮间噪声带的结论才算结论。
 - **云层在 M4 里是 stand-in**：分层路由的跨层延迟差是"本地真模型 + 本仓 mock"的差，不是与真实云 API 的对比。
 - **量化对比是 drift 不是精度**：AWQ/GPTQ 与 FP16 的输出差异以文本漂移度衡量，没有人工或自动评分。

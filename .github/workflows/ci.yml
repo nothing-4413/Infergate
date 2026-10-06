@@ -248,6 +248,21 @@ jobs:
   # into the step log makes the FAIL lines visible to anyone who can see the
   # repository. It captures instead of piping so $LASTEXITCODE survives, and the
   # step still reports the gate's own exit code.
+  #
+  # AND WHY THE LAST STEP OF THE JOB IS NOT ALLOWED TO FAIL-MASK. continue-on-error
+  # was bought at a price that was not obvious until it was looked up:
+  #
+  #   "When a continue-on-error step fails, the outcome is failure, but the final
+  #    conclusion is success."   -- contexts reference, steps.<step_id>.outcome
+  #
+  # So with the flag on all eight gate steps and no other step that can fail, all
+  # 1060 assertions could be red while the job, the run, the badge and the
+  # anonymous jobs API all said success. The flag stays, because all eight running
+  # is worth more than the first one failing loudly -- and the counterweight is
+  # the `every gate must have passed` step below, which is deliberately the only
+  # gate-related step WITHOUT the flag. Every gate writes tmp\gate-<name>.exit
+  # through the wrapper; that step reads them and fails the job if any is red or
+  # missing.
   curl-gates:
     name: curl gates (M0-M6, operator token)
     runs-on: windows-2022
@@ -315,10 +330,25 @@ jobs:
         working-directory: ${{ github.workspace }}
         continue-on-error: true
 
+      # The counterweight to the eight continue-on-error flags above, and the only
+      # gate-related step that does not carry one. Without it this job cannot fail:
+      # a continue-on-error step reports conclusion "success" even when it fails,
+      # so a fully red Windows suite would still be a green run and a green badge.
+      #
+      # Run with `if: always()` so it also covers the case where an earlier step
+      # never ran -- no marker counts as red, which is the direction that cannot
+      # produce a false green.
+      - name: every gate must have passed
+        if: always()
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\lib\summarize-gates.ps1 -Expect m0,m1,m2,m3,m4,m5,m6,hardening
+        working-directory: ${{ github.workspace }}
+
       # A failed gate leaves bin\ and tmp\ behind, and those logs are the only
       # place the FAIL lines are explained. Uploaded always, because with
       # continue-on-error above this step runs whether or not something red came
-      # before it, and a readable copy of each transcript is the point.
+      # before it, and a readable copy of each transcript is the point. The
+      # summary the step above writes is uploaded with them.
       - name: Upload gate logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -327,6 +357,7 @@ jobs:
           path: |
             tmp/*.log
             tmp/**.log
+            tmp/gate-failures.md
             docs/baseline/**.json
           if-no-files-found: ignore
           retention-days: 7

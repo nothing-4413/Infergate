@@ -49,11 +49,28 @@ curl 门编译真二进制、拉真进程、用真 `curl.exe` 打真 socket，�
 | `go test -race` **逐个包**（`go list ./...` 循环，失败继续跑下一个） | 竞态检测（本机配方见下） | **runner 绿**：run 37408647484 step 9 `go test -race` success（整个 job 2 分 28 秒）；本机同样 36 个包全绿（218 秒，0 条 `DATA RACE`） |
 | `.\tools\go.cmd run .\cmd\verify*` | 2353 条 Go 端到端断言 | 尚未接入（Linux job 跑不了；`windows-2022` 的 curl job 具备条件，但还没加步骤） |
 | `.\scripts\verify-m*.ps1` + `verify-hardening.ps1` | 1060 条 curl 端到端断言 + 44 条管理面令牌断言 | **绿**：`curl gates (M0-M6, operator token)` job 在 run 37408647484 上 1 分 55 秒跑完，9 个门（M0–M6 + operator token）全部 success |
+| `scripts/lib/summarize-gates.ps1`（job 内**唯一**不允许失败的一步） | 8 个门的 marker 文件都在且都写着 0 | 绿（本机 5 个用例全过；CI 上尚未跑过，见下） |
 | `scripts/verify-docker-profile.ps1` | 20 条容器画像断言（真二进制、真端口、真 miniredis） | 绿（本机 25 秒，见下「容器的证据边界」） |
 
 **这批结论是 run 37408647484（head `29ed38c`）的**，也就是修好 `ci.yml` 之后的第一个真正执行的 run：
 `GET /actions/runs/37408647484/jobs` 返回 2 个 job，两个都是 `success`，`GET /commits/29ed38c/check-runs`
 同样返回 2 条（匿名可读，`total_count: 2`）。步级结论对匿名读者可见，所以上面每一行都能被外部核对。
+
+**但步级结论要配一句话读。** 八个门步骤每一个都写着 `continue-on-error: true`，而 GitHub 对它的
+定义是：
+
+> The result of a completed step after continue-on-error is applied. … When a
+> `continue-on-error` step fails, the `outcome` is `failure`, but the final
+> `conclusion` is `success`. —— contexts 参考，`steps.<step_id>.conclusion`
+
+也就是说 **`steps[].conclusion` 对红门同样显示 `success`**。这个 flag 是故意留着的：它让一次红 run
+把八个门的结果都报出来，而不是停在第一个。代价是 job 自己没有会失败的步骤，所以必须有一个反制步骤
+——`every gate must have passed`，它跑 `scripts/lib/summarize-gates.ps1 -Expect m0,…,hardening`，
+**唯一**不带该 flag 的一步，靠读 `tmp\gate-<name>.exit`（`scripts/lib/run-gate.ps1` 写的 marker）来判：
+marker 缺失、内容不可解析、非 0，三种都算红，把失败门与日志尾部写进 `tmp\gate-failures.md` 再 `exit 1`。
+判据是那个步骤的结论，以及 `tmp\gate-failures.md`；`internal/repofmt` 的 `TestEveryCurlGateCanFailTheJob`
+把「八个门都带 flag + 恰好一个 checker 不带」钉在源码上，`TestSummarizeGatesFailsClosed` 则真跑脚本
+（本机 5 个用例：全绿 0、一门红 1、marker 缺失 1、marker 不可解析 1、`-Expect` 没点出任何门 1）。
 
 两个 `go test` 步骤把整份 transcript 写进 `/tmp`，再由 `scripts/ci-summarize-go-test.sh`
 捕出失败测试与**完整的 DATA RACE 报告**，写进一个分片文件（`/tmp/ci-summary-*.md`）。这个文件随后被
