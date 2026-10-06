@@ -456,5 +456,7 @@ access:
 - **`/admin/*` 与 `/stats` 默认不鉴权**：`access` 这一节提供了运营者令牌，但默认关闭（打开它会让本仓库
   全部 curl 验收脚本的凭证假设失效）。这意味着把网关绑到 0.0.0.0 而不加 `access.tokens`，等于把
   每个租户的花费和一个清缓存的按钮开放给任何能连上这个端口的人；启动日志会 Warn 提醒一次。
-  鉴权本身有两条链：Go 进程内 41 条单测，加 `scripts/verify-hardening.ps1`（真进程 + 真 curl，44 条，
-  已接进 CI 的 curl 门并跑绿）。详见 `docs/ACCEPTANCE.md` 的「管理面鉴权的证据边界」。
+  鉴权本身有两条链：Go 进程内 50 个检查点（`internal/server/access_test.go` 40 个 +
+  `internal/config/config_test.go` 的两个 access 用例 10 个），加 `scripts/verify-hardening.ps1`
+  （真进程 + 真 curl，44 条，已接进 CI 的 curl 门并跑绿）。详见 `docs/ACCEPTANCE.md` 的
+  「管理面鉴权的证据边界」。

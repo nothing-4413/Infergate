@@ -16,7 +16,7 @@ M4–M6 的验收与实测段落与各自的启动方式写在一起，见 [USAG
 | M5 可观测与压测 | 420 | 211 | `baseline/m5-summary.json`（+ 24 条逐轮文件） |
 | M6 幂等/账本/能力 | 381 | 149 | `baseline/m6-summary.json` |
 | **合计** | **2353** | **1068** | |
-| 管理面鉴权（`access`，不属任何里程碑） | 41 | 44 | 无（证据是 `scripts/verify-hardening.ps1` 的输出） |
+| 管理面鉴权（`access`，不属任何里程碑） | 50 | 44 | 无（证据是 `scripts/verify-hardening.ps1` 的输出） |
 
 M5 的 curl 门从 203 条变成 211 条，加的是 8 条解析器自检（`10.0a`–`10.0h`）：
 下面那五条只把 p50/p90/p95/p99/max 互相比较，而**一个恒定值满足其中每一条不等式**。
@@ -37,6 +37,12 @@ Windows PowerShell 5.1 读无 BOM 的 `.ps1` 时用机器代码页解码，那�
 `scripts/verify-hardening.ps1`，**真进程 + 真 curl + 44 条断言**，见下方「管理面鉴权的证据边界」。
 它的数字单独列成一行而不是并进合计——把一条 2026 年才加的安全门混进里程碑总数，
 会让"1068"这个从 M0 起就写在 README 里的数字变得不可对账。
+
+那一行的 Go 列数的是**检查点**（源码里 `t.Error*`/`t.Fatal*` 的调用点），不是执行到的断言：
+`cmd/verify*` 那套会打印自己跑了多少的计数器不覆盖它，而这张表里其余各行的 Go 数字都是它打印出来的。
+两个文件是 40 与 10，合起来 50——`internal/repofmt/accesscounts_test.go` 的
+`TestDocumentedAccessChecksMatchTheSource` 把上面这三处说法和源码对着核。这里原本写 41：
+两个文件都不是这个数，它也不等于任何一次执行的计数。
 
 两条路径相互独立：Go 门用进程内假上游跑得快、断言密度高；
 curl 门编译真二进制、拉真进程、用真 `curl.exe` 打真 socket，证的是“部署起来就是这样”。
@@ -280,8 +286,8 @@ Put/Get/Search，但**从没有人一边写一边读 Stats()**，而 /admin 正�
 
 ### 管理面鉴权（`access`）的证据边界
 
-两条独立链，和里程碑一样：Go 进程内（41 条断言，`internal/server/access_test.go` +
-`internal/config/config_test.go`）与真进程 + curl（44 条，`scripts/verify-hardening.ps1`）。
+两条独立链，和里程碑一样：Go 进程内（50 个检查点，`internal/server/access_test.go` 40 个 +
+`internal/config/config_test.go` 的两个 access 用例 10 个）与真进程 + curl（44 条，`scripts/verify-hardening.ps1`）。
 后者编译真二进制、起真网关、用真 `curl.exe`，是唯一能证明「401 真的会发出来」的那条链。
 
 | 说的事 | 证据 | 状态 |
