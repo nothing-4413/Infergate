@@ -55,8 +55,12 @@ func newRequestID() string {
 //
 // The reader goroutine owns resp.Body by contract: closing the body (by the
 // caller's defer, or by context cancellation propagated from the transport)
-// unblocks the read, closes frames, and lets the goroutine exit. Nothing is
-// leaked even when the client vanishes mid-stream.
+// unblocks the read, closes frames, and lets the goroutine exit. Both sends into
+// the frames channel are guarded by the request context, so neither of them can
+// outlive a client that has already hung up: the terminal error send matters
+// exactly as much as the frame send, because the loop that drains it may have
+// returned on cancellation the moment before it happened. Nothing is leaked even
+// when the client vanishes mid-stream.
 func (p *Proxy) relayStream(w http.ResponseWriter, r *http.Request, resp *http.Response, target *upstream.Target, rec *record) metrics.Outcome {
 	sw, err := sse.NewWriter(w)
 	if err != nil {
@@ -85,7 +89,13 @@ func (p *Proxy) relayStream(w http.ResponseWriter, r *http.Request, resp *http.R
 		for {
 			frame, err := reader.NextFrame()
 			if err != nil {
-				frames <- item{err: err}
+				// The terminal error is a send like any other: the loop that
+				// drains frames may already have returned on cancellation, so
+				// this cannot be an unconditional send.
+				select {
+				case frames <- item{err: err}:
+				case <-r.Context().Done():
+				}
 				return
 			}
 			select {
