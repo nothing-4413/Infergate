@@ -107,8 +107,18 @@ function Assert-That {
 }
 
 function Assert-Equal {
-    param([string]$Label, $Expected, $Actual)
-    Assert-True $Label ($Expected -eq $Actual) "expected '$Expected', got '$Actual'"
+    <#
+        $Extra is context for the failure line only, and it exists because six
+        call sites below hand one in. PowerShell does NOT reject an extra
+        positional argument to a simple function: it binds what it can and drops
+        the rest, so without this parameter "no process started by this script
+        survived it" printed "expected '0', got '1'" with no pid list -- the one
+        thing an operator needs to tell a real leak from a slow teardown.
+    #>
+    param([string]$Label, $Expected, $Actual, [string]$Extra = '')
+    $detail = "expected '$Expected', got '$Actual'"
+    if ($Extra) { $detail += "`n        $Extra" }
+    Assert-True $Label ($Expected -eq $Actual) $detail
 }
 
 function Assert-Contains {
@@ -1005,9 +1015,18 @@ while ($true) {
     Assert-True 'the report prices the request' ([double]$rep1.cost_today_micros -gt 0) "cost_today_micros=$($rep1.cost_today_micros)"
     Assert-Equal 'no session was named, so no session is reported' 0 ([double]$rep1.session_tokens)
 
+    # The gateway stamps a report with the UTC bucket it read the clock at, and
+    # this compares that stamp against the clock after a report round trip. Read
+    # the clock on both sides of the window and accept either bucket below: what
+    # is asserted is that the report names a bucket this probe actually crossed,
+    # not that the calendar stood still for the whole round trip.
+    $dayBefore = Get-DayBucket
+    $minuteBefore = Get-MinuteBucket
     $r2 = Send-ChatAs -Base $base -Tenant 'acme' -Prompt 'allow path probe two' -Tag 'm3-allow-2'
     Assert-Equal 'a second funded request is admitted' 200 $r2.Status
     $rep2 = (Get-QuotaReport -Base $base -Tenant 'acme').report
+    $dayAfter = Get-DayBucket
+    $minuteAfter = Get-MinuteBucket
     Assert-True 'tokens_today rises between requests' ([double]$rep2.tokens_today -gt [double]$rep1.tokens_today) `
         "before=$($rep1.tokens_today) after=$($rep2.tokens_today)"
     Assert-True 'cost_today_micros rises between requests' ([double]$rep2.cost_today_micros -gt [double]$rep1.cost_today_micros) `
@@ -1017,8 +1036,12 @@ while ($true) {
     # the clock rather than about the gateway.
     Assert-True 'the minute window counted this run''s traffic' ([double]$rep2.requests_this_minute -ge 1) `
         "requests_this_minute=$($rep2.requests_this_minute)"
-    Assert-Equal 'the reported day is the UTC day the keys are bucketed by' (Get-DayBucket) ([string]$rep2.day)
-    Assert-Equal 'the reported minute is the UTC minute the keys are bucketed by' (Get-MinuteBucket) ([string]$rep2.minute)
+    Assert-True 'the reported day is a UTC day this probe crossed' `
+        (@($dayBefore, $dayAfter) -contains [string]$rep2.day) `
+        "reported=$($rep2.day) before=$dayBefore after=$dayAfter"
+    Assert-True 'the reported minute is a UTC minute this probe crossed' `
+        (@($minuteBefore, $minuteAfter) -contains [string]$rep2.minute) `
+        "reported=$($rep2.minute) before=$minuteBefore after=$minuteAfter"
 
     # The mock's own log is the witness that a provider process was really
     # called: the gateway cannot write into it.
@@ -1261,15 +1284,24 @@ while ($true) {
     Assert-Equal 'miniredis still answers PING' 'PONG' (Invoke-Redis -Port $MiniredisPort -Command @('PING'))
     Assert-True 'the redis keyspace is not empty' ([int](Invoke-Redis -Port $MiniredisPort -Command @('DBSIZE')) -gt 0)
 
-    # The bucket names come from /admin/quota's own report, NOT from the clock.
-    # If the UTC minute (or day) were to roll between the two reads, a freshly
-    # computed bucket would name a different key than the one the report read and
-    # the equality assertion would fail on a race rather than on a product bug.
+    # The bucket names come from /admin/quota's own report, NOT from the clock, so
+    # the keys read below are the keys the report just described. The two
+    # assertions after it only ask that the report's bucket is one this probe
+    # crossed: the clock is read on both sides of the report fetch, so a UTC
+    # minute (or day) that rolls mid-probe is a non-event instead of a red gate.
+    $redisDayBefore = Get-DayBucket
+    $redisMinuteBefore = Get-MinuteBucket
     $report9 = (Get-QuotaReport -Base $redisBase -Tenant $redisTenant).report
+    $redisDayAfter = Get-DayBucket
+    $redisMinuteAfter = Get-MinuteBucket
     $day = [string]$report9.day
     $minute = [string]$report9.minute
-    Assert-Equal 'the report dates the day window' (Get-DayBucket) $day
-    Assert-Equal 'the report dates the minute window' (Get-MinuteBucket) $minute
+    Assert-True 'the report dates the day window' `
+        (@($redisDayBefore, $redisDayAfter) -contains $day) `
+        "reported=$day before=$redisDayBefore after=$redisDayAfter"
+    Assert-True 'the report dates the minute window' `
+        (@($redisMinuteBefore, $redisMinuteAfter) -contains $minute) `
+        "reported=$minute before=$redisMinuteBefore after=$redisMinuteAfter"
     $keyTokens = Get-QuotaKey -Tenant $redisTenant -Window 'day' -Bucket $day -Counter 'tokens'
     $keyCost = Get-QuotaKey -Tenant $redisTenant -Window 'day' -Bucket $day -Counter 'cost_micros'
     $keyMinute = Get-QuotaKey -Tenant $redisTenant -Window 'minute' -Bucket $minute -Counter 'requests'

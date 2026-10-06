@@ -507,6 +507,24 @@ M2 的取舍与已知边界（同样写在代码注释里）：
 | 预扣准确度实测 | 12 请求：reserved 2872 / settled 320 / released 2608 / overshoot 56 tokens，恒等式成立 | 同上 `accuracy` |
 | 故障实测 | fail-closed 20/20 503 且上游 0 调用；重启 store 后同进程 10/10 恢复 | 同上 `fail_closed`、`fail_open` |
 
+`scripts/verify-m3.ps1` 修过两处**不报告错误**的问题，判定口径一条没变，所以上表仍是 323/323：
+
+1. **失败细节被 PowerShell 静默丢弃**：`Assert-Equal` 原来只声明 `($Label, $Expected, $Actual)`，但有 6 个
+   调用点多递了一个细节串——清理断言那句 `no process started by this script survived it` 的 pid 列表、
+   四处 `… never reached the provider` 的 before/after 计数、以及派生配置那次发现的变量清单。
+   PowerShell 对简单函数的多余位置实参**不报错、直接丢掉**，于是清理断言红了也只会打印
+   `expected '0', got '1'`，而 pid 列表——判断"真泄漏还是慢清理"唯一有用的东西——从来没到过操作员眼前。
+   现在 `Assert-Equal` 声明 `[string]$Extra = ''` 并把它接在失败行后。证据：把 `$alive` 变异成
+   `@(Get-TrackedProcess) + @(Get-Process -Id $PID)` 后重跑，`RESULT: 322 passed, 1 FAILED`，失败行首次
+   带出 `powershell pid=109776`；还原后的文件 SHA256 与变异前一致。
+   `internal/repofmt/asserts_test.go` 的 `TestAssertionCallsDoNotOutrunTheirHelpers` 钉住这一类：它按**每个
+   脚本自己**的 `Assert-*` 声明数核对调用点的位置实参个数（带 `-命名` 参数的调用跳过），判定 1260 个调用
+   点、39 个声明；把 `Assert-Equal` 改回 3 参即恰好报出那 6 处。
+2. **桶名断言本来会跨 UTC 边界误红**：报告里的 `day`/`minute` 是网关读时钟时算出的桶（`internal/quota` 的
+   `dayBucket`/`minuteBucket`），而断言是再读一次 `Get-DayBucket`/`Get-MinuteBucket` 比相等——两次读之间
+   跨过一次 UTC 分钟（窗口只有几十毫秒）就会红在时钟上、不是红在产品上。现在两次时钟读数夹住报告请求，
+   断言改成"报告的桶是这次探测跨过的桶之一"，两处（内存段与 Redis 段）同形。
+
 M3 的取舍与已知边界（同样写在代码注释里）：
 
 1. **日预算是 UTC 天**：`untilDayEnd` 先转 UTC，所以 UTC+8 的机器上本地 08:00 重置。跨时区团队
