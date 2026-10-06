@@ -106,7 +106,9 @@ sleep 这么多（健康探针不受影响），因此每个被测请求都真�
 run 37413713212 的 `go verify gates (M0-M6)` 步骤 success 说明这一包在 runner 上也是绿的。
 
 两个 `go test` 步骤把整份 transcript 写进 `/tmp`，再由 `scripts/ci-summarize-go-test.sh`
-捕出失败测试与**完整的 DATA RACE 报告**，写进一个分片文件（`/tmp/ci-summary-*.md`）。这个文件随后被
+捕出失败测试与**完整的 DATA RACE 报告**，写进一个分片文件（`/tmp/ci-summary-*.md`）。普通失败的
+**原因行**（go test 在 `FAIL` 下面缩进打印的 `script_test.go:462: snapshot = ...`）同样保留——
+run 37414903323 的摘要当时只说了哪个测试红、没说为什么，过滤器就是原因。这个文件随后被
 **读两次、内容完全相同**：append 进该 job 的 **step summary**（`$GITHUB_STEP_SUMMARY`，登录可读），
 并由 `scripts/ci-publish-failure-check.sh` **创建一个自己的 check run** 写进它的 `output.summary`（**匿名可读**）。
 每一步都带 `if: always()` / `if: failure()`，所以这条路在红的那一次也走得通。
@@ -121,11 +123,23 @@ curl -s https://api.github.com/repos/nothing-4413/Infergate/commits/<sha>/check-
 就是失败测试名与 race 报告。这是 run 37379724217 测定出来的：**创建一个 check run** 与
 **修改 GitHub 为本 job 创建的那个 check run** 是两回事，后者会被回收。
 
-**这条通路本身仍未在真实 CI 上触发过，但原因不再是阻塞，而是没人红过**：修好 YAML 之后的第一个
-run（37408647484）两个 job 全绿，`publish the failure summary where anonymous readers can reach it`
-这一步按设计是 `skipped`（它只在失败时跑）。钉住这条通路的是 `internal/repofmt` 的
-`TestRedRunPublishesAReadableTranscript`（断言接线存在）与 run 37379724217 上的一次真实 POST 探测
-（`summary_len=28`）——**而不是这个 run**。要拿到它的端到端证据，需要下一个失败的 run。
+**这条通路已经在一次真实红 run 上端到端成立**：run **37414903323**（head `97dade6`，2026-10-06T04:41:33Z）
+的 `curl gates` job 十四个步骤全 success（九个门 + 反制步骤），而 `build / vet / test / race` job 的
+step 7 `go test` failure、step 9 `go test -race` **skipped**、step 11
+`publish the failure summary where anonymous readers can reach it` **success**。匿名
+`GET /commits/97dade6/check-runs` 返回 **3** 条，其中 id `112111519009`、名为
+`ci failure: build / vet / test / race` 的那条带 `output.summary`，正文里是
+`--- FAIL: TestDropClosesWithoutAResponse (0.00s)`、`FAIL github.com/infergate/infergate/cmd/mockupstream 0.038s`
+以及其余 21 包的 `ok` 行——**这就是当初那个判据**（`output.summary` 非空且能匿名读到）。在这之前
+这里写的是"这条通路本身仍未在真实 CI 上触发过，原因不再是阻塞，而是没人红过"；现在它红过了。
+
+那次红暴露的两处问题都修了：摘要丢掉失败原因行（见上），以及
+`TestDropClosesWithoutAResponse` 读计数器是**无序读**——`cmd/mockupstream/main.go:311` 的
+`defer cw.record()` 在 `cmd/mockupstream/script.go` 那份 drop 路径 `hijack` + `conn.Close()` **之后**
+才记账，客户端观察到连接断掉并不等于服务端已经记完，而 `script_test.go` 是同步读 `/calls`（无网络往返）。
+断言值没变（`calls=1 dropped=1 failed=0`），只是改成在 2 秒内轮询等待；本机连跑 300 次（含 `-race`）
+仍是绿的，所以这条修复的依据是代码里的先后顺序，不是本机复现。如果下一次 Linux 红 run 给出的是
+另一条原因行（例如"want a transport error, got status 200"），那说明还有第二个缺陷，而新摘要会直接说出来。
 
 在它变成"从未执行"之前，这里曾经写的是"GitHub 侧的一次异常"：从 run 37380607350（head `760c303`）
 起，`GET /actions/runs/{id}/jobs` 与 `GET /commits/{sha}/check-runs` 都返回 `total_count: 0`，而更早的
@@ -171,10 +185,10 @@ run: bash scripts/ci-publish-failure-check.sh "$CHECK_TITLE" /tmp/ci-summary-tes
 **修复已由一次真实 run 判定**：push `29ed38c` 之后 run **37408647484** 的 `name` 重新变回 `ci`，
 `GET /actions/runs/37408647484/jobs` 返回 **2 个 job**（`build / vet / test / race` 与
 `curl gates (M0-M6, operator token)`），两个都 `success`，匿名 `check-runs` 接口同样返回 2 条——
-也就是说 `760c303` 之后第一次真的跑了东西，而且跑绿了。剩下的唯一未验证点收窄成：relay 那一步只在
-红的时候执行，而这个 run 是绿的，所以**"红的时候 check run 真会被创建"仍待下一个失败的 run 来证明**
-（判据：`GET /commits/{sha}/check-runs` 里出现名为 `ci failure: build / vet / test / race` 的条目且
-`output.summary` 非空）。
+也就是说 `760c303` 之后第一次真的跑了东西，而且跑绿了。当时剩下的唯一未验证点是"relay 那一步只在红的
+时候执行，所以红的时候 check run 是否真会被创建仍待一个失败的 run"——run 37414903323 就是那个 run，
+判据（`GET /commits/{sha}/check-runs` 里出现名为 `ci failure: build / vet / test / race` 的条目且
+`output.summary` 非空）已由它满足，见上文。
 
 **为什么 race 那一项有把握说是绿了**：它在 runner 上红，而本机普通 `go test` 全绿、连 `-count=3`
 都无抖动。第一轮修的是两处**测试代码**的共享计数器——`internal/embed/embed_test.go` 的

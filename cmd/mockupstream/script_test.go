@@ -459,8 +459,22 @@ func TestDropClosesWithoutAResponse(t *testing.T) {
 	if resp != nil {
 		t.Fatalf("want no response, got %+v", resp.Status)
 	}
-	if snap := callSnapshotBody(t, s); snap.Calls != 1 || snap.Dropped != 1 || snap.Failed != 0 {
-		t.Fatalf("snapshot = %+v, want calls=1 dropped=1 failed=0", snap)
+	// The counters move in the handler's deferred record(), which runs after the
+	// hijacked socket is already closed: coming back from the failed POST only
+	// proves the client saw the close, not that the server has counted it yet.
+	// Reading /calls once therefore tests the machine's scheduling as much as the
+	// mock -- run 37414903323 failed on this line at 0.00s on Linux while thirty
+	// runs of it pass here. Wait for the count; the values asserted are unchanged.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		snap := callSnapshotBody(t, s)
+		if snap.Calls == 1 && snap.Dropped == 1 && snap.Failed == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("snapshot = %+v, want calls=1 dropped=1 failed=0 after 2s", snap)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

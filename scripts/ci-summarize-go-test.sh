@@ -19,6 +19,13 @@
 # actionable as the pair of accesses that raced plus the state they shared, and
 # that is exactly the part a line-matching filter throws away.
 #
+# The same argument applies to an ordinary failure, whose reason is the indented
+# line under the FAIL: "script_test.go:455: want a transport error, got status
+# 200". A filter on the FAIL line alone publishes which test broke and not why,
+# which is what run 37414903323 published -- the reader could see
+# TestDropClosesWithoutAResponse fail at 0.00s and nothing else. Both shapes are
+# kept now.
+#
 # Usage: ci-summarize-go-test.sh <logfile> <summaryfile> <title>
 set -uo pipefail
 
@@ -45,6 +52,10 @@ title=${3:-go test}
     # evidence a race report exists to carry. A panic has no rule, so a blank line
     # ends that block, and the two flags keep the single blank the detector itself
     # prints between the banner and the frames from ending it.
+    #
+    # `file.go:NNN:` is the reason line go test prints under a FAIL (and under
+    # t.Log). It is matched last, after the report block, so it cannot pull an
+    # indented frame back in after a report has ended.
     matched=$(
         awk '
             /WARNING: DATA RACE|^DATA RACE/ || /^panic:|panic: / {
@@ -56,7 +67,8 @@ title=${3:-go test}
                 blank = 1; print; next
             }
             inside { blank = 0; print; next }
-            /^(FAIL|ok|===|---)[[:space:]]/ || /[[:space:]]--- / { print }
+            /^(FAIL|ok|===|---)[[:space:]]/ || /[[:space:]]--- / { print; next }
+            /^[[:space:]]+[A-Za-z0-9_][A-Za-z0-9_./-]*\.go:[0-9]+:/ { print }
         ' "$log"
     )
 

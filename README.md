@@ -387,7 +387,12 @@ access:
   check-runs 的 `output.summary`；`PATCH` 本 job 自己的 check run 返回 2xx 但 job 一结束字段即被清空
   （run 37377940124 测定）。唯一活下来的是 `scripts/ci-publish-failure-check.sh` 用
   `POST /check-runs` 建一个**自己的** check run——"创建"与"修改"是两回事，自己创建的不会被回收
-  （run 37379724217 的探测证实）；它只在失败时执行，所以还没被一次真实的红 run 验证过。
+  （run 37379724217 的探测证实）；它只在失败时执行，**而它已经红过一次真的**：run 37414903323（head `97dade6`）
+  的 `build / vet / test / race` job 在 `go test` 步失败（`TestDropClosesWithoutAResponse`），
+  匿名 `GET /commits/97dade6/check-runs` 里就多出一条名为 `ci failure: build / vet / test / race` 的
+  check run，`output.summary` 是那份失败摘要。同一批还修了它读不出的两件事：摘要当时只保留
+  `FAIL` 行、把 go test 缩进打印的原因行过滤掉了（现在留 `file.go:NNN:` 形状的行），以及那个测试
+  读 `/calls` 计数器是无序读（计数器在 `defer` 里、hijack 的 socket 关掉之后才更新，现在改成 2 秒内轮询）。
 - **从 `760c303` 起的六个提交其实什么都没跑，原因不是 GitHub，是 `ci.yml` 本身不是合法 YAML**：
   那个提交把一个含"冒号加空格"的标题直接写在了 `run:` 的裸标量里
   （`run: bash ... "ci failure: build / vet / test / race" ...`），YAML 裸标量不允许这样写，
