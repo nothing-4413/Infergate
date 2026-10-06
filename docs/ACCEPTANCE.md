@@ -145,6 +145,12 @@ step 7 `go test` failure、step 9 `go test -race` **skipped**、step 11
 失败测试名、它下面那行原因、包行与完整 race 报告，同时不含"没有结果的日志行"（此前只有字符串检查：
 `ci_wiring_test.go` 只断言脚本里还有 `DATA RACE` 字样）。它在没有 `bash`/`awk` 时 skip，Linux runner 两样都有。
 
+**修完之后的两次 run（37416449896 / head `3716f18`、37416672028 / head `b45e601`）两个 job 全 success**，
+其中 `build / vet / test / race` job 的 step 7 `go test` 与 step 9 `go test -race` 都是 success——
+也就是说这个过滤器测试真的在 Linux runner 上跑了（它没有 skip），`TestDropClosesWithoutAResponse`
+的轮询断言也在那里绿了；`curl gates` job 的十四个步骤（九个门 + `every gate must have passed` + 上传）
+同样全 success。
+
 在它变成"从未执行"之前，这里曾经写的是"GitHub 侧的一次异常"：从 run 37380607350（head `760c303`）
 起，`GET /actions/runs/{id}/jobs` 与 `GET /commits/{sha}/check-runs` 都返回 `total_count: 0`，而更早的
 run 37374000997 / 37377940124 / 37379724217 仍分别返回 2 / 3 / 4 个 job；同一批 run 的 `name` 也从

@@ -393,6 +393,8 @@ access:
   check run，`output.summary` 是那份失败摘要。同一批还修了它读不出的两件事：摘要当时只保留
   `FAIL` 行、把 go test 缩进打印的原因行过滤掉了（现在留 `file.go:NNN:` 形状的行），以及那个测试
   读 `/calls` 计数器是无序读（计数器在 `defer` 里、hijack 的 socket 关掉之后才更新，现在改成 2 秒内轮询）。
+  修完后的 run 37416449896（head `3716f18`）与 37416672028（head `b45e601`）两个 job 全 `success`，
+  含 Linux 上 `go test` / `go test -race` 两步与 `curl gates` 的十四个步骤。
 - **从 `760c303` 起的六个提交其实什么都没跑，原因不是 GitHub，是 `ci.yml` 本身不是合法 YAML**：
   那个提交把一个含"冒号加空格"的标题直接写在了 `run:` 的裸标量里
   （`run: bash ... "ci failure: build / vet / test / race" ...`），YAML 裸标量不允许这样写，
