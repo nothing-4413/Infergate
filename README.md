@@ -413,7 +413,9 @@ access:
   把"marker 缺失 / 内容不可解析 / 非 0"三种都判成红，并把失败门与日志尾部写进
   `tmp\gate-failures.md`（随 artifact 上传）再 `exit 1`。钉住它的是 `internal/repofmt/curl_gates_test.go`：
   `TestEveryCurlGateCanFailTheJob` 断言"八个门都带 flag、恰好一个 checker 不带、两份门名单完全一致"，
-  `TestSummarizeGatesFailsClosed` 真跑脚本核对五种情形下的退出码与摘要内容。
+  `TestSummarizeGatesFailsClosed` 真跑脚本核对五种情形下的退出码与摘要内容。这条步骤的绿路径已在 run
+  37410701867（head `e248c7a`）上走过（13 个步骤里第 12 步 `every gate must have passed` = success），
+  红路径只有本机证据——在 runner 上制造一次红门会让那次 run 的其余结论一起作废。
 - **测量不是容量承诺**：绝对 QPS 依赖这台主机、这个 mock 和这个客户端；带轮间噪声带的结论才算结论。
 - **云层在 M4 里是 stand-in**：分层路由的跨层延迟差是"本地真模型 + 本仓 mock"的差，不是与真实云 API 的对比。
 - **量化对比是 drift 不是精度**：AWQ/GPTQ 与 FP16 的输出差异以文本漂移度衡量，没有人工或自动评分。
