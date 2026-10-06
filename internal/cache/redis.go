@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/infergate/infergate/internal/embed"
@@ -45,7 +46,24 @@ type RedisStore struct {
 	prefix string
 	opts   RedisOptions
 	now    func() time.Time
-	stats  StoreStats
+
+	// mu guards stats. Every request goroutine touches the counters, so they are
+	// not the private property of one caller: without this, a concurrent Get and
+	// Search race on the same word (the race detector says exactly that, at
+	// Get's first increment). The memory store has always locked its stats; this
+	// one was missed because the Redis client's own pool is concurrency-safe,
+	// which makes everything around it look concurrency-safe too.
+	mu    sync.Mutex
+	stats StoreStats
+}
+
+// bump applies one counter change under the lock. Counter arithmetic is spread
+// over nineteen call sites, so a helper keeps the guard impossible to forget at
+// a new one.
+func (s *RedisStore) bump(f func(st *StoreStats)) {
+	s.mu.Lock()
+	f(&s.stats)
+	s.mu.Unlock()
 }
 
 // RedisOptions configures a RedisStore.
@@ -129,7 +147,9 @@ func (s *RedisStore) Client() *redis.Client { return s.cli }
 // folded in as Errors, because from an operator's point of view "the cache is
 // not answering" is one number.
 func (s *RedisStore) Stats() StoreStats {
+	s.mu.Lock()
 	out := s.stats
+	s.mu.Unlock()
 	out.Errors += s.cli.Stats().Errors
 	return out
 }
@@ -140,10 +160,10 @@ func (s *RedisStore) Close() error { return s.cli.Close() }
 // Get reads one entry and drops it if its TTL passed (so the store is
 // self-healing even when nobody runs a sweep).
 func (s *RedisStore) Get(ctx context.Context, scope, key string) (Entry, bool, error) {
-	s.stats.Gets++
+	s.bump(func(st *StoreStats) { st.Gets++ })
 	reply, err := s.cli.Do(ctx, "HGET", s.metaKey(scope), key)
 	if err != nil {
-		s.stats.Errors++
+		s.bump(func(st *StoreStats) { st.Errors++ })
 		return Entry{}, false, err
 	}
 	if reply.Null {
@@ -151,7 +171,7 @@ func (s *RedisStore) Get(ctx context.Context, scope, key string) (Entry, bool, e
 	}
 	e, err := decodeEntry(reply.Str)
 	if err != nil {
-		s.stats.Errors++
+		s.bump(func(st *StoreStats) { st.Errors++ })
 		// A corrupt value is treated as a miss, but it is also deleted: leaving
 		// it would make every future lookup for this prompt pay the parse.
 		_, _ = s.Delete(ctx, scope, key)
@@ -159,7 +179,7 @@ func (s *RedisStore) Get(ctx context.Context, scope, key string) (Entry, bool, e
 	}
 	if e.Expired(s.now()) {
 		_, _ = s.Delete(ctx, scope, key)
-		s.stats.Expired++
+		s.bump(func(st *StoreStats) { st.Expired++ })
 		return Entry{}, false, nil
 	}
 	// The vector is a separate field; without it the entry can only ever be an
@@ -186,7 +206,7 @@ func (s *RedisStore) Put(ctx context.Context, e Entry, ttl time.Duration) error 
 	stored.Vector = nil
 	blob, err := json.Marshal(stored)
 	if err != nil {
-		s.stats.Errors++
+		s.bump(func(st *StoreStats) { st.Errors++ })
 		return err
 	}
 
@@ -213,10 +233,10 @@ func (s *RedisStore) Put(ctx context.Context, e Entry, ttl time.Duration) error 
 	}
 
 	if _, err := s.cli.Pipeline(ctx, cmds); err != nil {
-		s.stats.Errors++
+		s.bump(func(st *StoreStats) { st.Errors++ })
 		return err
 	}
-	s.stats.Puts++
+	s.bump(func(st *StoreStats) { st.Puts++ })
 	return s.trim(ctx, scope)
 }
 
@@ -224,7 +244,7 @@ func (s *RedisStore) Put(ctx context.Context, e Entry, ttl time.Duration) error 
 func (s *RedisStore) trim(ctx context.Context, scope string) error {
 	reply, err := s.cli.Do(ctx, "ZCARD", s.idxKey(scope))
 	if err != nil {
-		s.stats.Errors++
+		s.bump(func(st *StoreStats) { st.Errors++ })
 		return err
 	}
 	over := int(reply.Int) - s.opts.MaxEntriesPerScope
@@ -236,7 +256,7 @@ func (s *RedisStore) trim(ctx context.Context, scope string) error {
 	// payload behind forever (a leak that would only show up as Redis memory).
 	victims, err := s.cli.Do(ctx, "ZRANGE", s.idxKey(scope), "0", strconv.Itoa(over-1))
 	if err != nil {
-		s.stats.Errors++
+		s.bump(func(st *StoreStats) { st.Errors++ })
 		return err
 	}
 	members, err := victims.Strings()
@@ -254,10 +274,10 @@ func (s *RedisStore) trim(ctx context.Context, scope string) error {
 	}
 	if len(cmds) > 0 {
 		if _, err := s.cli.Pipeline(ctx, cmds); err != nil {
-			s.stats.Errors++
+			s.bump(func(st *StoreStats) { st.Errors++ })
 			return err
 		}
-		s.stats.Evicted += int64(len(members))
+		s.bump(func(st *StoreStats) { st.Evicted += int64(len(members)) })
 	}
 	return nil
 }
@@ -270,24 +290,24 @@ func (s *RedisStore) Search(ctx context.Context, scope string, vec []float32, th
 		// everything whose similarity happens to equal the threshold.
 		return nil, nil
 	}
-	s.stats.Searches++
+	s.bump(func(st *StoreStats) { st.Searches++ })
 	if err := s.pruneExpired(ctx, scope); err != nil {
 		return nil, err
 	}
 	reply, err := s.cli.Do(ctx, "HGETALL", s.vecKey(scope))
 	if err != nil {
-		s.stats.Errors++
+		s.bump(func(st *StoreStats) { st.Errors++ })
 		return nil, err
 	}
 	flat, err := reply.Strings()
 	if err != nil {
-		s.stats.Errors++
+		s.bump(func(st *StoreStats) { st.Errors++ })
 		return nil, err
 	}
 	if len(flat)/2 > s.opts.MaxScan {
 		// Not fatal: the scan still runs, but the number is recorded so the
 		// cost is visible rather than surprising.
-		s.stats.Errors++
+		s.bump(func(st *StoreStats) { st.Errors++ })
 	}
 	type cand struct {
 		key string
@@ -296,7 +316,7 @@ func (s *RedisStore) Search(ctx context.Context, scope string, vec []float32, th
 	cands := make([]cand, 0, len(flat)/2)
 	for i := 0; i+1 < len(flat); i += 2 {
 		key, blob := flat[i], flat[i+1]
-		s.stats.Scanned++
+		s.bump(func(st *StoreStats) { st.Scanned++ })
 		v, derr := embed.DecodeVector(blob)
 		if derr != nil || len(v) == 0 {
 			continue
@@ -333,7 +353,7 @@ func (s *RedisStore) pruneExpired(ctx context.Context, scope string) error {
 	now := strconv.FormatInt(s.now().UnixMilli(), 10)
 	reply, err := s.cli.Do(ctx, "ZRANGEBYSCORE", s.expKey(scope), "-inf", now)
 	if err != nil {
-		s.stats.Errors++
+		s.bump(func(st *StoreStats) { st.Errors++ })
 		return err
 	}
 	members, err := reply.Strings()
@@ -350,16 +370,16 @@ func (s *RedisStore) pruneExpired(ctx context.Context, scope string) error {
 		)
 	}
 	if _, err := s.cli.Pipeline(ctx, cmds); err != nil {
-		s.stats.Errors++
+		s.bump(func(st *StoreStats) { st.Errors++ })
 		return err
 	}
-	s.stats.Expired += int64(len(members))
+	s.bump(func(st *StoreStats) { st.Expired += int64(len(members)) })
 	return nil
 }
 
 // Delete removes one entry from all four keys.
 func (s *RedisStore) Delete(ctx context.Context, scope, key string) (bool, error) {
-	s.stats.Deletes++
+	s.bump(func(st *StoreStats) { st.Deletes++ })
 	replies, err := s.cli.Pipeline(ctx, [][]string{
 		{"HDEL", s.metaKey(scope), key},
 		{"HDEL", s.vecKey(scope), key},
@@ -367,7 +387,7 @@ func (s *RedisStore) Delete(ctx context.Context, scope, key string) (bool, error
 		{"ZREM", s.expKey(scope), key},
 	})
 	if err != nil {
-		s.stats.Errors++
+		s.bump(func(st *StoreStats) { st.Errors++ })
 		return false, err
 	}
 	if len(replies) == 0 {
@@ -380,18 +400,18 @@ func (s *RedisStore) Delete(ctx context.Context, scope, key string) (bool, error
 // the scope registry, which is why the registry exists: there is no cheap way
 // to enumerate "ig:cache:*:meta" without KEYS, and KEYS blocks Redis.
 func (s *RedisStore) Flush(ctx context.Context, scope string) (int, error) {
-	s.stats.Flushes++
+	s.bump(func(st *StoreStats) { st.Flushes++ })
 	if scope != "" {
 		return s.flushScope(ctx, scope)
 	}
 	reply, err := s.cli.Do(ctx, "ZRANGE", s.scopesKey(), "0", "-1")
 	if err != nil {
-		s.stats.Errors++
+		s.bump(func(st *StoreStats) { st.Errors++ })
 		return 0, err
 	}
 	scopes, err := reply.Strings()
 	if err != nil {
-		s.stats.Errors++
+		s.bump(func(st *StoreStats) { st.Errors++ })
 		return 0, err
 	}
 	total := 0
@@ -408,7 +428,7 @@ func (s *RedisStore) Flush(ctx context.Context, scope string) (int, error) {
 func (s *RedisStore) flushScope(ctx context.Context, scope string) (int, error) {
 	card, err := s.cli.Do(ctx, "ZCARD", s.idxKey(scope))
 	if err != nil {
-		s.stats.Errors++
+		s.bump(func(st *StoreStats) { st.Errors++ })
 		return 0, err
 	}
 	if _, err := s.cli.Pipeline(ctx, [][]string{
@@ -418,7 +438,7 @@ func (s *RedisStore) flushScope(ctx context.Context, scope string) (int, error) 
 		{"DEL", s.expKey(scope)},
 		{"ZREM", s.scopesKey(), scope},
 	}); err != nil {
-		s.stats.Errors++
+		s.bump(func(st *StoreStats) { st.Errors++ })
 		return 0, err
 	}
 	return int(card.Int), nil
@@ -433,14 +453,14 @@ func (s *RedisStore) Len(ctx context.Context, scope string) (int, error) {
 		}
 		reply, err := s.cli.Do(ctx, "ZCARD", s.idxKey(scope))
 		if err != nil {
-			s.stats.Errors++
+			s.bump(func(st *StoreStats) { st.Errors++ })
 			return 0, err
 		}
 		return int(reply.Int), nil
 	}
 	reply, err := s.cli.Do(ctx, "ZRANGE", s.scopesKey(), "0", "-1")
 	if err != nil {
-		s.stats.Errors++
+		s.bump(func(st *StoreStats) { st.Errors++ })
 		return 0, err
 	}
 	scopes, err := reply.Strings()
@@ -462,7 +482,7 @@ func (s *RedisStore) Len(ctx context.Context, scope string) (int, error) {
 func (s *RedisStore) Scopes(ctx context.Context) (map[string]int, error) {
 	reply, err := s.cli.Do(ctx, "ZRANGE", s.scopesKey(), "0", "-1")
 	if err != nil {
-		s.stats.Errors++
+		s.bump(func(st *StoreStats) { st.Errors++ })
 		return nil, err
 	}
 	scopes, err := reply.Strings()

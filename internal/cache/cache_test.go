@@ -303,6 +303,82 @@ func TestStoreConformance(t *testing.T) {
 	}
 }
 
+// Stats is read by /admin while requests are in flight, so it is part of the
+// concurrency contract rather than a private counter. The Redis store's
+// counters used to be plain fields mutated from every request goroutine; the
+// interleaving below is what the race detector caught at
+// internal/cache/redis.go (Get's first increment), and it is the reason the
+// mutation sites now share one mutex.
+//
+// The loop runs against BOTH stores: the memory store has always locked its
+// stats, so a regression in either one shows up here.
+func TestStoreStatsSurviveConcurrentReaders(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now()
+	for _, f := range storeFactories() {
+		t.Run(f.name, func(t *testing.T) {
+			s := f.new(t)
+
+			// Seed so Search has vectors to scan: it reads its own counters
+			// (Searches, Scanned) and calls Get, which reads Gets.
+			for i := 0; i < 4; i++ {
+				e := entry("scope", fmt.Sprintf("seed-%d", i), fmt.Sprintf("seed prompt %d about counters", i), 128, now, time.Hour)
+				if err := s.Put(ctx, e, time.Hour); err != nil {
+					t.Fatalf("seed Put: %v", err)
+				}
+			}
+			vec := entry("scope", "probe", "seed prompt 0 about counters", 128, now, time.Hour).Vector
+
+			var writers, readers sync.WaitGroup
+			stop := make(chan struct{})
+
+			// Four writers hammering every counter-bearing path at once.
+			for w := 0; w < 4; w++ {
+				writers.Add(1)
+				go func(w int) {
+					defer writers.Done()
+					for i := 0; i < 25; i++ {
+						key := fmt.Sprintf("w%d-%d", w, i)
+						e := entry("scope", key, fmt.Sprintf("worker %d prompt %d about counters", w, i), 128, now, time.Hour)
+						_ = s.Put(ctx, e, time.Hour)
+						_, _, _ = s.Get(ctx, "scope", key)
+						_, _ = s.Search(ctx, "scope", vec, 0.9, 5)
+					}
+				}(w)
+			}
+
+			// One reader observing the same counters, the way a scrape does.
+			// It runs until the writers are done, so "read while writing" is
+			// the interleaving under test rather than a schedule we hope for.
+			readers.Add(1)
+			go func() {
+				defer readers.Done()
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+						if st := s.Stats(); st.Puts < 0 {
+							// Never true; the point is to read every field.
+							t.Errorf("impossible stats: %+v", st)
+							return
+						}
+					}
+				}
+			}()
+
+			writers.Wait()
+			close(stop)
+			readers.Wait()
+
+			st := s.Stats()
+			if st.Puts == 0 || st.Gets == 0 || st.Searches == 0 {
+				t.Fatalf("counters did not move: %+v", st)
+			}
+		})
+	}
+}
+
 // The one documented divergence: the memory store is LRU, the Redis store is
 // FIFO by creation time. Pinning both makes the difference a decision rather
 // than a surprise.
