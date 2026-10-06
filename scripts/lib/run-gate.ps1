@@ -17,10 +17,10 @@
 # intact, and the wrapper still exits with the gate's own code.
 #
 # WHY IT ALSO WRITES A MARKER. Every gate step in ci.yml sets
-# continue-on-error: true so that one red gate does not hide the other seven --
+# continue-on-error: true so that one red gate does not hide the others --
 # and GitHub documents what that flag costs: "When a continue-on-error step
 # fails, the outcome is failure, but the final conclusion is success." So this
-# step's exit code cannot fail the job, and the eight gates could all be red
+# step's exit code cannot fail the job, and every gate could be red
 # while the run, the badge and the anonymous jobs API said success.
 # scripts/lib/summarize-gates.ps1 reads these markers and is the step that is
 # allowed to fail. A file is used because environment variables do not travel

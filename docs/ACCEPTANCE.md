@@ -15,7 +15,7 @@ M4–M6 的验收与实测段落与各自的启动方式写在一起，见 [USAG
 | M4 分层与量化 | 877 | 125 | `baseline/m4-summary.json` |
 | M5 可观测与压测 | 420 | 211 | `baseline/m5-summary.json`（+ 24 条逐轮文件） |
 | M6 幂等/账本/能力 | 381 | 149 | `baseline/m6-summary.json` |
-| **合计** | **2353** | **1060** | |
+| **合计** | **2353** | **1068** | |
 | 管理面鉴权（`access`，不属任何里程碑） | 41 | 44 | 无（证据是 `scripts/verify-hardening.ps1` 的输出） |
 
 M5 的 curl 门从 203 条变成 211 条，加的是 8 条解析器自检（`10.0a`–`10.0h`）：
@@ -27,10 +27,16 @@ Windows PowerShell 5.1 读无 BOM 的 `.ps1` 时用机器代码页解码，那�
 `baseline/m5-summary.json` 仍是 203 条时跑出来的，所以这里出现过一个数字，
 上面这张表里是另一个；两者都能对账，因为它们指的是不同的运行。
 
+合计行的两个数字现在有检查：`internal/repofmt/gatecounts_test.go` 的
+`TestDocumentedGateTotalsAreTheSumOfTheirRows` 读出这张表和 README 3.3 那张表的每一行，要求两张表
+逐行一致、`合计` 等于它上面各行之和、README / 本文 / RESUME 里每一句重述总数的句子都用同一个数。
+加它的原因就是这张表：M5 的 curl 门从 203 条涨到 211 条时改了行、没改合计，于是两个 `合计` 行和五句
+重述都停在 1060（203 那一版的正确和），差的正是那 8 条自检。
+
 管理面鉴权默认关闭，所以 M0–M6 的两条证据链一行都没有覆盖它。它有自己的第三条链：
 `scripts/verify-hardening.ps1`，**真进程 + 真 curl + 44 条断言**，见下方「管理面鉴权的证据边界」。
 它的数字单独列成一行而不是并进合计——把一条 2026 年才加的安全门混进里程碑总数，
-会让"1060"这个从 M0 起就写在 README 里的数字变得不可对账。
+会让"1068"这个从 M0 起就写在 README 里的数字变得不可对账。
 
 两条路径相互独立：Go 门用进程内假上游跑得快、断言密度高；
 curl 门编译真二进制、拉真进程、用真 `curl.exe` 打真 socket，证的是“部署起来就是这样”。
@@ -48,7 +54,7 @@ curl 门编译真二进制、拉真进程、用真 `curl.exe` 打真 socket，�
 | `go test ./... -count=1 -timeout 20m` | 全部单元/集成测试（Linux，无 `-race`） | 绿（同 run step 7） |
 | `go test -race` **逐个包**（`go list ./...` 循环，失败继续跑下一个） | 竞态检测（本机配方见下） | **runner 绿**：run 37408647484 step 9 `go test -race` success（整个 job 2 分 28 秒）；本机同样 36 个包全绿（218 秒，0 条 `DATA RACE`） |
 | `.\tools\go.cmd run .\cmd\verify*` | 2353 条 Go 端到端断言 | **runner 绿**：run 37413713212（head `6ec3554`）的 `curl gates` job step 12 `go verify gates (M0-M6)` success —— 这是它第一次在 runner 上跑；本机 31 秒跑完七包、2353/2353、写 marker 0 |
-| `.\scripts\verify-m*.ps1` + `verify-hardening.ps1` | 1060 条 curl 端到端断言 + 44 条管理面令牌断言 | **绿**：`curl gates (M0-M6, operator token)` job 在 run 37408647484 上 1 分 55 秒跑完，9 个门（M0–M6 + operator token）全部 success；run 37413713212 上同样 9 个门全 success（head `6ec3554`，该 job 2 分 15 秒） |
+| `.\scripts\verify-m*.ps1` + `verify-hardening.ps1` | 1068 条 curl 端到端断言 + 44 条管理面令牌断言 | **绿**：`curl gates (M0-M6, operator token)` job 在 run 37408647484 上 1 分 55 秒跑完，八个门（M0–M6 + operator token）全部 success——那次还没有 `go verify gates (M0-M6)`，也还没有反制步骤；run 37413713212 上是九个门全 success（head `6ec3554`，多了那个 Go 门，该 job 2 分 15 秒） |
 | `scripts/lib/summarize-gates.ps1`（job 内**唯一**不允许失败的一步） | 9 个门（八个 curl + 一个 Go）的 marker 文件都在且都写着 0 | **绿**：run 37413713212（head `6ec3554`）step 13 `every gate must have passed` success，它前面**九个门步骤全部 success**——第一次读齐九个 marker；更早的 run 37410701867（head `e248c7a`）step 12 是只有八个门时的同一结论；本机 5 个用例全过（见下） |
 | `scripts/verify-docker-profile.ps1` | 20 条容器画像断言（真二进制、真端口、真 miniredis） | 绿（本机 25 秒，见下「容器的证据边界」） |
 

@@ -1,6 +1,6 @@
 # Fails the curl-gates job when any gate in it failed.
 #
-# WHY THIS FILE EXISTS. Each of the eight gate steps carries
+# WHY THIS FILE EXISTS. Each of the nine gate steps carries
 # `continue-on-error: true`, and GitHub documents the price of that flag exactly:
 #
 #   "The result of a completed step after continue-on-error is applied. ...
@@ -8,13 +8,14 @@
 #    conclusion is success."
 #   -- contexts reference, steps.<step_id>.outcome / .conclusion
 #
-# Those eight gates are 1060 assertions and the only Windows coverage this
-# repository has. With the flag on every gate step and no step that is allowed to
-# fail, all eight could be red while the job, the run, the badge and the anonymous
-# jobs API reported success -- and for a reader outside the repository the step
-# conclusions are the only thing there is to read. The flag is still the right
-# choice for the gate steps, because it is what makes one red run report all eight
-# gates instead of stopping at the first. This step is the counterweight: it is
+# Those gates are 1068 curl assertions, 44 operator-token ones and the 2353
+# in-process Go ones, and they are the only Windows coverage this repository has.
+# With the flag on every gate step and no step that is allowed to fail, all nine
+# could be red while the job, the run, the badge and the anonymous jobs API
+# reported success -- and for a reader outside the repository the step conclusions
+# are the only thing there is to read. The flag is still the right choice for the
+# gate steps, because it is what makes one red run report every gate instead of
+# stopping at the first. This step is the counterweight: it is
 # deliberately the only gate-related step WITHOUT the flag, so it is the one that
 # can fail the job.
 #
@@ -22,7 +23,7 @@
 # travel between steps, and a step output has to be written to $GITHUB_OUTPUT by
 # that step's own shell -- run-gate.ps1 runs as a child process, so it cannot set
 # its parent's output either. A file in tmp\ is the only channel that survives
-# from the eighth gate to this step.
+# from the last gate to this step.
 #
 # FAIL CLOSED. -Gates names the gates that must report. A missing marker is red,
 # not "not applicable": the case it catches is a wrapper that died before it could
@@ -52,7 +53,7 @@
 # -Expect and passed in seconds), but a parameter whose name powershell.exe can read
 # as an abbreviation of its own -ExecutionPolicy switch is not worth keeping.
 #
-# Usage:  scripts/lib/summarize-gates.ps1 -Gates m0,m1,m2,m3,m4,m5,m6,hardening
+# Usage:  scripts/lib/summarize-gates.ps1 -Gates m0,m1,m2,m3,m4,m5,m6,hardening,go-verify
 param(
     [Parameter(Mandatory = $true)][string]$Gates,
     [string]$MarkerDir,

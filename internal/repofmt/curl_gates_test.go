@@ -2,14 +2,14 @@
 // of them were wrong or absent until they were looked up in the docs.
 //
 // THE FIRST is that a red gate has to be able to fail the job. Every gate step
-// carries `continue-on-error: true` so that one red gate does not hide the other
-// seven, and GitHub documents exactly what that costs:
+// carries `continue-on-error: true` so that one red gate does not hide the others,
+// and GitHub documents exactly what that costs:
 //
 //	"When a continue-on-error step fails, the outcome is failure, but the final
 //	 conclusion is success."
 //	-- contexts reference, steps.<step_id>.outcome / .conclusion
 //
-// With the flag on every gate step and no step that is allowed to fail, all 1060
+// With the flag on every gate step and no step that is allowed to fail, all 1068
 // curl assertions and all 2353 in-process ones could be red while the job, the run,
 // the badge and the anonymous jobs API all reported success -- and those step
 // conclusions are the only surface a reader outside the repository can see.
