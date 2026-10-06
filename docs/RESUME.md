@@ -661,8 +661,8 @@ JSONL 59400 行 == `export_stats.jsonl.written` 且每行都能解析出 `trace_
   **重试重放率 2/2 = 100%**（重试不再等于重新计费，上游调用数与 token/成本 0 增量）和
   **端到端验收 26/26**。另外 Warden 的 `context_max_messages` 仍是**消息条数**上限，能力接口报出的
   `context_window` 没有接进它的历史裁剪（那需要另发明一套按 token 的裁剪策略，本次没做）；
-  能力元数据目前只作为文档化的 helper 暴露，`app/memory/embeddings.py` 这条 httpx 路径也还没带上
-  网关头。
+  能力元数据目前只作为文档化的 helper 暴露，Warden 仓库的 `app/memory/embeddings.py` 这条 httpx 路径
+  也还没带上网关头。
 
 复现命令：
 `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\measure-m6.ps1`（默认 `-Requests 1500

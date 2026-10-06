@@ -447,7 +447,7 @@ access:
 - **配额计数在内存时只对单副本正确**：多副本必须换 Redis store。
 - **M3 的"日"预算是 UTC 日**：对本地运维的日历而言会在早上 8 点（UTC+8）重置。
 - **M6 的幂等存储有容量上限**：LRU 淘汰后同 key 重放会重新打到上游（安全但不再省调用）。
-- **Warden 的 embeddings 调用不带网关头**（`app/memory/embeddings.py` 未接入），这条路径没有成本归因。
+- **Warden 仓库的 embeddings 调用不带网关头**（该仓库的 `app/memory/embeddings.py` 未接入），这条路径没有成本归因。
 - **M6 的 tracing 属性只记标量**：不采样请求/响应体，所以回放看到的是决策链而不是内容。
 - **`/admin/*` 与 `/stats` 默认不鉴权**：`access` 这一节提供了运营者令牌，但默认关闭（打开它会让本仓库
   全部 curl 验收脚本的凭证假设失效）。这意味着把网关绑到 0.0.0.0 而不加 `access.tokens`，等于把
