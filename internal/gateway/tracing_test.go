@@ -76,9 +76,25 @@ const tracedJSONAnswer = `{"id":"chatcmpl-1","object":"chat.completion","model":
 	`"choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],` +
 	`"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}`
 
+// backendThinkTime is how long the mock upstreams in this file take to answer,
+// and the reason they take any time at all.
+//
+// time.Now() on Windows steps in quanta of roughly 0.5-1.6ms (measured on the
+// development host; the numbers are in cmd/verify-m5/harness.go next to
+// mockThinkTime), so a backend that answers inside one quantum produces spans
+// whose measured duration is exactly 0. That is how
+// TestTraceRecordsOneRequestTrace failed intermittently -- root.DurationMS <= 0
+// on a request that really happened. 20ms is above the coarsest timer Windows
+// offers, so every span measured around this backend covers at least one clock
+// step and a positive duration is true by construction rather than by luck.
+const backendThinkTime = 20 * time.Millisecond
+
 func jsonAnswerBackend(t *testing.T) *backend {
 	t.Helper()
 	return newBackend(t, func(w http.ResponseWriter, r *http.Request) {
+		// See backendThinkTime: the delay is what makes the durations of the
+		// spans around this call measurable at all.
+		time.Sleep(backendThinkTime)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, tracedJSONAnswer)
 	})

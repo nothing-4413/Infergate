@@ -208,6 +208,24 @@ const (
 	upstreamAuto = "auto"
 )
 
+// mockThinkTime is how long every mock upstream waits before it answers.
+//
+// This is not politeness, it is what makes the latency claims in this gate
+// measurable at all. time.Now() on Windows steps in quanta of roughly
+// 0.5-1.6ms (measured on the development host: 199999 of 200000 back-to-back
+// readings were identical, and 148 of 300 spans of ~440us of real work
+// measured exactly zero for wall clock and monotonic alike). A mock that
+// answers inside one quantum therefore reports 0ms of latency, and on the
+// 2026-04 runs "6.29 the root span reports a derived duration" failed 9 times
+// out of 20 on that host, and once on a GitHub runner.
+//
+// 20ms is comfortably above the coarsest timer Windows offers (the classic
+// 15.6ms tick), so every span this gate measures covers at least one clock
+// step and 4.7, 6.29 and 10.9 become true by construction instead of by luck.
+// It also makes the mock behave like a backend that does work, which is the
+// only way a latency assertion means anything.
+const mockThinkTime = 20 * time.Millisecond
+
 type upstreamCall struct {
 	Path   string
 	Header http.Header
@@ -218,16 +236,24 @@ type recordingUpstream struct {
 	server  *httptest.Server
 	mode    string
 	content string
+	think   time.Duration
 
 	mu    sync.Mutex
 	calls []upstreamCall
 }
 
 func newUpstream(mode, content string) *recordingUpstream {
+	return newUpstreamWithThink(mode, content, mockThinkTime)
+}
+
+// newUpstreamWithThink builds a mock upstream with an explicit think time, for
+// checks that need their latency to be measurable with a different budget (0
+// restores the old answer-immediately behaviour).
+func newUpstreamWithThink(mode, content string, think time.Duration) *recordingUpstream {
 	if content == "" {
 		content = "mock answer"
 	}
-	u := &recordingUpstream{mode: mode, content: content}
+	u := &recordingUpstream{mode: mode, content: content, think: think}
 	u.server = httptest.NewServer(http.HandlerFunc(u.handle))
 	return u
 }
@@ -250,6 +276,14 @@ func (u *recordingUpstream) handle(w http.ResponseWriter, r *http.Request) {
 	u.mu.Lock()
 	u.calls = append(u.calls, upstreamCall{Path: r.URL.Path, Header: r.Header.Clone(), Body: string(raw)})
 	u.mu.Unlock()
+
+	// The think time sits after the call is recorded and before the first byte
+	// of the answer: for a streamed response that is the first-token latency,
+	// and for every response it is the span duration. Health probes above skip
+	// it, so stack startup stays fast.
+	if u.think > 0 {
+		time.Sleep(u.think)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	mode := u.mode

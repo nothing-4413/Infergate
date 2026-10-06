@@ -242,7 +242,7 @@ jobs:
   # M0 in five seconds and skipped M1-M6, so the run proved one gate broken and
   # said nothing about the other six -- while the fixed bug turned out to be in
   # tools/go.cmd, which every one of them depends on. continue-on-error runs all
-  # eight regardless, so one red run yields the whole picture. The wrapper
+  # of them regardless, so one red run yields the whole picture. The wrapper
   # (scripts/lib/run-gate.ps1) is there because a failing step's only readable
   # copy of its transcript was an artifact behind authentication; piping the text
   # into the step log makes the FAIL lines visible to anyone who can see the
@@ -255,14 +255,15 @@ jobs:
   #   "When a continue-on-error step fails, the outcome is failure, but the final
   #    conclusion is success."   -- contexts reference, steps.<step_id>.outcome
   #
-  # So with the flag on all eight gate steps and no other step that can fail, all
-  # 1060 assertions could be red while the job, the run, the badge and the
-  # anonymous jobs API all said success. The flag stays, because all eight running
-  # is worth more than the first one failing loudly -- and the counterweight is
-  # the `every gate must have passed` step below, which is deliberately the only
-  # gate-related step WITHOUT the flag. Every gate writes tmp\gate-<name>.exit
-  # through the wrapper; that step reads them and fails the job if any is red or
-  # missing.
+  # So with the flag on every gate step and no other step that can fail, all 1060
+  # curl assertions and all 2353 in-process ones could be red while the job, the
+  # run, the badge and the anonymous jobs API all said success. The flag stays,
+  # because all of them running is worth more than the first one failing loudly --
+  # and the counterweight is the `every gate must have passed` step below, which is
+  # deliberately the only gate-related step WITHOUT the flag. Every gate writes
+  # tmp\gate-<name>.exit through its wrapper (run-gate.ps1 for the curl gates,
+  # run-go-verify.ps1 for the Go ones); that step reads them and fails the job if
+  # any is red or missing.
   curl-gates:
     name: curl gates (M0-M6, operator token)
     runs-on: windows-2022
@@ -330,7 +331,19 @@ jobs:
         working-directory: ${{ github.workspace }}
         continue-on-error: true
 
-      # The counterweight to the eight continue-on-error flags above, and the only
+      # The other acceptance chain, and until this step the only one with no CI
+      # coverage at all: cmd/verify* is 2353 assertions that talk to the gateway
+      # in-process, needing no curl, no PowerShell and no spawned binary, so
+      # nothing about it was ever platform-specific -- it was just never wired up.
+      # All seven run even if the first is red, for the same reason the eight gates
+      # above do, and it leaves tmp\gate-go-verify.exit for the step below.
+      - name: go verify gates (M0-M6)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\lib\run-go-verify.ps1 -Name go-verify -Package ./cmd/verify,./cmd/verify-m1,./cmd/verify-m2,./cmd/verify-m3,./cmd/verify-m4,./cmd/verify-m5,./cmd/verify-m6
+        working-directory: ${{ github.workspace }}
+        continue-on-error: true
+
+      # The counterweight to the nine continue-on-error flags above, and the only
       # gate-related step that does not carry one. Without it this job cannot fail:
       # a continue-on-error step reports conclusion "success" even when it fails,
       # so a fully red Windows suite would still be a green run and a green badge.
@@ -341,7 +354,7 @@ jobs:
       - name: every gate must have passed
         if: always()
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\lib\summarize-gates.ps1 -Expect m0,m1,m2,m3,m4,m5,m6,hardening
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\lib\summarize-gates.ps1 -Gates m0,m1,m2,m3,m4,m5,m6,hardening,go-verify
         working-directory: ${{ github.workspace }}
 
       # A failed gate leaves bin\ and tmp\ behind, and those logs are the only

@@ -9,16 +9,21 @@
 //	 conclusion is success."
 //	-- contexts reference, steps.<step_id>.outcome / .conclusion
 //
-// With the flag on all eight gates and no step that is allowed to fail, all 1060
-// assertions could be red while the job, the run, the badge and the anonymous jobs
-// API all reported success -- and those step conclusions are the only surface a
-// reader outside the repository can see.
+// With the flag on every gate step and no step that is allowed to fail, all 1060
+// curl assertions and all 2353 in-process ones could be red while the job, the run,
+// the badge and the anonymous jobs API all reported success -- and those step
+// conclusions are the only surface a reader outside the repository can see.
 //
 // THE SECOND is that the list of gates the check is told to expect has to be the
 // list of gates that actually run. A gate renamed on one side only would be
 // reported as red forever, or -- worse, in the other direction -- a gate that
 // silently stopped being wired up would be reported as green because nobody was
 // expecting it.
+//
+// There are two wrappers now, because there are two acceptance chains: the eight
+// curl scripts and the seven in-process `go run .\cmd\verify*` gates. They share the
+// marker convention and the counterweight, so they are checked together here rather
+// than in two tests that could drift apart.
 package repofmt
 
 import (
@@ -26,16 +31,36 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 )
 
 var (
-	// The gate a step runs, and the name it records itself under.
-	gateNameRe = regexp.MustCompile(`run-gate\.ps1[^\n]*?-Name\s+(\S+)`)
+	// The gate a step runs, and the name it records itself under. Both wrappers are
+	// matched: run-gate.ps1 drives one PowerShell script, run-go-verify.ps1 drives
+	// the seven Go milestones.
+	gateNameRe = regexp.MustCompile(`run-(?:gate|go-verify)\.ps1[^\n]*?-Name\s+(\S+)`)
 	// The step that is told which gates to expect.
-	gateExpectRe = regexp.MustCompile(`summarize-gates\.ps1[^\n]*?-Expect\s+(\S+)`)
+	gateExpectRe = regexp.MustCompile(`summarize-gates\.ps1[^\n]*?-Gates\s+(\S+)`)
+	// The milestones the Go gate is asked to run.
+	gatePackageRe = regexp.MustCompile(`run-go-verify\.ps1[^\n]*?-Package\s+(\S+)`)
 )
+
+// goVerifyPackages is the in-process acceptance chain, which used to have no CI step
+// at all. The list is spelled out rather than derived from the directory so that
+// dropping one of them is a test failure: a milestone that stops being run is
+// indistinguishable from a milestone that passes unless something knows it was
+// supposed to run.
+var goVerifyPackages = []string{
+	"./cmd/verify",
+	"./cmd/verify-m1",
+	"./cmd/verify-m2",
+	"./cmd/verify-m3",
+	"./cmd/verify-m4",
+	"./cmd/verify-m5",
+	"./cmd/verify-m6",
+}
 
 func TestEveryCurlGateCanFailTheJob(t *testing.T) {
 	root := repoRoot(t)
@@ -43,6 +68,7 @@ func TestEveryCurlGateCanFailTheJob(t *testing.T) {
 	steps := curlGateSteps(t, workflow)
 
 	var names []string
+	var packages []string
 	var expected string
 	checkers := 0
 	for _, step := range steps {
@@ -52,6 +78,17 @@ func TestEveryCurlGateCanFailTheJob(t *testing.T) {
 			if !guarded {
 				t.Errorf("gate %q does not carry continue-on-error, so the first red gate stops "+
 					"the gates after it and one red run stops reporting the whole picture", m[1])
+			}
+		}
+		if m := gatePackageRe.FindStringSubmatch(step); m != nil {
+			for _, pkg := range strings.Split(m[1], ",") {
+				if pkg = strings.TrimSpace(pkg); pkg != "" {
+					packages = append(packages, pkg)
+				}
+			}
+			if !guarded {
+				t.Errorf("the Go gate step does not carry continue-on-error, so the first red "+
+					"milestone hides the six after it: %s", m[1])
 			}
 		}
 		if m := gateExpectRe.FindStringSubmatch(step); m != nil {
@@ -68,9 +105,10 @@ func TestEveryCurlGateCanFailTheJob(t *testing.T) {
 		}
 	}
 
-	if len(names) < 8 {
-		t.Fatalf("only %d gate(s) invoke run-gate.ps1; the Windows acceptance chain is eight "+
-			"scripts, and a shorter list means this check is looking at a truncated job", len(names))
+	if len(names) < 9 {
+		t.Fatalf("only %d gate(s) invoke a gate wrapper; the Windows acceptance chain is eight "+
+			"curl scripts plus the seven-milestone Go gate, and a shorter list means this check "+
+			"is looking at a truncated job", len(names))
 	}
 	if checkers != 1 {
 		t.Fatalf("%d step(s) check the gates together; exactly one of them has to be able to fail "+
@@ -78,15 +116,29 @@ func TestEveryCurlGateCanFailTheJob(t *testing.T) {
 	}
 	if got := strings.Join(names, ","); got != expected {
 		t.Errorf("the gates that run are %q but the job expects %q.\nA gate renamed on one side "+
-			"only is reported red forever; a gate whose --Expect entry was removed is reported "+
+			"only is reported red forever; a gate whose -Gates entry was removed is reported "+
 			"green without anyone having checked it.", got, expected)
 	}
 
-	// The channel between the eight steps and the one that can fail: a file,
+	// The Go gate runs the whole in-process chain or it verifies a subset nobody
+	// chose. Sorted on both sides because the step's own order is the milestone
+	// order, which is not alphabetical.
+	want := append([]string(nil), goVerifyPackages...)
+	gotPkgs := append([]string(nil), packages...)
+	sort.Strings(want)
+	sort.Strings(gotPkgs)
+	if strings.Join(gotPkgs, ",") != strings.Join(want, ",") {
+		t.Errorf("the Go gate runs %v but should run %v.\nA milestone missing from this list "+
+			"stops being checked while the job stays green, and nothing else in the repository "+
+			"knows it was supposed to run.", gotPkgs, want)
+	}
+
+	// The channel between the gate steps and the one that can fail: a file,
 	// because environment variables do not cross steps and a child process cannot
 	// write its parent's $GITHUB_OUTPUT.
 	for _, f := range []struct{ path, body string }{
 		{filepath.Join(root, "scripts", "lib", "run-gate.ps1"), readFile(t, filepath.Join(root, "scripts", "lib", "run-gate.ps1"))},
+		{filepath.Join(root, "scripts", "lib", "run-go-verify.ps1"), readFile(t, filepath.Join(root, "scripts", "lib", "run-go-verify.ps1"))},
 		{filepath.Join(root, "scripts", "lib", "summarize-gates.ps1"), readFile(t, filepath.Join(root, "scripts", "lib", "summarize-gates.ps1"))},
 	} {
 		if !strings.Contains(strings.ToLower(f.body), "gate-$name.exit") {
@@ -101,16 +153,18 @@ func TestEveryCurlGateCanFailTheJob(t *testing.T) {
 // which is every CI run of the Linux job, so this is a local and Windows-runner
 // guarantee rather than a Linux one.
 //
-// It keeps every temp file where t.TempDir() puts it, which is inside the
-// repository: on this machine writes under %TEMP% come back "Access is denied",
-// and a PowerShell child that cannot write where it was told turns into a
-// forty-line debugging session about a script that was fine.
+// Every file it makes lives under tmp/, which is the directory the checker is
+// pointed at in ci.yml, and which is inside the repository: on this machine writes
+// under %TEMP% come back "Access is denied", and a PowerShell child that cannot
+// write where it was told turns into a forty-line debugging session about a script
+// that was fine.
 func TestSummarizeGatesFailsClosed(t *testing.T) {
 	ps, err := exec.LookPath("powershell")
 	if err != nil {
 		t.Skipf("powershell is not on PATH, so the gate checker cannot be exercised here: %v", err)
 	}
-	script := filepath.Join(repoRoot(t), "scripts", "lib", "summarize-gates.ps1")
+	root := repoRoot(t)
+	script := filepath.Join(root, "scripts", "lib", "summarize-gates.ps1")
 
 	cases := []struct {
 		what    string
@@ -126,14 +180,20 @@ func TestSummarizeGatesFailsClosed(t *testing.T) {
 		{"one gate reported one", map[string]string{"a": "0", "b": "1"}, "a,b", 1, "## gate b : exit 1"},
 		{"one gate never reported", map[string]string{"a": "0"}, "a,b", 1, "no marker file"},
 		{"a marker is unreadable", map[string]string{"a": "0", "b": "not a number"}, "a,b", 1, "unreadable marker content"},
-		// A comma with no names is what a truncated -Expect list looks like, and it
+		// A comma with no names is what a truncated -Gates list looks like, and it
 		// has to be red: a check that verifies nothing must not report success.
 		{"no gate was listed", map[string]string{"a": "0"}, ",", 1, "no gate was named"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.what, func(t *testing.T) {
-			dir := t.TempDir()
+			// Not t.TempDir(), which resolves to the Go build's own temp area
+			// (.gotmp/...). This is the directory the script is aimed at in ci.yml.
+			dir, err := os.MkdirTemp(filepath.Join(root, "tmp"), "gate-check-")
+			if err != nil {
+				t.Fatalf("making a scratch directory under tmp/: %v", err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(dir) })
 			for name, code := range tc.markers {
 				if err := os.WriteFile(filepath.Join(dir, "gate-"+name+".exit"), []byte(code), 0o600); err != nil {
 					t.Fatalf("writing marker for %s: %v", name, err)
@@ -147,7 +207,7 @@ func TestSummarizeGatesFailsClosed(t *testing.T) {
 			defer out.Close()
 
 			cmd := exec.Command(ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script,
-				"-Expect", tc.expect, "-MarkerDir", dir, "-SummaryPath", summary)
+				"-Gates", tc.expect, "-MarkerDir", dir, "-SummaryPath", summary)
 			// A file, not a pipe: the wrapper in this repository exists because a
 			// pipeline carries no exit code, and the same reasoning applies here.
 			cmd.Stdout = out

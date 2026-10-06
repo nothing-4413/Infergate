@@ -24,22 +24,37 @@
 # its parent's output either. A file in tmp\ is the only channel that survives
 # from the eighth gate to this step.
 #
-# FAIL CLOSED. -Expect names the gates that must report. A missing marker is red,
+# FAIL CLOSED. -Gates names the gates that must report. A missing marker is red,
 # not "not applicable": the case it catches is a wrapper that died before it could
 # write anything, a step that failed before reaching the wrapper at all, and a gate
 # renamed on one side only. The expected list is written in ci.yml next to the
 # steps it describes, and internal/repofmt pins the two lists to each other.
 #
-# WHY -Expect IS A COMMA-SEPARATED STRING AND NOT A [string[]]. ci.yml invokes
-# this file the way every gate is invoked, `powershell -File ... `, and in that
-# form PowerShell hands the argument over as one literal string -- `-Expect a,b`
-# binds a single element "a,b", it does not split on the comma. Declaring a string
-# array and getting one bogus gate name is exactly what the fail-closed rule
-# caught on the first try, so the split happens here instead of in the caller.
+# WHY -Gates IS ONE STRING AND NOT A [string[]], AND WHY IT IS SPLIT ON COMMAS OR
+# SPACES. ci.yml invokes this file the way every gate is invoked, `powershell -File
+# ... -Gates m0,m1,...`, and what reaches $Gates depends on who built that command
+# line: a parent that quoted the argument hands over "m0,m1" verbatim, while a
+# caller that passed it bare -- Go's exec, which is what internal/repofmt does --
+# ends up with PowerShell reading the comma as a list and joining the elements with
+# the output field separator, "m0 m1". A [string[]] parameter does not help: in the
+# quoted case -File binds the whole thing as one element, which is how the first
+# version of this file came to check a single gate called "a,b". Splitting on both
+# separators reads the list the same way whoever sent it, and the fail-closed rule
+# still catches the case where the list arrives empty.
 #
-# Usage:  scripts/lib/summarize-gates.ps1 -Expect m0,m1,m2,m3,m4,m5,m6,hardening
+# WHY THIS PARAMETER IS NOT CALLED -Expect. It was, and that name made
+# internal/repofmt's behavioural test hang: a PowerShell grandchild whose command
+# line carries an argument starting with -Ex and whose stdout is redirected to a
+# file comes back killed after exactly 30 seconds with an empty transcript, while
+# the same command line as a direct child of the shell finishes in 0.2s. -Ex, -Expec,
+# -Expect and a literal -ExecutionPolicy all reproduce it; -Gates, -Out and
+# -MarkerDir do not. The runner is not affected (run 37410701867 ran this file with
+# -Expect and passed in seconds), but a parameter whose name powershell.exe can read
+# as an abbreviation of its own -ExecutionPolicy switch is not worth keeping.
+#
+# Usage:  scripts/lib/summarize-gates.ps1 -Gates m0,m1,m2,m3,m4,m5,m6,hardening
 param(
-    [Parameter(Mandatory = $true)][string]$Expect,
+    [Parameter(Mandatory = $true)][string]$Gates,
     [string]$MarkerDir,
     [string]$LogDir,
     [string]$SummaryPath
@@ -50,7 +65,12 @@ if (-not $MarkerDir) { $MarkerDir = Join-Path $repo 'tmp' }
 if (-not $LogDir) { $LogDir = $MarkerDir }
 if (-not $SummaryPath) { $SummaryPath = Join-Path $repo 'tmp\gate-failures.md' }
 
-$gates = @($Expect -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+# WHY THIS LOCAL IS NOT CALLED $gates. PowerShell variable names are case
+# insensitive, so `$gates = @($Gates -split ...)` assigns to the parameter it is
+# reading from and silently keeps the unsplit value: the list then has one entry,
+# "a b", and the step reports a gate nobody named. The name of this local is
+# load-bearing, not cosmetic.
+$gateList = @($Gates -split '[,\s]+' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
 
 $red = @()
 $rows = @()
@@ -62,15 +82,15 @@ $body = New-Object System.Text.StringBuilder
 # and a green run from it would be a claim nobody checked. It still writes the
 # summary, because "why is this red" is the one question the artifact has to
 # answer -- the first version of this file exited before writing it.
-$noGates = $gates.Count -eq 0
+$noGates = $gateList.Count -eq 0
 if ($noGates) {
     [void]$body.AppendLine('## no gate was named')
     [void]$body.AppendLine('')
-    [void]$body.AppendLine("-Expect '$Expect' named no gate, so this step verified nothing.")
+    [void]$body.AppendLine("-Gates '$Gates' named no gate, so this step verified nothing.")
     [void]$body.AppendLine('')
 }
 
-foreach ($name in $gates) {
+foreach ($name in $gateList) {
     $marker = Join-Path $MarkerDir "gate-$name.exit"
     $row = '{0,-12} ok' -f $name
     $reason = ''
@@ -140,14 +160,14 @@ try {
 }
 
 if ($noGates) {
-    Write-Host "::error title=gates not listed::-Expect '$Expect' named no gate"
-    Write-Host "gates failed: 0 of 0 -- -Expect named no gate"
+    Write-Host "::error title=gates not listed::-Gates '$Gates' named no gate"
+    Write-Host "gates failed: 0 of 0 -- -Gates named no gate"
     exit 1
 }
 
 if ($red.Count -gt 0) {
-    Write-Host "gates failed: $($red.Count) of $($gates.Count) -- $($red -join ', ')"
+    Write-Host "gates failed: $($red.Count) of $($gateList.Count) -- $($red -join ', ')"
     exit 1
 }
-Write-Host "gates passed: all $($gates.Count) reported exit 0"
+Write-Host "gates passed: all $($gateList.Count) reported exit 0"
 exit 0
