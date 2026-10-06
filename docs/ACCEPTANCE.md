@@ -46,7 +46,7 @@ curl 门编译真二进制、拉真进程、用真 `curl.exe` 打真 socket，�
 | `go vet ./...` | 静态检查 | 绿 |
 | `gofmt -l ./cmd ./internal` | 格式门 | 绿（加入这一步时仓库里有 7 个文件不干净，已一并修好） |
 | `go test ./... -count=1 -timeout 20m` | 全部单元/集成测试（Linux，无 `-race`） | 绿 |
-| `go test -race` **逐个包**（`go list ./...` 循环，失败继续跑下一个） | 竞态检测（**本机做不到**：无 gcc） | 已定位并修复；**尚未在 runner 上复测**（见下） |
+| `go test -race` **逐个包**（`go list ./...` 循环，失败继续跑下一个） | 竞态检测（**本机现在能跑了**：msys64 的 gcc 15.2.0，配方见下） | 本机 36 个包全绿（218 秒，0 条 `DATA RACE`）；**runner 复测结论读不到**（见下） |
 | `.\tools\go.cmd run .\cmd\verify*` | 2353 条 Go 端到端断言 | 尚未接入（Linux job 跑不了；`windows-2022` 的 curl job 具备条件，但还没加步骤） |
 | `.\scripts\verify-m*.ps1` + `verify-hardening.ps1` | 1060 条 curl 端到端断言 + 44 条管理面令牌断言 | **绿**：`curl gates (M0-M6, operator token)` job 在 run 37374000997 上 119 秒跑完，9 个门全过 |
 | `scripts/verify-docker-profile.ps1` | 20 条容器画像断言（真二进制、真端口、真 miniredis） | 绿（本机 25 秒，见下「容器的证据边界」） |
@@ -86,8 +86,8 @@ curl -s https://api.github.com/repos/nothing-4413/Infergate/commits/<sha>/check-
 按这个边界，`e746a5b` 之后每个 run 能读到的只有"两个 job 各自的终态"：base job 红、curl gates job 绿，
 **红在哪一步、为什么红，在本机读不到**。所以 race 那一项的状态是"代码已按判据改过，复测结论待外部通路恢复"。
 
-**为什么 race 那一项从"红"改成了"已定位"**：它在 runner 上红，而本机普通 `go test` 全绿、连
-`-count=3` 都无抖动。依据是两处**测试代码**的共享计数器——`internal/embed/embed_test.go` 的
+**为什么 race 那一项有把握说是绿了**：它在 runner 上红，而本机普通 `go test` 全绿、连 `-count=3`
+都无抖动。第一轮修的是两处**测试代码**的共享计数器——`internal/embed/embed_test.go` 的
 `gotPath`/`gotAuth`/`gotReq`、`internal/gateway/proxy_test.go` 的 `aHits`/`bHits`/`hits`——都由
 `httptest` 的 handler goroutine 写、由测试 goroutine 读。往返一个 socket **不是** race detector
 承认的 happens-before 边（`httptest` 只在 `Close` 里等 handler，那已在读之后），所以这类代码在
@@ -95,7 +95,37 @@ curl -s https://api.github.com/repos/nothing-4413/Infergate/commits/<sha>/check-
 （`internal/gateway/failover_test.go:388` 早就是这么写的）。同一次还修掉一个真实的生产竞态：
 `internal/router/router.go` 的 `Router.rand` 是 `*math/rand.Rand`（文档明示不可并发使用），而每个
 请求 goroutine 都会经 `Plan` 走到 `orderWeighted`；现在改用包级 `rand.Float64`/`rand.Intn`。
-**本机无法验证这条修复**（CGO_ENABLED=0、全机无 C 编译器），所以它的判据只能来自 runner。
+
+**但那还不是全部，而当时没有任何办法知道。** 2026-10-19 在这台机器上找到了一个一直存在的 C 编译器
+（`C:\msys64\ucrt64\bin\gcc.exe`，15.2.0；另有一套 MSVC 14.44 在 Visual Studio 2022 下），于是
+`-race` 在本机可跑。配方已写成脚本，与 CI 同形逐包跑：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run-race.ps1
+```
+
+它做三件事：把 `C:\msys64\ucrt64\bin` 加进 `PATH`、设 `CC`/`CGO_ENABLED`、把 `TMP`/`TEMP` 指向仓库内的
+`.gotmp`——**最后一条是关键**，否则 cgo 把 gcc 的输入写进 `%LOCALAPPDATA%\Temp` 被拒
+（`cgo: open ...cgo-gcc-input-...: Access is denied.`）。`internal/repofmt/race_recipe_test.go` 钉住
+这个脚本仍存在、仍是纯 ASCII 无 BOM、仍设这三个变量、仍在失败时于 stdout 点名包并以非零退出，也钉住
+README 与本文仍然指向它：**这配方原本只是一段散文，而散文正是漂移掉的东西。**
+
+按 CI 的形状逐包跑一遍，答案立刻清楚了：**36 个包、35 绿、1 红——`internal/cache`**。报告指向的是
+**生产代码**而不是测试代码：`cache.(*RedisStore).Get()` 在 `internal/cache/redis.go:143` 读
+`s.stats.Gets++` 写过的同一地址，另有 `Search()` 在 `redis.go:273`（`Searches++`）与 `redis.go:299`
+（`Scanned++`）。`RedisStore.stats` 是一个裸结构体字段，29 处写入点分布在每个请求 goroutine 上，
+而 `/admin/cache` 会并发读它；memory store 一直有一把锁（`internal/cache/memory.go:22`），
+Redis store 漏了——很可能因为 Redis 客户端的连接池本身并发安全，看起来周围也就都安全。
+
+修法是 29 处写入全部走一个持锁的 helper（`func (s *RedisStore) bump(f func(st *StoreStats))`），
+`Stats()` 在同一把锁下拷贝；回归测试 `TestStoreStatsSurviveConcurrentReaders` 对两种 store 各起
+4 个 writer 和 1 个 `Stats()` reader，补上的正是旧 conformance 测试缺的那一环（它并发驱动
+Put/Get/Search，但**从没有人一边写一边读 Stats()**，而 /admin 正是这么读的）。
+
+**这仍然是本机证据，不是 runner 证据**：逐包跑完全树是 **36 个包、0 个失败、0 条 `DATA RACE` 行、
+218 秒**，但新 run 的 job 与 check-run 列表依旧对匿名读者返回 `total_count: 0`（见上），所以
+"runner 上的 race 步绿了"这句话目前没有外部证明，只有 `ec83c07` 之后的 run 终态可读。这一段的
+诚实说法是：**根因已在本机复现并修掉，全树 `-race` 本机全绿；runner 复测结果等那条通路恢复**。
 
 四条被测定为死路、不要再试的做法：
 

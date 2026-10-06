@@ -200,9 +200,26 @@ docker compose down
 
 `tools/go.cmd` 把这两件事封在一处，其余命令统一通过它调用（例如 `tools\go.cmd build ./...`）。
 
-其它已知限制：`go test -race` 不可用（本机无 gcc，race 需要 cgo），并发正确性靠"单 writer 结构 +
-非 race 测试"论证；HTTPS 只有 Node / Go 的 TLS 栈可用，PowerShell / curl 的 schannel 取不到凭证，
+其它已知限制：HTTPS 只有 Node / Go 的 TLS 栈可用，PowerShell / curl 的 schannel 取不到凭证，
 所以验收脚本只打本机回环地址。
+
+`go test -race` 需要 cgo，而 `gcc` 不在 PATH 上，所以早期版本的这里写着"本机跑不了"。实际上这台
+机器有编译器——`C:\msys64\ucrt64\bin\gcc.exe`（15.2.0）与 Visual Studio 2022 的 MSVC 14.44——
+只要显式指路就能跑。配方已经写进脚本，逐包跑（与 CI 同形，一次报告全部被拒的包）：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run-race.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run-race.ps1 -Package ./internal/cache
+```
+
+它做的三件事就是原来那段手抄命令的三行：把 `C:\msys64\ucrt64\bin` 加进 `PATH`、设 `CC=gcc` 与
+`CGO_ENABLED=1`、把 `TMP`/`TEMP` 指向仓库内的 `.gotmp`（**这一条是关键**：否则 cgo 把中间文件写进
+`%LOCALAPPDATA%\Temp`，报 `cgo: open ...cgo-gcc-input-...: Access is denied.`）。没有编译器时以
+退出码 2 明确拒绝，而不是留下一个看不懂的链接错误。
+
+这一步立刻就抓到了一条 CI 一直红着的真实竞态（`internal/cache/redis.go` 的 `RedisStore.stats`，
+详见 [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md)）。修完逐包跑完全树是 **36 个包全绿、0 条 `DATA RACE`
+行、218 秒**。
 
 ---
 
@@ -362,19 +379,20 @@ access:
 
 ## 10. 已知限制与取舍
 
-- **本机跑不了 `go test -race`**（无 gcc），所以它被放进了 CI 的 Linux 门（`.github/workflows/ci.yml`）——
-  也就是说这条限制是"本机不可复现"，不是"没验过"。这个步骤真的红过（run 37374000997 起），
-  失败测试名与完整 `DATA RACE` 报告会走两条路：
-  - **匿名可读**：`scripts/ci-publish-failure-check.sh` 用 `POST /check-runs` 建一个**自己的** check run，
-    把摘要写进它的 `output.summary`。任何人无需 token、无需下载即可读：
-    `curl -s https://api.github.com/repos/nothing-4413/Infergate/commits/<sha>/check-runs`
-  - **登录可读**：同一份文本（`/tmp/ci-summary-*.md`，与上面那份是同一个文件）append 进该 job 的 step summary；
-    原始 transcript 是 `go-test-logs` artifact。
-  在此之前试过三种都失败的做法，写在这里免得重复：`grep` 进步骤日志（只在有权限时有用）；`$GITHUB_STEP_SUMMARY`
-  （**不进** check-runs 的 `output.summary`，也不在匿名 job 页面里）；`PATCH` 本 job 自己的 check run
-  （返回 2xx，但 **job 一结束该字段就被清空**，run 37377940124 已测定）。**"创建"与"修改"是两回事**：
-  自己创建的 check run 不会被 GitHub 回收，这才是那条通道（run 37379724217 的探测证实）。
-  唯一匿名可读的是**步骤清单**（哪一步红、耗时多少），所以 race 那一关**逐个包跑**，红的那一步直接以包名命名。
+- **CI 的 race 步曾经一直红，根因已在本机复现并修掉**：`internal/cache/redis.go` 的 `RedisStore.stats`
+  是裸字段，29 处写入点分布在每个请求 goroutine 上，而 `/admin/cache` 会并发读它（§4 有本机跑
+  `-race` 的配方）。修复提交是 `ec83c07`。但**"runner 上复测绿了"这句话目前没有外部证明**：
+  从 run 37380607350 起，匿名读者能读到的只有终态。
+  - 设计里原本给 race 失败准备了两条读法，**两条都被实测关掉了**：`$GITHUB_STEP_SUMMARY` 不进
+    check-runs 的 `output.summary`；`PATCH` 本 job 自己的 check run 返回 2xx 但 job 一结束字段即被清空
+    （run 37377940124 测定）。唯一活下来的是 `scripts/ci-publish-failure-check.sh` 用
+    `POST /check-runs` 建一个**自己的** check run——"创建"与"修改"是两回事，自己创建的不会被回收
+    （run 37379724217 的探测证实）。
+  - **但那条通路对这批 sha 也没有可读证据**：`GET /actions/runs/{id}/jobs` 与
+    `GET /commits/{sha}/check-runs` 对新 run 一律返回 `total_count: 0`，新 run 的 HTML 页面本身也被
+    重定向到 commit 页。所以 race 与 curl 门这两项的 runner 结论暂时只有红/绿、没有原因。
+  - job 日志（`GET /actions/jobs/{id}/logs`）与 artifact 下载对匿名读者都是 **403**
+    （`{"message":"Must have admin rights to Repository.", "status":403}`）。
 - **测量不是容量承诺**：绝对 QPS 依赖这台主机、这个 mock 和这个客户端；带轮间噪声带的结论才算结论。
 - **云层在 M4 里是 stand-in**：分层路由的跨层延迟差是"本地真模型 + 本仓 mock"的差，不是与真实云 API 的对比。
 - **量化对比是 drift 不是精度**：AWQ/GPTQ 与 FP16 的输出差异以文本漂移度衡量，没有人工或自动评分。
