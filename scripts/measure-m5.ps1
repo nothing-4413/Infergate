@@ -155,10 +155,11 @@ $fleetPorts = @($ports.A, $ports.B, $ports.C, $ports.D)
 $mockBase = "http://127.0.0.1:$mockPort"
 $collectorBase = "http://127.0.0.1:$collectorPort"
 $otlpPath = '/v1/traces'
-# `otlp.endpoint` is a BASE url: internal/traceexport/otlp.go:43-46 documents it
-# as "the collector's base URL, e.g. http://127.0.0.1:4318. Export POSTs to
-# <Endpoint>/v1/traces", and otlp.go:153 builds the POST url as
-#   strings.TrimSuffix(endpoint, "/") + "/v1/traces"
+# `otlp.endpoint` is a BASE url: the OTLPOptions.Endpoint comment in
+# internal/traceexport/otlp.go documents it as "the collector's base URL, e.g.
+# http://127.0.0.1:4318. Export POSTs to <Endpoint>/v1/traces", and NewOTLP
+# builds the POST url as
+#   strings.TrimSuffix(opts.Endpoint, "/") + "/v1/traces"
 # so the configured value must NOT already carry the path. scripts\verify-m5.ps1
 # configures the same base form. The path the collector should therefore see is
 # exactly $otlpPath, and a POST to anything else is a harness configuration bug.
@@ -1682,8 +1683,8 @@ try {
             }
             elseif ($p -eq $otlpConstructedPath) {
                 # The exporter builds its POST URL as base endpoint + '/v1/traces'
-                # (internal/traceexport/otlp.go:153) and the endpoint option is
-                # documented as a BASE url (otlp.go:43-46, configs/observability.yaml).
+                # (NewOTLP in internal/traceexport/otlp.go) and the endpoint option is
+                # documented as a BASE url (OTLPOptions.Endpoint there, and configs/observability.yaml).
                 # With the base form configured this branch cannot be reached; if
                 # it ever is, the harness configured the endpoint WITH the path and
                 # the collector saw a doubled path (the harness's bug, not the
@@ -1721,7 +1722,7 @@ try {
         endpoint_path_mismatch = [bool](-not $otlpPathOk)
         service_name_in_a_received_body = [bool]$serviceInBody
         configured_service_name = $otlpServiceName
-        note = 'otlp.endpoint is a BASE url (internal/traceexport/otlp.go:43-46,153), so every POST must land on the configured base plus /v1/traces and nothing else; the mock collector records bodies but /requests omits them (the field is unexported), so the service-name assertion reads GET /dump'
+        note = 'otlp.endpoint is a BASE url: OTLPOptions.Endpoint in internal/traceexport/otlp.go documents it as one and NewOTLP appends /v1/traces, so every POST must land on the configured base plus /v1/traces and nothing else; the mock collector records bodies but /requests omits them (the field is unexported), so the service-name assertion reads GET /dump'
     }
     Add-Check 'otlp_exporter_exported_and_collector_received' (($otlpExported -gt 0) -and ($otlpFailed -eq 0) -and $otlpPathOk -and $serviceInBody) `
         ("otlp.exported=$otlpExported failed=$otlpFailed; collector recorded $collectorCount POST(s), all of them must be on '$otlpPath' " +
@@ -1881,7 +1882,7 @@ try {
     else {
         $faster = @($bottleneckRows | Where-Object { $_.direction -eq 'gateway-faster' })
         if ($faster.Count -gt 0) {
-            [void]$script:limitations.Add(("BOTTLENECK SUMMARY: a through-the-gateway arm beat the direct-to-mock arm ({0}), which sounds like 'the proxy hop is free' and is NOT: cmd\loadtest already raises its own transport pool (cmd\loadtest/main.go:1297-1309 sets MaxIdleConns 512, MaxIdleConnsPerHost 256, ForceAttemptHTTP2 true), so the difference is not a default-2-idle-conns client either. This harness cannot separate the client's connection handling from the mock's, so a FASTER-through-the-gateway workload yields no gateway-capacity claim in either direction -- it only tells you that this mock and this client, not the gateway, set the ceiling for that workload." -f (($faster | ForEach-Object { $_.workload }) -join ', ')))
+            [void]$script:limitations.Add(("BOTTLENECK SUMMARY: a through-the-gateway arm beat the direct-to-mock arm ({0}), which sounds like 'the proxy hop is free' and is NOT: cmd\loadtest already raises its own transport pool (cmd\loadtest's newClient sets MaxIdleConns 512, MaxIdleConnsPerHost 256 and ForceAttemptHTTP2 true), so the difference is not a default-2-idle-conns client either. This harness cannot separate the client's connection handling from the mock's, so a FASTER-through-the-gateway workload yields no gateway-capacity claim in either direction -- it only tells you that this mock and this client, not the gateway, set the ceiling for that workload." -f (($faster | ForEach-Object { $_.workload }) -join ', ')))
         }
         $slower = @($bottleneckRows | Where-Object { $_.direction -eq 'gateway-slower' })
         if ($slower.Count -gt 0) {
@@ -1906,9 +1907,10 @@ try {
     if ($tracingProbe['endpoint_path_mismatch']) {
         # With the base-url endpoint this cannot happen. If it ever does, the
         # HARNESS is misconfigured (it handed the exporter a url that already
-        # carried the path), not the gateway: internal/traceexport/otlp.go:43-46
-        # documents otlp.endpoint as a base URL and :153 appends '/v1/traces'.
-        [void]$script:limitations.Add(("OTLP ENDPOINT PATH (HARNESS CONFIGURATION ERROR, not a gateway defect): otlp.endpoint is a BASE url (internal/traceexport/otlp.go:43-46,153), and this run configured '{0}' while the collector saw POSTs at '{1}'. A real collector on ':4318' is configured in the base form, so the fix is in this harness's config, not in the gateway. Exporter counters for this run: exported={2}, failed={3}." -f $otlpEndpoint, ($collectorBase + $otlpConstructedPath), [string]$tracingProbe['otlp_exported'], [string]$tracingProbe['otlp_failed']))
+        # carried the path), not the gateway: internal/traceexport/otlp.go's
+        # OTLPOptions.Endpoint documents it as a base URL and NewOTLP appends
+        # '/v1/traces'.
+        [void]$script:limitations.Add(("OTLP ENDPOINT PATH (HARNESS CONFIGURATION ERROR, not a gateway defect): otlp.endpoint is a BASE url (OTLPOptions.Endpoint in internal/traceexport/otlp.go documents it as one and NewOTLP appends the path), and this run configured '{0}' while the collector saw POSTs at '{1}'. A real collector on ':4318' is configured in the base form, so the fix is in this harness's config, not in the gateway. Exporter counters for this run: exported={2}, failed={3}." -f $otlpEndpoint, ($collectorBase + $otlpConstructedPath), [string]$tracingProbe['otlp_exported'], [string]$tracingProbe['otlp_failed']))
     }
     foreach ($lim in $script:limitations) { Write-Host "  - $lim" -ForegroundColor DarkGray }
 
