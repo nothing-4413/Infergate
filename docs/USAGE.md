@@ -39,6 +39,10 @@ README 只保留最短路径；本文是它原本的完整版：每个里程碑�
 mock 的常用开关：`-token-delay 0` 关掉每 token 的 15ms 间隔（**压测时必须关**，否则测到的是 mock
 的速度而不是网关的），`-ttfb` 控制首帧前的停顿。另外 mock 认这些请求头做故障注入：
 `X-Mock-Status`、`X-Mock-Delay`、`X-Mock-TTFB`、`X-Mock-Omit-Done`，并在响应上回写 `X-Mock-Upstream`。
+两个时长头的值**读不懂或为负就是 400**，报文点名是哪个头（`X-Mock-Delay must be a duration such as
+"250ms": "300"`），不会被当成"没有延迟"：把 `300ms` 写成 `300` 曾经是静默失效的，那样门禁就会对着
+一场从未减速的场景报绿（`X-Mock-TTFB` 以前还在 SSE 响应头发出之后才解析，那时已经无法回 400）。
+`internal/mockbackend`（Go 验收器用的进程内 mock）对同样的头做同样的检查。
 
 > **端口提示**：本机 `127.0.0.1:8080` 已被其它进程占用时，网关只能绑到 `[::]:8080`；
 > Windows 会优先把 `127.0.0.1` 的请求交给那个更具体的绑定，于是 `/healthz` 会莫名其妙返回别人的 404。

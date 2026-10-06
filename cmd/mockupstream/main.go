@@ -248,8 +248,32 @@ func (s *server) chat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The timing headers are read first, before a response shape is chosen, so
+	// that an unreadable value is a 400 naming the header instead of a silent
+	// "no delay". That distinction is the point: an injected stall is how a gate
+	// creates the window it then measures, and a mock that answers an unreadable
+	// "300" (rather than "300ms") in microseconds would leave the gate measuring
+	// a provider that was never slowed. A malformed request is answered by name
+	// even when it also carries X-Mock-Status; internal/mockbackend orders the
+	// same two checks the same way. X-Mock-TTFB used to be parsed after the SSE
+	// headers had been committed, where a 400 is no longer possible.
+	delay, err := durationHeader(r, "X-Mock-Delay")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody(err.Error(), "invalid_request_error"))
+		return
+	}
+	ttfb, err := durationHeader(r, "X-Mock-TTFB")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody(err.Error(), "invalid_request_error"))
+		return
+	}
+
 	// Fault injection, driven by headers so a client can exercise error paths
 	// without recompiling the mock. This is what M1's failover tests point at.
+	// An injected status is answered immediately, before the delay below: the
+	// delay is there to widen a window around a real answer, while a status IS
+	// the answer. (internal/mockbackend deliberately does the opposite with its
+	// ttfb stall, because there the slow failure itself is what is measured.)
 	if v := r.Header.Get("X-Mock-Status"); v != "" {
 		code, err := strconv.Atoi(v)
 		if err != nil {
@@ -259,10 +283,8 @@ func (s *server) chat(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, code, errorBody(fmt.Sprintf("injected status %d", code), "mock_error"))
 		return
 	}
-	if d := r.Header.Get("X-Mock-Delay"); d != "" {
-		if dur, err := time.ParseDuration(d); err == nil {
-			time.Sleep(dur)
-		}
+	if delay > 0 {
+		time.Sleep(delay)
 	}
 
 	var req chatRequest
@@ -321,7 +343,7 @@ func (s *server) chat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Stream {
-		s.streamChat(cw, r, req, match)
+		s.streamChat(cw, r, req, match, ttfb)
 	} else {
 		s.wholeChat(cw, req, match)
 	}
@@ -371,8 +393,11 @@ func (s *server) wholeChat(w http.ResponseWriter, req chatRequest, match *script
 
 // streamChat writes a real SSE response: one flushed chunk per token-sized
 // delta, then a usage frame, then the [DONE] sentinel. match is the scripted
-// response to honour, or nil in today's behaviour.
-func (s *server) streamChat(w http.ResponseWriter, r *http.Request, req chatRequest, match *scriptMatch) {
+// response to honour, or nil in today's behaviour. ttfb is the caller-supplied
+// stall, already parsed by chat: it is passed in rather than read again here
+// because by this point the SSE headers are committed and a bad value could no
+// longer be answered with a 400.
+func (s *server) streamChat(w http.ResponseWriter, r *http.Request, req chatRequest, match *scriptMatch, ttfb time.Duration) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
@@ -399,14 +424,15 @@ func (s *server) streamChat(w http.ResponseWriter, r *http.Request, req chatRequ
 	}
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
-	// A caller-supplied stall is how the streaming timeout path is tested.
-	if d := r.Header.Get("X-Mock-TTFB"); d != "" {
-		if dur, err := time.ParseDuration(d); err == nil {
-			select {
-			case <-time.After(dur):
-			case <-r.Context().Done():
-				return
-			}
+	// A caller-supplied stall is how the streaming timeout path is tested. It was
+	// parsed in chat, before the header above went out: an unreadable value is a
+	// 400 there, because answering it with "no stall" here would be the silent
+	// no-op this mock must not have.
+	if ttfb > 0 {
+		select {
+		case <-time.After(ttfb):
+		case <-r.Context().Done():
+			return
 		}
 	}
 
@@ -673,6 +699,26 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return s[:max] + "..."
+}
+
+// durationHeader parses one of the mock's timing headers. An unreadable or
+// negative value is an error rather than a zero, because "no delay" is a
+// perfectly plausible reading of an ignored header: the request would succeed,
+// the gate would pass, and the only thing that never happened is the effect the
+// gate meant to inject.
+func durationHeader(r *http.Request, name string) (time.Duration, error) {
+	v := r.Header.Get(name)
+	if v == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be a duration such as \"250ms\": %q", name, v)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("%s must not be negative: %q", name, v)
+	}
+	return d, nil
 }
 
 func errorBody(message, kind string) map[string]any {

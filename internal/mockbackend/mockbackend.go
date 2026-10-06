@@ -171,12 +171,12 @@ func (b *Backend) SetFailStatus(status int) { b.failState.Store(int32(status)) }
 // a timeout scenario is what the gateway does to state that already exists.
 func (b *Backend) SetStall(d time.Duration) { b.stallFor.Store(int64(d)) }
 
-// stall returns how long this backend should wait before answering. The
-// runtime value wins over the configured one, and the per-request header wins
-// over both so a single request can be slowed without disturbing the others.
-func (b *Backend) stall(r *http.Request) time.Duration {
-	if d := durationHeader(r, HeaderTTFB); d > 0 {
-		return d
+// stall returns how long this backend should wait before answering. The header
+// value, already parsed and validated by chat, wins over the runtime value,
+// which wins over the configured one.
+func (b *Backend) stall(header time.Duration) time.Duration {
+	if header > 0 {
+		return header
 	}
 	if d := time.Duration(b.stallFor.Load()); d > 0 {
 		return d
@@ -208,6 +208,21 @@ func (b *Backend) chat(w http.ResponseWriter, r *http.Request) {
 	})
 	b.mu.Unlock()
 
+	// The timing headers are parsed before anything is written, so an unreadable
+	// value is a 400 that names the header rather than a silent "no stall".
+	// HeaderStatus below keeps its precedence: a request that injects a status
+	// never reaches the sleeps, and that ordering is older than this check.
+	ttfb, err := durationHeader(r, HeaderTTFB)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody(err.Error(), "invalid_request_error"))
+		return
+	}
+	delay, err := durationHeader(r, HeaderDelay)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody(err.Error(), "invalid_request_error"))
+		return
+	}
+
 	// The stall applies to EVERY answer, streaming or not, and happens before
 	// either the injected status or the real response is written. Tying it to
 	// the stream path only made a non-streaming "slow backend" answer in
@@ -217,7 +232,7 @@ func (b *Backend) chat(w http.ResponseWriter, r *http.Request) {
 	// Sleeping before the injected status matters too -- a backend that fails
 	// slowly is what makes failover cost measurable, and a failing-fast backend
 	// hides that cost.
-	if stall := b.stall(r); stall > 0 {
+	if stall := b.stall(ttfb); stall > 0 {
 		time.Sleep(stall)
 	}
 
@@ -238,8 +253,8 @@ func (b *Backend) chat(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, code, errorBody(fmt.Sprintf("%s is permanently failing with %d", b.name, code), "mock_error"))
 		return
 	}
-	if d := durationHeader(r, HeaderDelay); d > 0 {
-		time.Sleep(d)
+	if delay > 0 {
+		time.Sleep(delay)
 	}
 	if req.Model == "" {
 		writeJSON(w, http.StatusBadRequest, errorBody("you must provide a model parameter", "invalid_request_error"))
@@ -320,16 +335,24 @@ func (b *Backend) streamChat(w http.ResponseWriter, r *http.Request, model strin
 // replica answered without reading the body.
 const HeaderUpstreamName = "X-Mock-Upstream"
 
-func durationHeader(r *http.Request, name string) time.Duration {
+// durationHeader parses one of the fault-injection timing headers. An
+// unreadable or negative value is an error rather than a zero: "no stall" is a
+// plausible reading of an ignored header, so a verifier that meant to slow a
+// backend down would instead get an instant answer and a timeout scenario that
+// proves nothing.
+func durationHeader(r *http.Request, name string) (time.Duration, error) {
 	v := r.Header.Get(name)
 	if v == "" {
-		return 0
+		return 0, nil
 	}
 	d, err := time.ParseDuration(v)
 	if err != nil {
-		return 0
+		return 0, fmt.Errorf("%s must be a duration such as \"250ms\": %q", name, v)
 	}
-	return d
+	if d < 0 {
+		return 0, fmt.Errorf("%s must not be negative: %q", name, v)
+	}
+	return d, nil
 }
 
 func readAll(r *http.Request) ([]byte, error) {

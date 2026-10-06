@@ -126,7 +126,9 @@ curl.exe -s -X POST "http://127.0.0.1:8080/v1/chat/completions" `
 
 mock 的常用开关：`-token-delay 0` 关掉每 token 的 15ms 间隔（**压测时必须关**，否则测到的是 mock
 而不是网关），`-ttfb` 控制首帧前的停顿；故障注入用请求头 `X-Mock-Status` / `X-Mock-Delay` /
-`X-Mock-TTFB` / `X-Mock-Omit-Done`。
+`X-Mock-TTFB` / `X-Mock-Omit-Done`。这几个头的值**读不懂就是 400**（点名是哪个头，例如
+`X-Mock-Delay must be a duration such as "250ms": "300"`），不会被当成"没有延迟"——一个被悄悄忽略的
+注入头会让门禁对着一场从未发生的场景报绿。
 
 > **端口提示**：本机 `127.0.0.1:8080` 被其它进程占用时，网关只能绑到 `[::]:8080`，
 > Windows 会把 `127.0.0.1` 的请求交给那个更具体的绑定，于是 `/healthz` 莫名其妙返回别人的 404。
