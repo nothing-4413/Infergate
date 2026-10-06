@@ -140,6 +140,10 @@ step 7 `go test` failure、step 9 `go test -race` **skipped**、step 11
 断言值没变（`calls=1 dropped=1 failed=0`），只是改成在 2 秒内轮询等待；本机连跑 300 次（含 `-race`）
 仍是绿的，所以这条修复的依据是代码里的先后顺序，不是本机复现。如果下一次 Linux 红 run 给出的是
 另一条原因行（例如"want a transport error, got status 200"），那说明还有第二个缺陷，而新摘要会直接说出来。
+过滤器本身现在有行为测试：`internal/repofmt/summarize_fragment_test.go` 的
+`TestSummarizeKeepsWhyATestFailed` **真跑那个脚本**，喂一份 37414903323 形状的 transcript，要求片段里有
+失败测试名、它下面那行原因、包行与完整 race 报告，同时不含"没有结果的日志行"（此前只有字符串检查：
+`ci_wiring_test.go` 只断言脚本里还有 `DATA RACE` 字样）。它在没有 `bash`/`awk` 时 skip，Linux runner 两样都有。
 
 在它变成"从未执行"之前，这里曾经写的是"GitHub 侧的一次异常"：从 run 37380607350（head `760c303`）
 起，`GET /actions/runs/{id}/jobs` 与 `GET /commits/{sha}/check-runs` 都返回 `total_count: 0`，而更早的
