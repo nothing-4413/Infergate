@@ -47,9 +47,9 @@ curl 门编译真二进制、拉真进程、用真 `curl.exe` 打真 socket，�
 | `gofmt -l ./cmd ./internal` | 格式门 | 绿（加入这一步时仓库里有 7 个文件不干净，已一并修好） |
 | `go test ./... -count=1 -timeout 20m` | 全部单元/集成测试（Linux，无 `-race`） | 绿（同 run step 7） |
 | `go test -race` **逐个包**（`go list ./...` 循环，失败继续跑下一个） | 竞态检测（本机配方见下） | **runner 绿**：run 37408647484 step 9 `go test -race` success（整个 job 2 分 28 秒）；本机同样 36 个包全绿（218 秒，0 条 `DATA RACE`） |
-| `.\tools\go.cmd run .\cmd\verify*` | 2353 条 Go 端到端断言 | 绿（本机 31 秒跑完七包）；已接进 `curl gates` job 的 `go verify gates (M0-M6)` 步骤，但**这个步骤还没有 runner 证据**——它是 run 37410701867 之后加的 |
-| `.\scripts\verify-m*.ps1` + `verify-hardening.ps1` | 1060 条 curl 端到端断言 + 44 条管理面令牌断言 | **绿**：`curl gates (M0-M6, operator token)` job 在 run 37408647484 上 1 分 55 秒跑完，9 个门（M0–M6 + operator token）全部 success |
-| `scripts/lib/summarize-gates.ps1`（job 内**唯一**不允许失败的一步） | 9 个门（八个 curl + 一个 Go）的 marker 文件都在且都写着 0 | **绿**：run 37410701867（head `e248c7a`）step 12 `every gate must have passed` success，同 run 八个门步骤也全 success（第九个门见上一行）；本机 5 个用例全过（见下） |
+| `.\tools\go.cmd run .\cmd\verify*` | 2353 条 Go 端到端断言 | **runner 绿**：run 37413713212（head `6ec3554`）的 `curl gates` job step 12 `go verify gates (M0-M6)` success —— 这是它第一次在 runner 上跑；本机 31 秒跑完七包、2353/2353、写 marker 0 |
+| `.\scripts\verify-m*.ps1` + `verify-hardening.ps1` | 1060 条 curl 端到端断言 + 44 条管理面令牌断言 | **绿**：`curl gates (M0-M6, operator token)` job 在 run 37408647484 上 1 分 55 秒跑完，9 个门（M0–M6 + operator token）全部 success；run 37413713212 上同样 9 个门全 success（head `6ec3554`，该 job 2 分 15 秒） |
+| `scripts/lib/summarize-gates.ps1`（job 内**唯一**不允许失败的一步） | 9 个门（八个 curl + 一个 Go）的 marker 文件都在且都写着 0 | **绿**：run 37413713212（head `6ec3554`）step 13 `every gate must have passed` success，它前面**九个门步骤全部 success**——第一次读齐九个 marker；更早的 run 37410701867（head `e248c7a`）step 12 是只有八个门时的同一结论；本机 5 个用例全过（见下） |
 | `scripts/verify-docker-profile.ps1` | 20 条容器画像断言（真二进制、真端口、真 miniredis） | 绿（本机 25 秒，见下「容器的证据边界」） |
 
 **这批结论是 run 37408647484（head `29ed38c`）的**，也就是修好 `ci.yml` 之后的第一个真正执行的 run：
@@ -75,17 +75,22 @@ marker 缺失、内容不可解析、非 0，三种都算红，把失败门与�
 `-Gates` 这个参数名原来是 `-Expect`，改名的原因是它让 `go test` 里的 PowerShell 子进程挂 30 秒被
 杀掉（命令行里任何以 `-Ex` 开头的参数都能复现，见脚本头部注释）。
 
-**这条反制步骤的绿路径已在 runner 上走过，红路径只有本机证据。** run **37410701867**（head `e248c7a`）
-的 `curl gates` job 是 `success`，13 个步骤里第 12 步就是 `every gate must have passed`（`conclusion:
-success`），它前面八个门步骤也都是 success（那次 run 里还没有第九个门）—— 也就是说这个步骤真的在
-runner 上跑了、读到了八个 marker、并且没有误报。它**真的会红吗**这个问题只有本机证据：`TestSummarizeGatesFailsClosed` 用合成 marker 让
+**这条反制步骤的绿路径已在 runner 上走过，红路径只有本机证据。** 它跑过两次：run **37410701867**
+（head `e248c7a`）的 `curl gates` job 是 `success`，第 12 步 `every gate must have passed`（`conclusion:
+success`）前面八个门步骤也是 success（那次还没有第九个门）；run **37413713212**（head `6ec3554`）的同一个
+job 是 `success`，第 13 步同样的结论，而它前面**九个**门步骤（第八个是 `operator token gate`，第九个是新的
+`go verify gates (M0-M6)`）全部 success —— 也就是说这个步骤真的在 runner 上跑了、读齐了九个 marker、
+并且没有误报。
+它**真的会红吗**这个问题只有本机证据：`TestSummarizeGatesFailsClosed` 用合成 marker 让
 脚本在「一门红 / marker 缺失 / marker 不可解析 / 没点出任何门」四种情形下都 `exit 1`，并检查它留下的
 `gate-failures.md` 里写清了是谁红了。（在 runner 上制造一次红门需要故意弄坏一个门，代价是那次 run 的
 其余结论全部作废，所以这里选择记录边界而不是制造证据。）
 
 **第九个门里 M5 的偶发已经定根因并修掉。** 症状是 `cmd/verify-m5` 的
-`6.29 the root span reports a derived duration (got 0)`：在本机 20 次连跑里红了 **9 次**，在 runner 上也红过
-一次（run 37371614002 的 M5 步骤）。根因不是产品，而是这台机器上 `time.Now()` 的分辨率：连续两次读数在
+`6.29 the root span reports a derived duration (got 0)`：在本机 20 次连跑里红了 **9 次**。它在 runner 上
+没有先例，因为进程内的这七个验证器是这一批才第一次进 CI（run 37371614002 红过的那一步是 **curl** 的 M5
+门 `verify-m5.ps1`，那是另一回事——curl 门对时长的断言全是 `-ge 0`，从来不要求为正，见 `3.27`、`5.8`、
+`5.11`、`9.8`、`10.4`）。根因不是产品，而是这台机器上 `time.Now()` 的分辨率：连续两次读数在
 200000 次里有 199999 次**完全相同**，50ms 窗口里只有 70 个不同读数（≈0.71ms 一个 tick，相邻间隔
 0.52–1.61ms），用约 440µs 真实忙工作配对出的 300 个跨度里有 **148 个量成 0**（墙钟与 monotonic 都是）。
 mock 后端在一个 tick 之内就答完，跨度就只能是 0，所以 `internal/tracing/trace.go:164` 那条
@@ -94,7 +99,11 @@ flaky 的是验证器里"必须为正"的那三条断言（`4.7` 的 `/stats` ma
 修法是**给 mock 加 think time**、而不是弱化断言：`cmd/verify-m5/harness.go` 新增
 `mockThinkTime = 20 * time.Millisecond`（高于 Windows 最粗的 15.6ms 定时器），`handle` 在写第一个字节之前
 sleep 这么多（健康探针不受影响），因此每个被测请求都真的跨过至少一个时钟步进，三条断言**一条没改**、
-总数仍是 420 条，测量也才真的测到了东西。改后本机连跑 **20/20 全绿**（平均 2.96s，此前 2.6s）。
+总数仍是 420 条，测量也才真的测到了东西。同一类问题在单元测试里也有一处：
+`internal/gateway/tracing_test.go` 的 `TestTraceRecordsOneRequestTrace` 曾在一个全量 run 里因为
+`root.DurationMS <= 0` 变红、单独跑又绿，它的 mock 后端现在同样 `sleep backendThinkTime`（20ms）。
+改后本机连跑 **20/20 全绿**（平均 2.96s，此前 2.6s），`internal/gateway` 整包连跑 3/3 绿；
+run 37413713212 的 `go verify gates (M0-M6)` 步骤 success 说明这一包在 runner 上也是绿的。
 
 两个 `go test` 步骤把整份 transcript 写进 `/tmp`，再由 `scripts/ci-summarize-go-test.sh`
 捕出失败测试与**完整的 DATA RACE 报告**，写进一个分片文件（`/tmp/ci-summary-*.md`）。这个文件随后被

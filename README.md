@@ -416,14 +416,18 @@ access:
   `tmp\gate-failures.md`（随 artifact 上传）再 `exit 1`。钉住它的是 `internal/repofmt/curl_gates_test.go`：
   `TestEveryCurlGateCanFailTheJob` 断言"每个门都带 flag、恰好一个 checker 不带、两份门名单完全一致、
   Go 门列全七个包"，`TestSummarizeGatesFailsClosed` 真跑脚本核对五种情形下的退出码与摘要内容。这条步骤的
-  绿路径已在 run 37410701867（head `e248c7a`）上走过（13 个步骤里第 12 步 `every gate must have passed`
-  = success），红路径只有本机证据——在 runner 上制造一次红门会让那次 run 的其余结论一起作废。第九个门
-  （`go verify gates (M0-M6)`，把 `.\tools\go.cmd run .\cmd\verify*` 的 2353 条断言接进同一条链）是在那次
-  run **之后**加的，所以它**还没有 runner 证据**：本机七包 21.3 秒全过、marker 写 0，两个失败路径
-  （包不存在、包名为空）也验过都是红。这一批同时修掉了这个门里长期未解释的 M5 偶发：`6.29`（根 span 的
-  派生时长必须为正）在本机 20 次连跑里红 9 次、在 runner 上也红过，根因是本机 `time.Now()` 只有约
-  0.5–1.6ms 的步进，mock 在一个 tick 内答完则跨度只能量成 0；修法是给 mock 加 20ms think time
-  （`cmd/verify-m5/harness.go` 的 `mockThinkTime`，断言一条没改），改后 20/20 绿。
+  绿路径已在 runner 上走过两次：run 37410701867（head `e248c7a`，当时还是八个门）第 12 步
+  `every gate must have passed` = success；run 37413713212（head `6ec3554`）第 13 步同样的结论，
+  而它前面**九个**门步骤全部 success——那是第九个门
+  （`go verify gates (M0-M6)`，把 `.\tools\go.cmd run .\cmd\verify*` 的 2353 条断言接进同一条链）
+  第一次在 runner 上跑，所以它现在**有** runner 证据，而且是它把 marker 凑齐到九个的那一次。
+  红路径只有本机证据——在 runner 上制造一次红门会让那次 run 的其余结论一起作废（本机：七包 21.3 秒全过、
+  marker 写 0，两个失败路径"包不存在 / 包名为空"都验过是红）。这一批同时修掉了这个门里长期未解释的 M5
+  偶发：`6.29`（根 span 的派生时长必须为正）在本机 20 次连跑里红 9 次（它在 runner 上没有先例，因为进程内
+  验证器是这一批才第一次进 CI；run 37371614002 红过的那一步是 **curl** 的 M5 门，那门对时长只要求
+  `-ge 0`），根因是本机 `time.Now()` 只有约 0.5–1.6ms 的步进，mock 在一个 tick 内答完则跨度只能量成 0；
+  修法是给 mock 加 20ms think time（`cmd/verify-m5/harness.go` 的 `mockThinkTime`，断言一条没改），
+  改后 20/20 绿。
 - **测量不是容量承诺**：绝对 QPS 依赖这台主机、这个 mock 和这个客户端；带轮间噪声带的结论才算结论。
 - **云层在 M4 里是 stand-in**：分层路由的跨层延迟差是"本地真模型 + 本仓 mock"的差，不是与真实云 API 的对比。
 - **量化对比是 drift 不是精度**：AWQ/GPTQ 与 FP16 的输出差异以文本漂移度衡量，没有人工或自动评分。
