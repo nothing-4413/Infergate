@@ -818,11 +818,11 @@ OTLP/HTTP 允许用 protobuf 的 JSON 映射直接 POST 到 `/v1/traces`，所�
 
 ### 12.4 两个被修掉的观测缺陷（都会让面板说谎）
 
-- **TTFT 与流式帧/字节被记了两遍**：`attemptUpstream` 尾部记一次（`internal/gateway/proxy.go:865-870`），
-  `ServeHTTP` 的 defer 又记一次（`internal/gateway/proxy.go:331-336`）。保留 defer 那一处——它同时
+- **TTFT 与流式帧/字节被记了两遍**：`attemptUpstream` 尾部记一次（`internal/gateway/proxy.go`），
+  `ServeHTTP` 的 defer 又记一次（`internal/gateway/proxy.go`）。保留 defer 那一处——它同时
   覆盖缓存命中路径，并且把样本归给真正服务这次请求的上游。
 - **上游跳的 request id 与网关日志里的不是同一个**：`buildRequest` 又调了一次 `requestID(r)`
-  （`internal/gateway/proxy.go:1043`），客户端没带 id 时，上游看到的是一个新造的 id。改成把
+  （`internal/gateway/proxy.go` 的 `buildRequest`），客户端没带 id 时，上游看到的是一个新造的 id。改成把
   `rec.requestID` 传进去，一次请求只有一个 id。
 
 ### 12.5 瓶颈排查的方法：先证伪"网关是瓶颈"
@@ -937,23 +937,24 @@ tracing 的成本里。
 
 ### 13.1 位置：在准入之后、缓存之前
 
-`idempotencyBegin`（`internal/gateway/idempotency.go:30`）夹在配额准入与缓存之间，两侧都是承重的：
+`idempotencyBegin`（`internal/gateway/idempotency.go`）夹在配额准入与缓存之间，两侧都是承重的：
 
 - 放在准入**之后**：重放和缓存命中一样是调用方发起的请求，照样占用每分钟请求配额、但不消耗上游
-  token，所以结算走 `Usage{Requests: 1}`（`idempotency.go:124-125`）。反过来放，一个超预算的租户
+  token，所以结算走 `Usage{Requests: 1}`（`internal/gateway/idempotency.go` 的 `serveReplay` 里那段注释）。反过来放，一个超预算的租户
   可以靠重放继续拿答案，配额就成了摆设。
 - 放在缓存**之前**：重放比缓存命中是**更强**的断言——调用方问的是"我自己那次操作的结果"，不是
   "有没有人问过类似的问题"。顺序反了，一个带 key 的重试会先被语义缓存接走，"这次是重放"这件事
   在账目里就消失了。
 - 非生成类路径带 key 时不报错，而是忽略并在响应上回 `X-InferGate-Idempotent-Store: skip`
-  （`idempotency.go:46-52`）：一个给每个请求都盖 key 的客户端不该因此挂掉，但也不能让它以为自己
+  （`internal/gateway/idempotency.go` 的 `idempotencyBegin` 里那段 `!isCompletionPath` 分支）：
+  一个给每个请求都盖 key 的客户端不该因此挂掉，但也不能让它以为自己
   受了保护——所以这个忽略是**可见**的。
 
 ### 13.2 身份：key 由调用方给，作用域是租户，指纹是请求本身
 
 `KeyOf` 规范化 key，scope 取租户（没有租户头就是 `anonymous`），指纹是
 `requestHash(method, path, body)` = `sha256(method \0 path \0 body)` 的前 16 字节
-（`idempotency.go:272-280`）。method 与 path 进哈希是必要的：同一段 body POST 到 `/v1/embeddings`
+（`internal/gateway/idempotency.go` 的 `requestHash`）。method 与 path 进哈希是必要的：同一段 body POST 到 `/v1/embeddings`
 和 `/v1/chat/completions` 不是同一个操作。
 
 于是每个带 key 的请求有四种归宿：Proceed（我做这次活）、Replay（已经有人做完了）、ConflictBody
@@ -962,22 +963,26 @@ tracing 的成本里。
 **不排队也不并发第二次生成**——在途冲突回 409 而不是等待，正是这个 store 的意义：调用方稍后用同一个
 key 重试就能拿到第一次的答案，而上游总共只被要了一次生成。
 
-Proceed 时立刻回两个头（`idempotency.go:73-74`）：回显 key，并把 `X-InferGate-Idempotent-Replay`
+Proceed 时立刻回两个头（`internal/gateway/idempotency.go` 的 `idempotencyBegin` 里
+`case idempotency.Proceed`）：回显 key，并把 `X-InferGate-Idempotent-Replay`
 显式设成 `false`。让调用方能区分"这次是我干的活"与"你拿到的是上一次的答案"，而不是从"头不存在"
 去推断——后者在一个只读了流的前几个字节的客户端上必然猜错。
 
 ### 13.3 记忆什么、不记忆什么
 
-- **可重放性由 `replayableResponse` 判定**（`idempotency.go:261-266`）：2xx 与 4xx 是确定性答案；
+- **可重放性由 `replayableResponse` 判定**（`internal/gateway/idempotency.go`）：2xx 与 4xx 是确定性答案；
   5xx、超时、被取消的流一律 `Abort` 并释放占用——把一次瞬时失败钉死在一个 key 上，等于把这个操作
   永久变成失败，而调用方的重试恰恰是必须被允许再试一次的那个场景。
 - **写入发生在响应写出之后**：`idempotencyComplete` 由 `serve()` 的 deferred recorder 调用
-  （`internal/gateway/proxy.go:429`），所以再慢的 store 也不会拖慢一个答案。
+  （`internal/gateway/proxy.go` 的 `ServeHTTP` defer，那里调 `idempotencyComplete`），所以再慢的
+  store 也不会拖慢一个答案。
 - **超限的答案照常送达、只是不被记住**。`captureWriter` 是 tee 不是缓冲：每个字节立刻到客户端、
   `Flush` 转发、`Unwrap` 让 `http.ResponseController` 还能拿到 Hijacker；副本上限是
-  `max_response_bytes + 1`，多出来的那一字节就是"答案没装下"的信号（`idempotency.go:75-78`、
-  `300-335`）。为了一个可能永不到来的重试把一个无界答案留在内存里，是网关自己制造事故的方式。
-- **重放把记录的字节原样写出**（`idempotency.go:122-180`）。记录下来的**流式**响应作为一整段 body
+  `max_response_bytes + 1`，多出来的那一字节就是"答案没装下"的信号（`internal/gateway/idempotency.go`
+  的 `idempotencyBegin` 构造 `newCaptureWriter` 的那两行、
+  `captureWriter`）：为了一个可能永不到来的重试把一个无界答案留在内存里，是网关自己制造事故的方式。
+- **重放把记录的字节原样写出**（`internal/gateway/idempotency.go` 的 `serveReplay`）。记录下来的
+  **流式**响应作为一整段 body
   送出：转录就是答案，重新给它编一遍帧时序等于凭空发明一个上游从未有过的生成速度。`storedHeaders`
   会去掉 `Content-Length` / `Transfer-Encoding`（chunked 生成的框架在重放里并不存在）以及
   `X-InferGate-Idempotent-Store`，其余（Content-Type、上游自定义头）原样保留。
@@ -985,13 +990,14 @@ Proceed 时立刻回两个头（`idempotency.go:73-74`）：回显 key，并把 
 ### 13.4 会话账本：同一个头承载会话与配额
 
 `X-InferGate-Session` 一次归属、两处受益：M3 的配额可以按会话记，`/admin/sessions` 又能回答
-"这段对话花了多少"。`Ledger.Record`（`internal/sessions/ledger.go:234`）在一个空 id 处分叉：空/全空白
+"这段对话花了多少"。`Ledger.Record`（`internal/sessions/ledger.go`）在一个空 id 处分叉：空/全空白
 只加 `no_session_id` 并且**不建会话**（"没带会话"与"有一个叫空字符串的会话"是两件事）；否则累计
 requests / ok / failed、token 三态、按**实际服务的模型**定价的成本（`pricing.CostUSD(rec.model, …)`）、
 模型与上游的 rollup，并把 `Recent` 裁到 `recent_per_session`。
 
-- **会话的四个汇总（requests / cost / tokens）在 `/metrics` 里是 gauge 不是 counter**
-  （`internal/server/m6.go:326` 起）：容量淘汰会让它下降，而 Prometheus 的 counter 不允许下降——
+- **会话的三个汇总（requests / cost / tokens）在 `/metrics` 里是 gauge 不是 counter**
+  （`internal/server/m6.go` 的 `writeM6Metrics` 里 `infergate_sessions_*` 三个 gauge 起）：容量淘汰会
+  让它们下降，而 Prometheus 的 counter 不允许下降——
   把它写成 counter 才是"面板说谎"的经典做法。
 - **M6 的指标族刻意不带租户标签**：租户来自调用方可控的请求头，把它做成标签就是让任何人往指标基数里
   注入任意维度。
@@ -1006,8 +1012,9 @@ requests / ok / failed、token 三态、按**实际服务的模型**定价的成
 的并集，`available` 只在所有服务它的后端都熔断时才是 false。这条接口的存在理由很具体：**模型有多少
 上下文，协议本身不会告诉 Agent**，而 Agent 决定要不要压缩历史时必须知道。
 
-`POST /v1/capabilities/probe` 反过来**故意绕过缓存、配额、熔断与重试**（`capabilities.go:373`
-`probeOne`）：探测是诊断流量，不是客户流量。让它去消耗租户预算、或者被一个 open 的熔断器拦掉，就把
+`POST /v1/capabilities/probe` 反过来**故意绕过缓存、配额、熔断与重试**
+（`internal/gateway/capabilities.go` 的 `probeOne`）：探测是诊断流量，不是客户流量。让它去消耗
+租户预算、或者被一个 open 的熔断器拦掉，就把
 "这个后端到底行不行"偷换成了"现在允许我问吗"。分类口径（`classifyProbe`）：401/403 = unauthorized、
 408/429 与 ≥500 = indeterminate、其余 ≥400 = rejected、2xx/3xx = accepted（`stream` 还额外要求
 `text/event-stream`）。返回的 `accepted` 只声明"后端没有拒绝这个请求形状"，**不是**对答案质量的说法
@@ -1025,7 +1032,7 @@ requests / ok / failed、token 三态、按**实际服务的模型**定价的成
 `x-infergate-` 前缀的头。这不是卫生问题，而是跨租户串答案：上游若用自己的幂等实现按这个头去重，
 两个租户凑巧撞上同一个 key 字符串（共享模板里的 UUID、`"retry-1"`、一个日期），第二个租户会拿到
 第一个租户的答案——key 在这里是按租户分作用域的，到了别处就不是了。现在
-`isGatewayHeader`（`internal/gateway/headers.go:270`）把它一并拦下，并由
+`isGatewayHeader`（`internal/gateway/headers.go`）把它一并拦下，并由
 `TestGatewayHeadersDoNotReachProviders` 双向钉死：出站丢 key、`X-InferGate-*`、Connection 列出的头
 与 hop-by-hop，保留 Authorization / Content-Type / 普通自定义头；入站方向仍保留
 `X-Ratelimit-Remaining` 这类上游回传头。

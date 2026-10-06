@@ -93,8 +93,8 @@ job 是 `success`，第 13 步同样的结论，而它前面**九个**门步骤�
 `5.11`、`9.8`、`10.4`）。根因不是产品，而是这台机器上 `time.Now()` 的分辨率：连续两次读数在
 200000 次里有 199999 次**完全相同**，50ms 窗口里只有 70 个不同读数（≈0.71ms 一个 tick，相邻间隔
 0.52–1.61ms），用约 440µs 真实忙工作配对出的 300 个跨度里有 **148 个量成 0**（墙钟与 monotonic 都是）。
-mock 后端在一个 tick 之内就答完，跨度就只能是 0，所以 `internal/tracing/trace.go:164` 那条
-"`EndUnixNano > StartUnixNano` 才派生 `DurationMS`，否则留 0" 是**如实反映平台**，
+mock 后端在一个 tick 之内就答完，跨度就只能是 0，所以 `internal/tracing/trace.go` 的 `Trace.Add` 那条
+"调用方没给 `DurationMS`、且 `EndUnixNano > StartUnixNano` 时才派生它，否则留 0" 是**如实反映平台**，
 flaky 的是验证器里"必须为正"的那三条断言（`4.7` 的 `/stats` max、`6.29`、`10.9` 的首字延迟）。
 修法是**给 mock 加 think time**、而不是弱化断言：`cmd/verify-m5/harness.go` 新增
 `mockThinkTime = 20 * time.Millisecond`（高于 Windows 最粗的 15.6ms 定时器），`handle` 在写第一个字节之前
@@ -107,7 +107,12 @@ run 37413713212 的 `go verify gates (M0-M6)` 步骤 success 说明这一包在 
 
 两个 `go test` 步骤把整份 transcript 写进 `/tmp`，再由 `scripts/ci-summarize-go-test.sh`
 捕出失败测试与**完整的 DATA RACE 报告**，写进一个分片文件（`/tmp/ci-summary-*.md`）。普通失败的
-**原因行**（go test 在 `FAIL` 下面缩进打印的 `script_test.go:462: snapshot = ...`）同样保留——
+**原因行**（go test 在 `FAIL` 下面缩进打印的那一行）同样保留，形状是：
+
+```text
+script_test.go:462: snapshot = ...
+```
+
 run 37414903323 的摘要当时只说了哪个测试红、没说为什么，过滤器就是原因。这个文件随后被
 **读两次、内容完全相同**：append 进该 job 的 **step summary**（`$GITHUB_STEP_SUMMARY`，登录可读），
 并由 `scripts/ci-publish-failure-check.sh` **创建一个自己的 check run** 写进它的 `output.summary`（**匿名可读**）。
@@ -134,7 +139,7 @@ step 7 `go test` failure、step 9 `go test -race` **skipped**、step 11
 这里写的是"这条通路本身仍未在真实 CI 上触发过，原因不再是阻塞，而是没人红过"；现在它红过了。
 
 那次红暴露的两处问题都修了：摘要丢掉失败原因行（见上），以及
-`TestDropClosesWithoutAResponse` 读计数器是**无序读**——`cmd/mockupstream/main.go:311` 的
+`TestDropClosesWithoutAResponse` 读计数器是**无序读**——`cmd/mockupstream/main.go` 里那句
 `defer cw.record()` 在 `cmd/mockupstream/script.go` 那份 drop 路径 `hijack` + `conn.Close()` **之后**
 才记账，客户端观察到连接断掉并不等于服务端已经记完，而 `script_test.go` 是同步读 `/calls`（无网络往返）。
 断言值没变（`calls=1 dropped=1 failed=0`），只是改成在 2 秒内轮询等待；本机连跑 300 次（含 `-race`）
@@ -206,7 +211,8 @@ run: bash scripts/ci-publish-failure-check.sh "$CHECK_TITLE" /tmp/ci-summary-tes
 `httptest` 的 handler goroutine 写、由测试 goroutine 读。往返一个 socket **不是** race detector
 承认的 happens-before 边（`httptest` 只在 `Close` 里等 handler，那已在读之后），所以这类代码在
 无 `-race` 时永远是绿的、在有 `-race` 的机器上必红。修法是 `atomic.Int64` 与一把 mutex
-（`internal/gateway/failover_test.go:388` 早就是这么写的）。同一次还修掉一个真实的生产竞态：
+（`internal/gateway/failover_test.go` 的 `TestBreakerStopsRoutingToADeadBackend` 里
+`primaryHits`/`backupHits` 用的就是 `atomic.Int64`）。同一次还修掉一个真实的生产竞态：
 `internal/router/router.go` 的 `Router.rand` 是 `*math/rand.Rand`（文档明示不可并发使用），而每个
 请求 goroutine 都会经 `Plan` 走到 `orderWeighted`；现在改用包级 `rand.Float64`/`rand.Intn`。
 
@@ -225,10 +231,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run-race.ps1
 README 与本文仍然指向它：**这配方原本只是一段散文，而散文正是漂移掉的东西。**
 
 按 CI 的形状逐包跑一遍，答案立刻清楚了：**36 个包、35 绿、1 红——`internal/cache`**。报告指向的是
-**生产代码**而不是测试代码：`cache.(*RedisStore).Get()` 在 `internal/cache/redis.go:143` 读
-`s.stats.Gets++` 写过的同一地址，另有 `Search()` 在 `redis.go:273`（`Searches++`）与 `redis.go:299`
-（`Scanned++`）。`RedisStore.stats` 是一个裸结构体字段，29 处写入点分布在每个请求 goroutine 上，
-而 `/admin/cache` 会并发读它；memory store 一直有一把锁（`internal/cache/memory.go:22`），
+**生产代码**而不是测试代码：`cache.(*RedisStore).Get()` 在 `internal/cache/redis.go` 里读
+`s.stats.Gets++` 写过的同一地址，另有 `Search()` 里的 `Searches++` 与扫描循环里的 `Scanned++`。
+`RedisStore.stats` 是一个裸结构体字段，29 处写入点分布在每个请求 goroutine 上，
+而 `/admin/cache` 会并发读它；memory store 一直有一把锁（`internal/cache/memory.go` 的
+`MemoryStore.mu`），
 Redis store 漏了——很可能因为 Redis 客户端的连接池本身并发安全，看起来周围也就都安全。
 
 修法是 29 处写入全部走一个持锁的 helper（`func (s *RedisStore) bump(f func(st *StoreStats))`），

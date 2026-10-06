@@ -847,9 +847,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\measure-m4.ps1  # 
   又能回答"这段对话花了多少"（requests/ok/failed、prompt/completion/cached token、按**实际服务的模型**
   定价的成本、模型与上游 rollup、最近 N 条请求）。空 id 只加 `no_session_id` 并且**不建会话**；
   TTL 由 janitor 按 `SweepInterval`（默认 1 分钟）清扫，管理面只报事实（`ttl` 与每条的 `expires_at`），
-  "真的会被清掉"由单测证明，而不是让验收器睡一觉去赌一次清扫。会话的四个汇总在 `/metrics` 里是
-  **gauge 不是 counter**（容量淘汰会让它下降，Prometheus 的 counter 不允许下降），并且刻意**不带租户
-  标签**——租户来自调用方可控的请求头，做成标签就是让人往指标基数里注入任意维度。
+  "真的会被清掉"由单测证明，而不是让验收器睡一觉去赌一次清扫。会话的三个汇总（requests / cost /
+  tokens）在 `/metrics` 里是 **gauge 不是 counter**（容量淘汰会让它下降，Prometheus 的 counter 不允许
+  下降），并且刻意**不带租户标签**——租户来自调用方可控的请求头，做成标签就是让人往指标基数里注入任意维度。
 - **能力发现**：`GET /v1/capabilities` 纯计算、无 I/O，回答"哪些模型存在、上下文窗口与最大输出多少、
   声明了哪些能力、哪些后端在服务它、现在是否可用"——协议本身不会告诉 Agent 一个模型能装多少上下文，
   而 Agent 决定要不要压缩历史时必须知道。`POST /v1/capabilities/probe` 反过来**故意绕过缓存、配额、

@@ -381,7 +381,7 @@ func writeM6Metrics(b *strings.Builder, store *idempotency.Store, ledger *sessio
 		b.WriteString("# TYPE infergate_sessions_tracked gauge\n")
 		b.WriteString("# HELP infergate_sessions_tenants Distinct tenants with at least one tracked session.\n")
 		b.WriteString("# TYPE infergate_sessions_tenants gauge\n")
-		// These four are gauges, not counters, and the distinction is load
+		// These three are gauges, not counters, and the distinction is load
 		// bearing: a session evicted at capacity takes its requests and its
 		// spend out of the sum, so a counter here would go DOWN, which is not
 		// something a Prometheus counter may do.

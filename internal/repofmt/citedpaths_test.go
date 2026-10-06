@@ -34,7 +34,7 @@ import (
 // surfaces below are the ones a reader trusts as a description of the tree.
 func TestEveryCitedRepoPathExists(t *testing.T) {
 	root := repoRoot(t)
-	surfaces := citedPathSurfaces(t, root)
+	surfaces := proseSurfaces(t, root)
 
 	// WHY THE PRECEDING CHARACTER IS PART OF THE MATCH. Go's regexp is RE2 and
 	// has no lookbehind, so the boundary is matched and then discarded instead of
@@ -112,12 +112,12 @@ func TestEveryCitedRepoPathExists(t *testing.T) {
 	}
 }
 
-// citedPathSurfaces lists the files whose prose describes the tree.
+// proseSurfaces lists the files whose text describes the tree.
 //
 // Every entry is checked to exist: a renamed document must not drop out of this
 // check silently, which is exactly how a repository-wide property turns back
 // into an assumption.
-func citedPathSurfaces(t *testing.T, root string) []string {
+func proseSurfaces(t *testing.T, root string) []string {
 	t.Helper()
 
 	surfaces := make([]string, 0, 8)
@@ -205,4 +205,75 @@ func withoutFencedCodeBlocks(text string) string {
 		out.WriteString("\n")
 	}
 	return out.String()
+}
+
+// TestProseCitesSymbolsNotLineNumbers forbids a line number in a citation the
+// prose makes about this repository.
+//
+// WHY. A line number is a claim that another commit can silently falsify, and
+// this repository has the receipts: configs/docker.yaml cited
+// internal/config/config.go for the cache bound, the idempotency ledger and the
+// session ledger at :356, :710 and :733. By the time anyone checked, those three
+// lines held a `Threshold float64` field, an access token slice and the OTLP
+// endpoint -- three citations, three of them wrong, and nothing could have
+// reported it, because nothing compares a document to the file it points at. A
+// symbol (`config.CacheConfig.MaxEntriesPerScope`) or a section
+// (configs/docker.yaml 里 `idempotency:` 的注释) cannot rot that way.
+//
+// WHY FENCES ARE EXEMPT. Quoted command output is a record of what a tool
+// printed once; its line numbers are part of the quote, not a claim about where
+// something lives now. A sample that has to keep its line number therefore
+// belongs in a fenced block, and prose is where the rule applies.
+//
+// WHY NOT SIMPLY CHECK THAT THE LINE EXISTS. That was the first idea and it
+// catches almost nothing: a file grows, so an off-by-fifty citation still lands
+// inside it, and the failure above (356 -> a Threshold field) is exactly the
+// case an existence check calls fine.
+func TestProseCitesSymbolsNotLineNumbers(t *testing.T) {
+	root := repoRoot(t)
+	surfaces := proseSurfaces(t, root)
+
+	// The leading character is part of the match because RE2 has no lookbehind;
+	// it is what stops a URL path from being read as a citation.
+	lineNumber := regexp.MustCompile(`(?:^|[^\w./\\-])([\w.\\/-]*[\w-]\.(?:go|md|ps1|sh|yaml|yml|json)):\d+`)
+	// Every file the prose names at all, cited by line or not. This is the
+	// denominator: if it collapses, the pattern above broke and the check is
+	// passing because it is looking at nothing.
+	mentions := regexp.MustCompile(`[\w.\\/-]+\.(?:go|md|ps1|sh|yaml|yml|json)`)
+
+	total := 0
+	var offenders []string
+	for _, file := range surfaces {
+		text, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("reading %s: %v", file, err)
+		}
+		body := string(text)
+		if strings.EqualFold(filepath.Ext(file), ".md") {
+			body = withoutFencedCodeBlocks(body)
+		}
+		rel, err := filepath.Rel(root, file)
+		if err != nil {
+			t.Fatalf("relativising %s: %v", file, err)
+		}
+		rel = filepath.ToSlash(rel)
+
+		total += len(mentions.FindAllString(body, -1))
+		for _, m := range lineNumber.FindAllStringSubmatchIndex(body, -1) {
+			// m[2]..m[1] is the citation itself: the boundary character sits
+			// before m[2] and is not part of the claim being reported.
+			citation := body[m[2]:m[1]]
+			line := 1 + strings.Count(body[:m[2]], "\n")
+			offenders = append(offenders, rel+":"+strconv.Itoa(line)+": cites "+citation+
+				"; name the symbol or the section instead, or put the quoted output in a fenced block")
+		}
+	}
+
+	t.Logf("looked at %d file mentions across %d surfaces", total, len(surfaces))
+	if total < 50 {
+		t.Fatalf("only %d file mentions found; the pattern is not matching and this check cannot fail", total)
+	}
+	for _, offender := range offenders {
+		t.Errorf("%s", offender)
+	}
 }
