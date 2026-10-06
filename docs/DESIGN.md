@@ -173,6 +173,11 @@ relayStream
   （实测 `first_token=0s`），用 `> 0` 会把合法样本丢掉，而且 0 与"没记录"无法区分。
 - **单 writer**：只有一个 goroutine 向客户端写，因此既不需要给 writer 加锁竞争，
   也不会出现两个 goroutine 交错写出半帧的情况。channel 容量 8 是在"上游突发"与"内存"之间取的折中。
+  代价是 reader 侧两次入 channel（帧、以及说明流为何结束的终局错误）都可能在缓冲满且 writer 停住时
+  阻塞；两处都带 `r.Context().Done()` 守卫，客户端中途断流时 reader 就随请求上下文退出，
+  不会把 goroutine 连同它独占的上游连接一起押在发送上。守卫只有一处漏掉就足够泄漏，
+  所以 `internal/gateway/stream_test.go` 的 `TestClientHangupMidStreamDoesNotStrandTheReaderGoroutine`
+  专门把缓冲填满、逼 reader 停在终局发送上，再取消请求来盯住这一点。
 - **补 `[DONE]`**：OpenAI SDK 以 `[DONE]` 作为流结束信号，上游省略时客户端会一直挂着。
   网关补齐是"兼容性兜底"，同时让 M5 的压测口径统一。
 - **`upstream_timeout` 覆盖整条流**：它是从转发开始计时的总上限，防止"上游一直滴答但永不结束"
