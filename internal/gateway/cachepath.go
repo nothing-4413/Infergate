@@ -125,8 +125,9 @@ func (p *Proxy) serveCached(w http.ResponseWriter, r *http.Request, rec *record,
 	// The usage the stored answer reported, so the request log still shows what
 	// the answer contains (and what it would have cost). It is deliberately NOT
 	// added to the upstream token counters: those are provider facts and are
-	// observed only on a real attempt (proxy.go:755-756), because counting a
-	// replay would inflate consumption by exactly what the cache saved.
+	// observed only by the ObserveTokens call that closes a real attempt in
+	// proxy.go, because counting a replay would inflate consumption by exactly
+	// what the cache saved.
 	rec.usage = Usage{Prompt: e.PromptTokens, Completion: e.CompletionTokens}
 
 	origin := e.Upstream

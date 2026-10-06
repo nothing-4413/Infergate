@@ -155,8 +155,8 @@ func awaitCost(c *checker, url, tenant string, want int64) (int64, bool) {
 
 // dayBucket and minuteBucket are the counter key buckets, and they are UTC
 // buckets because internal/quota normalises the clock before it formats one:
-// Admit, Report and checkAnomaly all start with `now := m.now().UTC()`
-// (internal/quota/quota.go:368, :573, :847). Formatting a local time here would
+// Manager.Admit, Manager.Report and Manager.checkAnomaly each open with
+// `now := m.now().UTC()`. Formatting a local time here would
 // look for a different key for the hours in which the local and UTC dates
 // differ (on a UTC+8 machine, from 00:00 to 08:00 local), so the Redis key
 // assertions would pass for most of the day and fail for the rest - the worst
