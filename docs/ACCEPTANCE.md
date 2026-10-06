@@ -32,6 +32,8 @@ Windows PowerShell 5.1 读无 BOM 的 `.ps1` 时用机器代码页解码，那�
 逐行一致、`合计` 等于它上面各行之和、README / 本文 / RESUME 里每一句重述总数的句子都用同一个数。
 加它的原因就是这张表：M5 的 curl 门从 203 条涨到 211 条时改了行、没改合计，于是两个 `合计` 行和五句
 重述都停在 1060（203 那一版的正确和），差的正是那 8 条自检。
+每一句只引用一个门的地方——`docs/DESIGN.md` 的里程碑条目、`docs/USAGE.md` 的命令块、`docs/RESUME.md`
+的小结——由同一个文件里的 `TestEveryQuotedGateCountMatchesTheTable` 逐个对表核，数错哪一行就报哪一行。
 
 管理面鉴权默认关闭，所以 M0–M6 的两条证据链一行都没有覆盖它。它有自己的第三条链：
 `scripts/verify-hardening.ps1`，**真进程 + 真 curl + 44 条断言**，见下方「管理面鉴权的证据边界」。

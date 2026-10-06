@@ -153,6 +153,9 @@ mock 的常用开关：`-token-delay 0` 关掉每 token 的 15ms 间隔（**压�
 `合计` 行不是手抄的：`internal/repofmt` 的 `TestDocumentedGateTotalsAreTheSumOfTheirRows` 会把这张表
 与 [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) 的门禁总表逐行对照、并核对每一句重述总数的句子——M5 那
 8 条解析器自检一度只加到了行上、没加到合计里，就是它抓出来的。
+同一个包里的 `TestEveryQuotedGateCountMatchesTheTable` 管另一半：`docs/DESIGN.md` 的里程碑条目、
+`docs/USAGE.md` 的命令块（含一次运行打印出的 `470/470` 这种计数）、`docs/RESUME.md` 里每一句
+“某个门 + 条数”的说法，都要和这张表的对应行逐条相符。
 
 ```powershell
 # Go 门（任意一个）

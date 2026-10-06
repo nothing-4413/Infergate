@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -30,16 +31,12 @@ import (
 func TestDocumentedGateTotalsAreTheSumOfTheirRows(t *testing.T) {
 	root := repoRoot(t)
 
-	// Two spellings of a milestone row: README.md names the Go gate in the cell,
-	// docs/ACCEPTANCE.md follows the count with the raw-data file instead.
-	readmeMilestone := regexp.MustCompile("(?m)^\\|\\s*(M\\d)[^|]*\\|\\s*`cmd/verify[^`]*`\\s*—\\s*(\\d+)\\s*条\\s*\\|\\s*(\\d+)\\s*条\\s*\\|")
-	acceptanceMilestone := regexp.MustCompile("(?m)^\\|\\s*(M\\d)[^|]*\\|\\s*(\\d+)\\s*\\|\\s*(\\d+)\\s*\\|")
 	readmeTotal := regexp.MustCompile("(?m)^\\|\\s*\\*\\*合计\\*\\*\\s*\\|\\s*\\*\\*(\\d+)\\s*条\\*\\*\\s*\\|\\s*\\*\\*(\\d+)\\s*条\\*\\*\\s*\\|")
 	acceptanceTotal := regexp.MustCompile("(?m)^\\|\\s*\\*\\*合计\\*\\*\\s*\\|\\s*\\*\\*(\\d+)\\*\\*\\s*\\|\\s*\\*\\*(\\d+)\\*\\*\\s*\\|")
 
-	readmeRows := milestoneCounts(t, "README.md", readFile(t, filepath.Join(root, "README.md")), readmeMilestone)
+	readmeRows := milestoneCounts(t, "README.md", readFile(t, filepath.Join(root, "README.md")), readmeMilestoneRow)
 	acceptanceRows := milestoneCounts(t, "docs/ACCEPTANCE.md",
-		readFile(t, filepath.Join(root, "docs", "ACCEPTANCE.md")), acceptanceMilestone)
+		readFile(t, filepath.Join(root, "docs", "ACCEPTANCE.md")), acceptanceMilestoneRow)
 
 	for _, name := range milestoneNames {
 		got, ok := readmeRows[name]
@@ -161,6 +158,188 @@ func TestDocumentedGateTotalsAreTheSumOfTheirRows(t *testing.T) {
 
 	t.Logf("checked %d milestone rows in each gate table (%d Go / %d curl) and %d restatements across %d documents",
 		len(milestoneNames), goSum, curlSum, restatements, len(docs))
+}
+
+// TestEveryQuotedGateCountMatchesTheTable extends the arithmetic check to the
+// places that name one gate and print its count: the acceptance commands in
+// docs/USAGE.md, the per-milestone bullets in docs/DESIGN.md and the résumé
+// bullet in docs/RESUME.md.
+//
+// WHY IT EXISTS. The two tables are only half of where a count is written down.
+// docs/DESIGN.md's bullets, docs/USAGE.md's command block and docs/RESUME.md
+// all restate individual milestone counts, and nothing compared those against
+// the table -- the same shape of defect the table's own 合计 row had, one row
+// down: a gate that grows or shrinks leaves every sentence that quotes it
+// stale, and a reader cannot tell which of the two numbers to believe.
+//
+// WHAT IT CHECKS. Every sentence whose wording ties a command or script to a
+// count, matched per milestone rather than accumulated: each hit has to equal
+// the row the table gives for that milestone and that side (Go gate vs curl
+// gate). Counts that belong to something else -- the measure scripts quote
+// their own totals in the same sentences -- are not matched, because the
+// patterns require the cmd/verify* or scripts/verify-m*.ps1 name.
+func TestEveryQuotedGateCountMatchesTheTable(t *testing.T) {
+	root := repoRoot(t)
+	readme := readFile(t, filepath.Join(root, "README.md"))
+	rows := milestoneCounts(t, "README.md", readme, readmeMilestoneRow)
+
+	type quote struct {
+		what         string
+		rx           *regexp.Regexp
+		milestoneGrp int
+		countGrp     int
+		alsoCountGrp int  // a second number that must equal the same row, or 0
+		curl         bool // the fixed side, for the patterns that name it
+		fromComment  bool // the side is decided by a capture: group 2 says "curl"
+	}
+	quotes := []quote{
+		{ // "…verify-m2      # M2，103 条断言" / "…# M2 curl，157 条"
+			what:         "an acceptance command's trailing comment",
+			rx:           regexp.MustCompile(`(?m)#\s*M(\d)\s*(curl)?，(\d+)\s*条`),
+			milestoneGrp: 1, countGrp: 3, fromComment: true},
+		{ // "`cmd/verify-m1`（Go，64 条断言）"
+			what:         "a docs/DESIGN.md bullet about a Go gate",
+			rx:           regexp.MustCompile("`cmd/verify(?:-m(\\d))?`（[^）]{0,40}?(\\d+)\\s*条断言"),
+			milestoneGrp: 1, countGrp: 2},
+		{ // "`scripts/verify-m1.ps1`（curl，56 条断言）"
+			what:         "a docs/DESIGN.md bullet about a curl gate",
+			rx:           regexp.MustCompile("`scripts/verify-m(\\d)\\.ps1`（[^）]{0,40}?(\\d+)\\s*条断言"),
+			milestoneGrp: 1, countGrp: 2, curl: true},
+		{ // "`cmd/verify-m5` 的 420 条断言"
+			what:         "a sentence pointing at a Go gate's count",
+			rx:           regexp.MustCompile("`cmd/verify(?:-m(\\d))?`\\s*的\\s*(\\d+)\\s*条断言"),
+			milestoneGrp: 1, countGrp: 2},
+		{ // "`scripts/verify-m0.ps1` 会…跑完 47 条断言"
+			what:         "a sentence about what a curl gate runs",
+			rx:           regexp.MustCompile("`scripts/verify-m(\\d)\\.ps1`[^。\\n]{0,40}?跑完\\s*(\\d+)\\s*条断言"),
+			milestoneGrp: 1, countGrp: 2, curl: true},
+		{ // "…\cmd\verify-m2   # Go 门禁，103 条断言"  (a command, so a backslash in the path)
+			what:         "a command block that labels its own gate",
+			rx:           regexp.MustCompile(`(?m)^.*cmd[\\/]verify-m(\d)\b.*#.*?(\d+)\s*条断言`),
+			milestoneGrp: 1, countGrp: 2},
+		{ // "…\cmd\verify-m3   # Go 门禁，470/470 断言"  (what a run prints, both numbers)
+			what:         "a command block quoting a run's own tally",
+			rx:           regexp.MustCompile(`(?m)^.*cmd[\\/]verify-m(\d)\b.*#.*?(\d+)/(\d+)\s*断言`),
+			milestoneGrp: 1, countGrp: 2, alsoCountGrp: 3},
+		{ // "Go `cmd/verify-m5` **420** 条断言" -- any shape between the name and the count
+			what:         "a sentence that names a Go gate and then a count",
+			rx:           regexp.MustCompile("`cmd/verify(?:-m(\\d))?`[^。\\n]{0,24}?(\\d+)\\s*条断言"),
+			milestoneGrp: 1, countGrp: 2},
+		{ // "curl `scripts/verify-m5.ps1` **211** 条断言"
+			what:         "a sentence that names a curl gate and then a count",
+			rx:           regexp.MustCompile("`scripts/verify-m(\\d)\\.ps1`[^。\\n]{0,24}?(\\d+)\\s*条断言"),
+			milestoneGrp: 1, countGrp: 2, curl: true},
+	}
+
+	// Every tracked prose surface, not just the two tables' own files: the four
+	// docs/ pages plus deploy/README.md, which quotes a script's own check count
+	// but no milestone gate's.
+	docs := []string{filepath.Join(root, "README.md")}
+	for _, dir := range []string{"docs", "deploy"} {
+		globbed, err := filepath.Glob(filepath.Join(root, dir, "*.md"))
+		if err != nil {
+			t.Fatalf("globbing %s: %v", dir, err)
+		}
+		if len(globbed) == 0 {
+			t.Fatalf("no markdown files under %s; the glob stopped finding them", dir)
+		}
+		docs = append(docs, globbed...)
+	}
+
+	perPattern := make([]int, len(quotes))
+	total := 0
+	for _, path := range docs {
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			t.Fatalf("relativising %s: %v", path, err)
+		}
+		rel = filepath.ToSlash(rel)
+		text := readFile(t, path)
+		for i := range quotes {
+			q := &quotes[i]
+			for _, m := range q.rx.FindAllStringSubmatchIndex(text, -1) {
+				perPattern[i]++
+				total++
+				name := "M0"
+				if g := m[2*q.milestoneGrp]; g >= 0 {
+					name = "M" + text[g:m[2*q.milestoneGrp+1]]
+				}
+				curl := q.curl
+				if q.fromComment && m[2*2] >= 0 {
+					curl = true
+				}
+				side := 0
+				sideName := "Go"
+				if curl {
+					side, sideName = 1, "curl"
+				}
+				nums := []int{atoi(t, rel, text[m[2*q.countGrp]:m[2*q.countGrp+1]])}
+				if q.alsoCountGrp != 0 && m[2*q.alsoCountGrp] >= 0 {
+					nums = append(nums, atoi(t, rel, text[m[2*q.alsoCountGrp]:m[2*q.alsoCountGrp+1]]))
+				}
+				want, known := rows[name]
+				if !known {
+					t.Errorf("%s:%d: %s names %s, which is not a milestone in the gate table",
+						rel, lineOf(text, m[0]), q.what, name)
+					continue
+				}
+				for _, got := range nums {
+					if got != want[side] {
+						t.Errorf("%s:%d: %s quotes %d assertions for %s, but the gate table's %s %s row says %d",
+							rel, lineOf(text, m[0]), q.what, got, name, name, sideName, want[side])
+					}
+				}
+			}
+		}
+	}
+
+	// A denominator guard, then one per pattern: a wording that stops matching
+	// would leave that sentence's number unchecked, which is what this test is
+	// for.
+	if total < 25 {
+		t.Fatalf("only %d quoted gate counts found, want at least 25; the patterns stopped matching", total)
+	}
+	for i := range quotes {
+		if perPattern[i] == 0 {
+			t.Errorf("no document %s any more; if the wording changed, update the pattern in this test "+
+				"rather than leaving the count unstated", quotes[i].what)
+		}
+	}
+
+	// The one place that quotes the range rather than a single gate.
+	span := regexp.MustCompile(`（(\d+) ~ (\d+) 条断言）`).FindStringSubmatch(readme)
+	if span == nil {
+		t.Errorf("README.md no longer quotes the Go gates as a range; update this pattern rather than dropping it")
+	} else {
+		low, high := atoi(t, "README.md", span[1]), atoi(t, "README.md", span[2])
+		smallest, largest := rows[milestoneNames[0]][0], rows[milestoneNames[0]][0]
+		for _, name := range milestoneNames {
+			if got := rows[name][0]; got < smallest {
+				smallest = got
+			} else if got > largest {
+				largest = got
+			}
+		}
+		if low != smallest || high != largest {
+			t.Errorf("README.md quotes the Go gates as %d ~ %d assertions, but the table spans %d ~ %d",
+				low, high, smallest, largest)
+		}
+	}
+
+	t.Logf("checked %d quoted gate counts across %d documents", total, len(docs))
+}
+
+// readmeMilestoneRow and acceptanceMilestoneRow are the two spellings of a
+// milestone row: README.md names the Go gate in the cell, docs/ACCEPTANCE.md
+// follows the count with the raw-data file instead.
+var (
+	readmeMilestoneRow     = regexp.MustCompile("(?m)^\\|\\s*(M\\d)[^|]*\\|\\s*`cmd/verify[^`]*`\\s*—\\s*(\\d+)\\s*条\\s*\\|\\s*(\\d+)\\s*条\\s*\\|")
+	acceptanceMilestoneRow = regexp.MustCompile("(?m)^\\|\\s*(M\\d)[^|]*\\|\\s*(\\d+)\\s*\\|\\s*(\\d+)\\s*\\|")
+)
+
+// lineOf turns a byte offset into the 1-based line that holds it.
+func lineOf(text string, offset int) int {
+	return strings.Count(text[:offset], "\n") + 1
 }
 
 // milestoneNames is the set both tables are expected to describe, in order.
