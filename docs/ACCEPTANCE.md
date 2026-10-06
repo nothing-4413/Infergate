@@ -237,11 +237,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run-race.ps1
 README 与本文仍然指向它：**这配方原本只是一段散文，而散文正是漂移掉的东西。**
 
 按 CI 的形状逐包跑一遍，答案立刻清楚了：**36 个包、35 绿、1 红——`internal/cache`**。报告指向的是
-**生产代码**而不是测试代码：`cache.(*RedisStore).Get()` 在 `internal/cache/redis.go` 里读
-`s.stats.Gets++` 写过的同一地址，另有 `Search()` 里的 `Searches++` 与扫描循环里的 `Scanned++`。
+**生产代码**而不是测试代码，而且两侧落在同一行：`Read at 0x00c000480950 by goroutine 86` 与
+`Previous write at 0x00c000480950 by goroutine 87` 都记在 `cache.(*RedisStore).Get()` 的
+`internal/cache/redis.go` 那一行上——修之前那行是直接写在 `s.stats` 上的自增
+（`s.stats.Gets++`，`Search()` 里另有 `Searches++`，扫描循环里还有 `Scanned++`）。
 `RedisStore.stats` 是一个裸结构体字段，29 处写入点分布在每个请求 goroutine 上，
-而 `/admin/cache` 会并发读它；memory store 一直有一把锁（`internal/cache/memory.go` 的
-`MemoryStore.mu`），
+而 `/admin/cache` 会并发读它；memory store 一直有一把锁（`internal/cache/memory.go` 的 `MemoryStore.mu`），
 Redis store 漏了——很可能因为 Redis 客户端的连接池本身并发安全，看起来周围也就都安全。
 
 修法是 29 处写入全部走一个持锁的 helper（`func (s *RedisStore) bump(f func(st *StoreStats))`），
