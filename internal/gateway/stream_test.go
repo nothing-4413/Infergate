@@ -1,16 +1,25 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/infergate/infergate/internal/config"
 	"github.com/infergate/infergate/internal/metrics"
 	"github.com/infergate/infergate/internal/sse"
+	"github.com/infergate/infergate/internal/upstream"
 )
 
 // sseBackend is a scriptable OpenAI-compatible streaming upstream. It writes
@@ -479,5 +488,164 @@ func TestErrorBodyShapeMatchesOpenAI(t *testing.T) {
 	}
 	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
 		t.Errorf("Content-Type = %q", ct)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Mid-stream client hangup
+// ---------------------------------------------------------------------------
+
+// stallWriter is a ResponseWriter that stops draining the stream after the first
+// data frame: Write blocks until the test releases it. That is what the relay
+// sees when a client stops reading — one frame in flight (the one the writer is
+// parked inside) and nothing else consumed — which is the state the terminal
+// send has to survive.
+type stallWriter struct {
+	header  http.Header
+	first   chan struct{} // closed once the relay is parked inside Write
+	release chan struct{} // closed by the test to let that Write return
+	writes  int64
+}
+
+func newStallWriter() *stallWriter {
+	return &stallWriter{
+		header:  http.Header{},
+		first:   make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+func (s *stallWriter) Header() http.Header { return s.header }
+func (s *stallWriter) WriteHeader(int)     {}
+func (s *stallWriter) Flush()              {}
+
+func (s *stallWriter) Write(p []byte) (int, error) {
+	if atomic.AddInt64(&s.writes, 1) == 1 {
+		close(s.first)
+		<-s.release
+	}
+	return len(p), nil
+}
+
+// frameBody serves the scripted frames and then fails the read, the way a
+// provider connection drops mid-answer. atEnd closes on the read that carries
+// that failure, which is how the test knows the reader goroutine has been handed
+// the terminal error and has nothing left to read.
+type frameBody struct {
+	mu    sync.Mutex
+	data  []byte
+	off   int
+	atEnd chan struct{}
+	once  sync.Once
+}
+
+func (b *frameBody) Read(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.off < len(b.data) {
+		n := copy(p, b.data[b.off:])
+		b.off += n
+		return n, nil
+	}
+	b.once.Do(func() { close(b.atEnd) })
+	return 0, errors.New("upstream connection reset")
+}
+
+func (b *frameBody) Close() error { return nil }
+
+// relayReaderParked reports whether relayStream's reader goroutine is still
+// alive. That goroutine is the one anonymous function the relay starts, so its
+// presence in a full stack dump is exactly the leak under test — and unlike a
+// goroutine count, no other part of the test binary can produce that frame.
+func relayReaderParked() bool {
+	// Grow until the dump fits: a truncated dump could hide the reader.
+	buf := make([]byte, 64<<10)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			return strings.Contains(string(buf[:n]), "relayStream.func1")
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+}
+
+func awaitClose(t *testing.T, ch <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(5 * time.Second):
+		t.Fatal(what)
+	}
+}
+
+// TestClientHangupMidStreamDoesNotStrandTheReaderGoroutine is the regression
+// test for the terminal-error send in relayStream.
+//
+// The reader goroutine hands frames to the handler over an 8-slot channel, and
+// reports why the stream ended over that same channel. Both sends have to be
+// abandonable: the handler stops draining the moment the client hangs up (it
+// returns on context cancellation), so an unconditional send with the buffer
+// full parks the reader for the life of the process — one leaked goroutine per
+// mid-stream hangup, still holding the upstream connection it owns.
+//
+// Reproducing it needs the buffer genuinely full *and* the blocked send to be
+// the terminal error, because the frame send is guarded either way: a cancelled
+// context unblocks the reader at its next frame. So nine frames are offered
+// (eight buffered plus the one the stalled writer is inside), the reader reads
+// a failure, and it parks on the error send with nowhere to put it. Cancel the
+// request and let the stalled write return: with the guard the reader leaves,
+// without it the goroutine is still parked on that send.
+func TestClientHangupMidStreamDoesNotStrandTheReaderGoroutine(t *testing.T) {
+	const buffered = 8 // the capacity of the frames channel in relayStream
+
+	var script strings.Builder
+	for i := 0; i < buffered+1; i++ {
+		fmt.Fprintf(&script, `data: {"choices":[{"index":0,"delta":{"content":"tok%d"}}]}`+"\n\n", i)
+	}
+
+	body := &frameBody{data: []byte(script.String()), atEnd: make(chan struct{})}
+	resp := &http.Response{StatusCode: http.StatusOK, Body: body, Header: http.Header{}}
+	w := newStallWriter()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx)
+	p := New(Options{
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		MaxBodyBytes: 1 << 20,
+	})
+
+	done := make(chan metrics.Outcome, 1)
+	go func() {
+		done <- p.relayStream(w, req, resp, &upstream.Target{Name: "stalled"}, &record{})
+	}()
+
+	// The handler is parked inside the first frame write, so nothing drains the
+	// channel from here on.
+	awaitClose(t, w.first, "the relay never wrote a frame to the stalled client")
+	// Every frame was parsed and enqueued, so the reader has now read the
+	// failure and is sitting on the terminal send.
+	awaitClose(t, body.atEnd, "the reader never reached the end of the upstream body")
+	if !relayReaderParked() {
+		t.Fatal("the relay's reader goroutine was already gone: this test did not reproduce a mid-stream hangup")
+	}
+
+	cancel()
+	close(w.release)
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("relayStream did not return after the client hung up")
+	}
+
+	// Once the client is gone and the handler has returned, the reader has no
+	// way out except a send that listens for the hangup.
+	deadline := time.Now().Add(5 * time.Second)
+	for relayReaderParked() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if relayReaderParked() {
+		t.Fatal("the client hung up mid-stream and the handler returned, but the relay's reader goroutine is still parked on its channel send: a hung-up client leaks a goroutine and keeps its upstream connection open")
 	}
 }
