@@ -308,8 +308,14 @@ kubelet、compose healthcheck、Prometheus 抓取器都不带凭证，要求凭�
 
 `scripts/verify-docker-profile.ps1` 跑的是「容器画像」这一层：把 `configs/docker.yaml` 里的服务名换成
 `127.0.0.1`，用**真二进制、真端口、真 miniredis** 起一遍，断言 20 条（`20 passed, 0 failed`，本机 25 秒）。
-它证的是一件事：**那份配置里的每个键都真的被加载器读进去了**——因为加载器不启用
-`DisallowUnknownFields`，键名写错会静默失效、`-check` 照样绿，只有真跑一次才能证伪。
+它证的是一件事：**那份配置里的每个键都真的被加载器读进去了**。这一条现在是**加载器自己的性质**，
+不再是这道门替它兜的底：`internal/config` 走严格解码（`miniyaml.UnmarshalStrict` →
+`json.Decoder.DisallowUnknownFields`），键名写错在加载期就被点名拒绝——真二进制上是
+`configuration error: config: parse …: miniyaml: decode: json: unknown field "quotas"`、退出码 1，
+`configs/docker.yaml:123-129` 那段注释就是为此改写的。证据是 `internal/config` 的
+`TestLoadRejectsAKeyWithNoFieldBehindIt`（未知键被点名）与 `TestEveryShippedConfigDecodes`（14 份出厂配置
+逐份过严格解码），以及 `internal/miniyaml` 的 `TestUnmarshalStrictNamesTheKeyItRefuses`。
+在此之前它确实只有真跑一次才能证伪：未知键被静默丢掉，`-check` 照样绿。
 
 它**不证**的是：镜像构建、`docker compose up`、服务名解析、容器网络、卷挂载。Docker 守护进程在本机
 从未起过，所以这四条一条都没被执行验证过，判据只能来自一台有 Docker 的机器。

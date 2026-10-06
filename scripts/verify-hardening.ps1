@@ -150,9 +150,9 @@ function New-BodyFile {
 #
 # The append is a top-level key after a file whose last section is a nested map
 # (pricing.models.*), which is a trap: a top-level key must start in column zero
-# or YAML reads it as one more pricing model, the loader accepts it as an unknown
-# key (this loader does not reject unknown fields), and the gate silently never
-# turns on. Every block passed in here must be unindented.
+# or YAML reads it as one more pricing model and the loader refuses the whole
+# file by name, so the gate fails instead of silently never turning on. Every
+# block passed in here must be unindented.
 function Write-GatewayConfig {
     param(
         [string]$Path,

@@ -354,9 +354,10 @@ access:
   令牌就是把一个正常的部署变成永远不健康。要关就显式写进 `protect`（`/metrics` 常这么干）。
 - **少带令牌和带错令牌都是 401，响应体也一样。** 区分 403 会告诉探测者"这个端点存在、只是
   格式不对"。`WWW-Authenticate: Bearer realm="infergate"` 只在凭证本身是 Bearer 形态时才发。
-- **写错的配置会让启动失败，而不是静默失效。** `enabled: true` 却没有令牌、或 `protect: ["/"]`
-  （会把 OpenAI 兼容面一起挡住）都在加载期报错——加载器不拒未知键，所以这两种错必须靠
-  `Validate` 而不是靠键名拼写来兜。
+- **写错的配置会让启动失败，而不是静默失效。** 两层兜：① 键名写错（`quota:` 写成 `quotas:`）由加载器的
+  严格解码在加载期点名拒绝（`miniyaml: decode: json: unknown field "quotas"`，退出码 1）；
+  ② `enabled: true` 却没有令牌、或 `protect: ["/"]`（会把 OpenAI 兼容面一起挡住）由 `Validate` 拒绝。
+  第 ① 层是后来才有的——在它之前，键名拼错是这个项目里唯一没有任何断言的失败形态。
 - **令牌只从 `${ENV}` 读也行，未定义的变量会让启动中止**，和 upstream 的 `api_key` 同一条规则：
   静默变成空串的令牌会让"配置看起来受保护"而实际开放。注意这条检查在 `enabled: false` 时
   也会跑，所以 `configs/agent.yaml` 里那段 `tokens` 是注释掉的。

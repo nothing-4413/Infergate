@@ -2,6 +2,7 @@ package miniyaml
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -196,5 +197,45 @@ upstreams:
 	}
 	if err := Unmarshal([]byte(yaml), &d); err == nil {
 		t.Fatalf("expected an error for an orphaned nested sequence item, got none")
+	}
+}
+
+// UnmarshalStrict exists for configuration files, where a key with no field
+// behind it is a mistake rather than an extension point. Both readings are
+// pinned here: the lenient one stays lenient (so a caller that only wants the
+// fields it knows keeps working), and the strict one names the key it refused.
+func TestUnmarshalStrictNamesTheKeyItRefuses(t *testing.T) {
+	const yaml = `
+server:
+  listen: ":8080"
+quotas:
+  requests_per_minute: 10
+`
+	var d struct {
+		Server struct {
+			Listen string `json:"listen"`
+		} `json:"server"`
+	}
+	if err := Unmarshal([]byte(yaml), &d); err != nil {
+		t.Fatalf("Unmarshal should ignore an unknown key, got %v", err)
+	}
+	if d.Server.Listen != ":8080" {
+		t.Fatalf("listen = %q, want the value beside the unknown key", d.Server.Listen)
+	}
+
+	err := UnmarshalStrict([]byte(yaml), &d)
+	if err == nil {
+		t.Fatal("UnmarshalStrict accepted a key with no field behind it")
+	}
+	if !strings.Contains(err.Error(), "unknown field") || !strings.Contains(err.Error(), "quotas") {
+		t.Fatalf("error = %v, want it to name the unknown key", err)
+	}
+
+	// The strict check must not reject a field that does exist.
+	if err := UnmarshalStrict([]byte("server:\n  listen: \":9090\"\n"), &d); err != nil {
+		t.Fatalf("UnmarshalStrict rejected a known key: %v", err)
+	}
+	if d.Server.Listen != ":9090" {
+		t.Fatalf("listen = %q, want the value just decoded", d.Server.Listen)
 	}
 }

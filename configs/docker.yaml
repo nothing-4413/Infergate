@@ -124,9 +124,10 @@ quota:
 #
 # The bound is spelled `capacity`, not `max_entries` — only the cache section
 # uses `max_entries_per_scope` (internal/config/config.go:356 for the cache,
-# :710 idempotency, :733 sessions). The loader does NOT reject unknown keys, so
-# writing `max_entries` here would parse cleanly and silently bound nothing,
-# which is a worse failure than a red check.
+# :710 idempotency, :733 sessions). The loader refuses a key it has no field
+# for, so writing `max_entries` here would stop the process at startup with
+# `unknown field "max_entries"` instead of bounding nothing. This comment used
+# to be the only guard against that, back when an unknown key was ignored.
 idempotency:
   enabled: true
   ttl: "15m"

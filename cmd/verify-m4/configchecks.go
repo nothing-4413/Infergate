@@ -497,12 +497,26 @@ upstreams:
 	// Controls. Without these, every assertion above could pass because the
 	// decoder is ignoring the whole document: the keys below are spelled the
 	// way a Go field is, not the way its json tag is, so they must NOT land.
+	//
+	// Both readings of "not land" are part of the contract. A lenient decode
+	// ignores the key and leaves the field zero; the config loader uses the
+	// strict decode and refuses the document. camelCase is the sharp end of
+	// that: it is the spelling a Go programmer reaches for first, and under the
+	// loader it is a startup error naming the key rather than a setting that
+	// silently never applies.
+	const camelDoc = "routing:\n  tierPolicy:\n    localMaxPromptTokens: 400\n"
 	var camel config.Config
-	if c.assert(miniyaml.Unmarshal([]byte("routing:\n  tierPolicy:\n    localMaxPromptTokens: 400\n"), &camel) == nil,
-		"config: a camelCase document still decodes (unknown keys are ignored)") {
+	if c.assert(miniyaml.Unmarshal([]byte(camelDoc), &camel) == nil,
+		"config: a camelCase document still decodes when the decode is lenient (unknown keys are ignored)") {
 		c.assert(camel.Routing.TierPolicy.LocalMaxPromptTokens == 0,
 			"config: the key is the json tag, not the Go field name (camelCase localMaxPromptTokens left %d)",
 			camel.Routing.TierPolicy.LocalMaxPromptTokens)
+	}
+	var strictCamel config.Config
+	strictErr := miniyaml.UnmarshalStrict([]byte(camelDoc), &strictCamel)
+	if c.assert(strictErr != nil, "config: the strict decode the loader uses refuses the camelCase document") {
+		c.assert(strings.Contains(strictErr.Error(), "tierPolicy"),
+			"config: the refusal names the key it did not recognise (got %v)", strictErr)
 	}
 
 	// ...and the tier really is a string field: a number in that position must

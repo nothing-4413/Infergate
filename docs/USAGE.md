@@ -180,6 +180,20 @@ access:                                      # 运营者令牌：默认关闭，
   protect: []                                # 空 = ["/admin", "/stats"]
 ```
 
+**不认识的键会让加载失败**：加载器走严格解码（`miniyaml.UnmarshalStrict` →
+`json.Decoder.DisallowUnknownFields`），文档里出现一个结构体上没有的键，进程就拒绝启动并点名它。
+下面这行是真的 stderr（`.\bin\infergate.exe -check -config .\configs\typo.yaml`，退出码 1，那份配置只是
+把 `quota:` 写成了 `quotas:`）：
+
+```text
+infergate: configuration error: config: parse .\configs\typo.yaml: miniyaml: decode: json: unknown field "quotas"
+```
+
+以前这一行不会出现：未知键被静默丢掉，`quota:` 写成 `quotas:` 时所有限额悄悄回到默认值，`-check` 还是绿的
+——这是当时唯一没有任何断言盯着的失败形态。`configs/` 下 14 份出厂配置由 `internal/config` 的
+`TestEveryShippedConfigDecodes` 逐份钉住，键名写错的拒绝则由同包的 `TestLoadRejectsAKeyWithNoFieldBehindIt`
+与 `internal/miniyaml` 的 `TestUnmarshalStrictNamesTheKeyItRefuses` 钉住。
+
 **`pricing` 这一节**：单价单位是 USD / 1M tokens，只用来给每个请求挂一个花费数字（不是账单）。
 启动时网关会把"上游声明了、价格表里却没有"的模型**点名报一次**，因为这个缺失在计费侧没有护栏：
 未标价的模型按 `pricing.default` 折算，default 没配（= 0）时 `cost_usd` 就是 0，`cost_per_day_usd`

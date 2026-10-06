@@ -25,7 +25,10 @@
 //	key: value  # trailing comment
 //
 // Rejected with a precise error: tabs used for indentation, anchors/aliases,
-// block scalars (| and >), multi-document streams, duplicate keys.
+// block scalars (| and >), multi-document streams, duplicate keys. Unmarshal
+// additionally ignores keys the target has no field for; UnmarshalStrict
+// rejects them by name, because a configuration file that silently drops a
+// misspelled key is a configuration file that does not say what it does.
 //
 // Scalars are typed the way YAML types them — a bare 0.27 or 8388608 becomes a
 // JSON number, a quoted "0.27" stays a string — and the typed tree is then
@@ -36,6 +39,7 @@
 package miniyaml
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -64,8 +68,31 @@ type Node struct {
 
 // Unmarshal parses YAML bytes and decodes them into v using encoding/json, so
 // the struct's json tags are the single source of truth for field names and
-// types.
+// types. A key the target has no field for is ignored; use UnmarshalStrict
+// where that would hide a mistake.
 func Unmarshal(data []byte, v any) error {
+	return decode(data, v, false)
+}
+
+// UnmarshalStrict is Unmarshal with unknown keys rejected: a mapping key the
+// target struct has no field for is an error naming the key instead of a
+// no-op.
+//
+// This exists because an ignored key is the worst possible fate for a
+// configuration file. `quota:` misspelled `quotas:` leaves every quota at its
+// default, so the gateway runs and spends with the limits the operator thought
+// they had set nowhere in effect -- a silent downgrade of exactly the safety
+// net the file was written to install. The same mistake in a normal decode is
+// invisible by construction: encoding/json has nowhere to report it and no way
+// to know whether the key was a typo or a field from another version.
+//
+// internal/config loads through this function, so a config that starts is a
+// config the loader understood.
+func UnmarshalStrict(data []byte, v any) error {
+	return decode(data, v, true)
+}
+
+func decode(data []byte, v any, strict bool) error {
 	node, err := Parse(data)
 	if err != nil {
 		return err
@@ -73,6 +100,14 @@ func Unmarshal(data []byte, v any) error {
 	raw, err := json.Marshal(node.toJSONValue())
 	if err != nil {
 		return fmt.Errorf("miniyaml: re-encode: %w", err)
+	}
+	if strict {
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(v); err != nil {
+			return fmt.Errorf("miniyaml: decode: %w", err)
+		}
+		return nil
 	}
 	if err := json.Unmarshal(raw, v); err != nil {
 		return fmt.Errorf("miniyaml: decode: %w", err)

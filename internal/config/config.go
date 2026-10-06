@@ -29,8 +29,15 @@ import (
 // typing, which means the json struct tags on the types below are the single
 // source of truth for the config schema — and `-print-config` round-trips
 // exactly what the loader understood.
+// The decode is strict: a key with no field behind it is an error naming the
+// key, not a no-op. A config file is the one input where the two readings are
+// not equally safe. `quota:` misspelled `quotas:` would leave every limit at
+// its default, so the process would start, serve, and spend under rules the
+// operator believes they wrote and did not -- and nothing downstream could
+// tell the difference, because the loader would have thrown the key away
+// before validation ever ran.
 func unmarshalYAML(raw []byte, v any) error {
-	return miniyaml.Unmarshal(raw, v)
+	return miniyaml.UnmarshalStrict(raw, v)
 }
 
 // Config is the complete process configuration.

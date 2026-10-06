@@ -1,9 +1,12 @@
 # End-to-end smoke verification for the container profile (configs/docker.yaml).
 #
 # WHY THIS EXISTS: the compose stack cannot be started here (no Docker daemon),
-# and the config loader does NOT enable DisallowUnknownFields -- a misspelled key
-# (e.g. idempotency.max_entries) parses cleanly and silently bounds nothing. The
-# only way to falsify that is to run the real binaries and read the admin surfaces.
+# so "these keys are accepted AND take effect" has to be shown with real binaries.
+# (A misspelled key is no longer in that gap: the loader decodes strictly, so
+# idempotency.max_entries is refused by name at load time -- see
+# internal/config's TestLoadRejectsAKeyWithNoFieldBehindIt. What this gate still
+# owns is the EFFECT of each key: that capacity/max_response_bytes/recent_per_session
+# really bound something, which no config-level check can tell you.)
 #
 # APPROACH: take configs/docker.yaml and replace only the compose service names
 # with local addresses (mockupstream -> 127.0.0.1, miniredis -> 127.0.0.1), keep

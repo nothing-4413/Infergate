@@ -897,3 +897,60 @@ func TestTracingZeroMeansUnset(t *testing.T) {
 		t.Fatalf("otlp.service_name = %q, want the default", cfg.Tracing.OTLP.ServiceName)
 	}
 }
+
+// A key with no field behind it has to be an error rather than a no-op.
+// `quota:` misspelled `quotas:` would leave every limit at its default: the
+// gateway would start, serve and spend under rules the operator believes they
+// wrote, and nothing downstream could tell, because the loader throws the key
+// away before validation runs. The message has to name the key -- "unknown
+// field" alone leaves the operator grepping a 300-line file.
+func TestLoadRejectsAKeyWithNoFieldBehindIt(t *testing.T) {
+	path := writeConfig(t, `
+server:
+  listen: ":8080"
+upstreams:
+  - name: "mock"
+    base_url: "http://127.0.0.1:9000"
+    models:
+      - "/"
+quotas:
+  default_policy:
+    requests_per_minute: 10
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load accepted a config with a key that has no field behind it")
+	}
+	if !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("error = %v, want it to say the field is unknown", err)
+	}
+	if !strings.Contains(err.Error(), "quotas") {
+		t.Fatalf("error = %v, want it to name the key", err)
+	}
+}
+
+// The shipped configs are the ones an operator copies, so a strict loader has
+// to accept all of them: otherwise the project documents configurations it
+// cannot start from, and the first thing a new user meets is a parse error in
+// a file that shipped with the release. This is also the guard that keeps the
+// next config section honest -- adding a key to a shipped file without adding
+// the field goes red here rather than silently doing nothing.
+func TestEveryShippedConfigDecodes(t *testing.T) {
+	paths, err := filepath.Glob(filepath.Join("..", "..", "configs", "*.yaml"))
+	if err != nil {
+		t.Fatalf("glob shipped configs: %v", err)
+	}
+	if len(paths) < 10 {
+		t.Fatalf("found %d shipped configs under configs/, want the shipped set", len(paths))
+	}
+	for _, path := range paths {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		cfg := Defaults()
+		if err := unmarshalYAML(raw, &cfg); err != nil {
+			t.Errorf("%s: %v", path, err)
+		}
+	}
+}
