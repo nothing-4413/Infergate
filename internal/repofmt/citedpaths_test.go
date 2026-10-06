@@ -1,6 +1,7 @@
 package repofmt
 
 import (
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -8,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode"
 )
 
 // TestEveryCitedRepoPathExists pins the file paths this repository's prose
@@ -276,4 +278,135 @@ func TestProseCitesSymbolsNotLineNumbers(t *testing.T) {
 	for _, offender := range offenders {
 		t.Errorf("%s", offender)
 	}
+}
+
+// TestEveryMarkdownLinkResolvesInTheTree pins the links the prose makes to its
+// own documents.
+//
+// WHY THE CHECK ABOVE IS NOT ENOUGH. That one matches cited paths that carry a
+// directory (`docs/USAGE.md`); a link written as a bare filename -- the shape
+// the four docs/ pages use to point at each other, `[USAGE.md](USAGE.md)` --
+// never carries one, so a typo in it is invisible to it. Verified rather than
+// assumed: renaming the target in docs/ACCEPTANCE.md to `[USAGE.md](USAG.md)`
+// leaves TestEveryCitedRepoPathExists green. A renamed heading is invisible to
+// every check that existed, because nothing read a fragment at all.
+//
+// WHAT IT CHECKS. Every `[text](target)` in a markdown surface, with fenced
+// blocks blanked out first (a sample is an example, not a claim about the
+// tree). A target resolves relative to the document that makes the claim, and a
+// fragment has to match an anchor that the target document's headings actually
+// produce -- a link to `#3-快速开始` is a claim about a heading, and renaming
+// the heading falsifies it silently everywhere except here.
+//
+// WHY THE ANCHOR RULE IS SPELLED OUT. GitHub gives a heading its fragment by
+// lower-casing it, dropping every character that is not a letter, a digit, an
+// underscore or a hyphen, and turning spaces into hyphens; `## 3. 快速开始`
+// becomes `#3-快速开始`, the one fragment link this repository makes. Checking
+// only that the heading exists would have been the weaker claim: the link points
+// at the anchor, not at the heading text.
+func TestEveryMarkdownLinkResolvesInTheTree(t *testing.T) {
+	root := repoRoot(t)
+
+	link := regexp.MustCompile(`\[[^\]]*\]\(([^)\s]+)\)`)
+
+	documents, total, fragments := 0, 0, 0
+	for _, file := range proseSurfaces(t, root) {
+		if !strings.EqualFold(filepath.Ext(file), ".md") {
+			continue
+		}
+		documents++
+		body := withoutFencedCodeBlocks(readFile(t, file))
+		rel, err := filepath.Rel(root, file)
+		if err != nil {
+			t.Fatalf("relativising %s: %v", file, err)
+		}
+		rel = filepath.ToSlash(rel)
+
+		for _, m := range link.FindAllStringSubmatchIndex(body, -1) {
+			target := body[m[2]:m[3]]
+			if strings.Contains(target, "://") || strings.HasPrefix(target, "mailto:") {
+				continue
+			}
+			total++
+			where := rel + ":" + strconv.Itoa(1+strings.Count(body[:m[0]], "\n"))
+
+			path, fragment := target, ""
+			if i := strings.IndexByte(target, '#'); i >= 0 {
+				path, fragment = target[:i], target[i+1:]
+			}
+			dest := file
+			if path != "" {
+				resolved, ok := resolveLinkTarget(filepath.Dir(file), path)
+				if !ok {
+					t.Errorf("%s: links to %s, which is not in the repository", where, path)
+					continue
+				}
+				dest = resolved
+			}
+			if fragment == "" {
+				continue
+			}
+
+			fragments++
+			if !headingAnchors(readFile(t, dest))[fragment] {
+				destRel, err := filepath.Rel(root, dest)
+				if err != nil {
+					t.Fatalf("relativising %s: %v", dest, err)
+				}
+				t.Errorf("%s: links to #%s, but no heading in %s produces that anchor",
+					where, fragment, filepath.ToSlash(destRel))
+			}
+		}
+	}
+
+	t.Logf("resolved %d markdown links (%d of them into a heading anchor) across %d documents",
+		total, fragments, documents)
+	if total < 20 || documents < 5 {
+		t.Fatalf("found %d links across %d markdown surfaces; the pattern or the surface list is wrong",
+			total, documents)
+	}
+	if fragments == 0 {
+		t.Errorf("no link points at a heading any more; if the anchor moved, point this check at the new one " +
+			"rather than dropping fragment checking")
+	}
+}
+
+// resolveLinkTarget turns a markdown link target into the file it names,
+// relative to the document making the claim. A target may be percent-encoded
+// (a link to a file with a space in its name), so the decoded form is tried
+// before the link is called broken.
+func resolveLinkTarget(fromDir, target string) (string, bool) {
+	candidates := []string{target}
+	if decoded, err := url.PathUnescape(target); err == nil && decoded != target {
+		candidates = append(candidates, decoded)
+	}
+	for _, candidate := range candidates {
+		path := filepath.Join(fromDir, filepath.FromSlash(candidate))
+		if _, err := os.Stat(path); err == nil {
+			return path, true
+		}
+	}
+	return "", false
+}
+
+// headingAnchors returns the fragments the ATX headings in text produce:
+// lower-cased, every character that is not a letter, a digit, an underscore or a
+// hyphen dropped, spaces turned into hyphens.
+func headingAnchors(text string) map[string]bool {
+	headings := regexp.MustCompile(`(?m)^#{1,6}[ \t]+(.*)$`)
+
+	anchors := map[string]bool{}
+	for _, m := range headings.FindAllStringSubmatch(text, -1) {
+		var anchor strings.Builder
+		for _, r := range strings.ToLower(strings.TrimSpace(m[1])) {
+			switch {
+			case unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-':
+				anchor.WriteRune(r)
+			case r == ' ':
+				anchor.WriteByte('-')
+			}
+		}
+		anchors[anchor.String()] = true
+	}
+	return anchors
 }
