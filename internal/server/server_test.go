@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -450,4 +451,126 @@ func atof(t *testing.T, s string) float64 {
 		t.Fatalf("value %q is not a number: %v", s, err)
 	}
 	return v
+}
+
+// TestNewServerValidatesTheConfigItIsGiven pins the first clause of NewServer's
+// contract: an unusable configuration is refused at construction, so every
+// caller in this repository may read a nil error as "this config is servable".
+// The alternative -- accept whatever is passed and fail on the first request --
+// turns a configuration mistake into a runtime mystery, and the tests that build
+// a server in one line depend on that not happening.
+func TestNewServerValidatesTheConfigItIsGiven(t *testing.T) {
+	cases := map[string]func(*config.Config){
+		"unnamed upstream": func(cfg *config.Config) {
+			cfg.Upstreams = []config.UpstreamConfig{{Kind: "openai", BaseURL: "http://127.0.0.1:1"}}
+		},
+		"no backends at all": func(cfg *config.Config) { cfg.Upstreams = nil },
+		"unusable base_url": func(cfg *config.Config) {
+			cfg.Upstreams[0].BaseURL = "ftp://example.invalid"
+		},
+	}
+	for label, breakIt := range cases {
+		cfg := accessTestConfig()
+		breakIt(&cfg)
+		srv, err := NewServer(&cfg, testLogger{})
+		if err == nil {
+			t.Errorf("%s: NewServer accepted it and returned a server", label)
+			continue
+		}
+		// The stage must be visible: a bare "invalid config" would leave the
+		// caller guessing which part of a large file to fix.
+		if !strings.Contains(err.Error(), "build upstream registry") {
+			t.Errorf("%s: error does not name the stage that rejected it: %v", label, err)
+		}
+		if srv != nil {
+			t.Errorf("%s: NewServer returned a server alongside an error", label)
+		}
+	}
+}
+
+// TestNewServerNormalisesTheConfigItIsGiven pins a behaviour that is easy to
+// mistake for a bug: NewServer hands the config to cfg.Validate, and Validate is
+// a normaliser as well as a checker -- it fills unset defaults in place, on the
+// pointer it was handed, so the caller's struct comes back changed.
+//
+// That is deliberate (see the tier comment in config.Validate: the empty tier
+// has to become something, and "cloud" is the direction that costs money, so it
+// must not be reached by accident), and it is invisible in production because
+// Load validates first: by the time anyone constructs a server the work is done
+// and a second pass is a no-op. What is pinned here is the shape, because
+// "construction edited my data" is precisely the kind of surprise that should be
+// asserted rather than stumbled over:
+//
+//   - unset fields are filled with the shipped defaults;
+//   - explicitly set fields are left alone (a normaliser that overwrites is a
+//     different and much worse thing);
+//   - explicitly set values ARE normalised (`base_url` loses its trailing
+//     slash), which is the one case where a value the caller wrote is changed --
+//     and it is the case that silently produces "//v1/chat/completions" if it is
+//     ever dropped;
+//   - the result is a fixed point, so a second construction changes nothing.
+func TestNewServerNormalisesTheConfigItIsGiven(t *testing.T) {
+	cfg := accessTestConfig()
+	if cfg.Upstreams[0].Tier != "" || cfg.Upstreams[0].Weight != 0 {
+		t.Fatalf("the fixture should start unset, got tier=%q weight=%v",
+			cfg.Upstreams[0].Tier, cfg.Upstreams[0].Weight)
+	}
+
+	if _, err := NewServer(&cfg, testLogger{}); err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	if got := cfg.Upstreams[0].Tier; got != config.TierCloud {
+		t.Errorf("unset tier: got %q, want %q", got, config.TierCloud)
+	}
+	if got := cfg.Upstreams[0].Weight; got != 1 {
+		t.Errorf("unset weight: got %v, want 1", got)
+	}
+	if got, want := cfg.Quota.DefaultPolicy.AnomalyRatio, cfg.Quota.AnomalyRatio; got != want {
+		t.Errorf("unset quota.default_policy.anomaly_ratio: got %v, want the section value %v", got, want)
+	}
+
+	// A fixed point: the defaults that were just written are not written again,
+	// and nothing accumulates across constructions.
+	first, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if _, err := NewServer(&cfg, testLogger{}); err != nil {
+		t.Fatalf("second NewServer: %v", err)
+	}
+	second, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if string(first) != string(second) {
+		t.Errorf("normalisation is not a fixed point:\nfirst:  %s\nsecond: %s", first, second)
+	}
+
+	// Everything the caller set explicitly survives, except the documented
+	// trailing-slash trim.
+	explicit := accessTestConfig()
+	explicit.Upstreams[0].Tier = config.TierLocal
+	explicit.Upstreams[0].Weight = 2.5
+	explicit.Upstreams[0].BaseURL = "http://127.0.0.1:1/"
+	explicit.Quota.AnomalyRatio = 5
+	explicit.Quota.DefaultPolicy.AnomalyRatio = 7
+
+	if _, err := NewServer(&explicit, testLogger{}); err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	if got := explicit.Upstreams[0].Tier; got != config.TierLocal {
+		t.Errorf("explicit tier was overwritten: got %q", got)
+	}
+	if got := explicit.Upstreams[0].Weight; got != 2.5 {
+		t.Errorf("explicit weight was overwritten: got %v", got)
+	}
+	if got := explicit.Quota.AnomalyRatio; got != 5 {
+		t.Errorf("explicit quota.anomaly_ratio was overwritten: got %v", got)
+	}
+	if got := explicit.Quota.DefaultPolicy.AnomalyRatio; got != 7 {
+		t.Errorf("explicit quota.default_policy.anomaly_ratio was overwritten: got %v", got)
+	}
+	if got := explicit.Upstreams[0].BaseURL; got != "http://127.0.0.1:1" {
+		t.Errorf("base_url trailing slash not trimmed: got %q", got)
+	}
 }

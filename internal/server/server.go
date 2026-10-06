@@ -94,7 +94,37 @@ type logAdapter interface {
 }
 
 // NewServer wires configuration, upstream resolution, metrics and routing into
-// a runnable server. It performs no I/O, so it can be constructed in tests.
+// a runnable server.
+//
+// The contract, spelled out because almost every test in this repository leans
+// on it:
+//
+//   - It validates the configuration. The registry build calls cfg.Validate, so
+//     a config that cannot serve fails here, at construction, rather than on the
+//     first request — which is what lets a caller treat a nil error as "this
+//     config is servable" and what keeps a bad config from turning into a
+//     runtime mystery three requests later.
+//   - It performs no I/O. Nothing listens and nothing is dialled: a
+//     Redis-backed cache or budget store is constructed, not connected, so this
+//     stays usable from a unit test with no network.
+//   - It does not mutate the configuration *unless* validation does. This is a
+//     real distinction, not a hedge: cfg.Validate is a normaliser as well as a
+//     checker, and it fills unset defaults in place on the pointer it is handed
+//     (an empty upstream tier becomes "cloud", a zero weight becomes 1, a zero
+//     quota ratio becomes the section default). So the struct the caller passed
+//     comes back changed whenever something in it was left unset. It is
+//     invisible in production -- Load validates first, so by the time anything
+//     calls this the work is already done and a second pass changes nothing --
+//     which is exactly why it is worth stating rather than discovering.
+//     TestNewServerNormalisesTheConfigItIsGiven pins the shape: unset fields
+//     filled, explicitly set fields untouched, and the result a fixed point.
+//   - It KEEPS the pointer it was given (s.cfg). The listener address, the
+//     admin surfaces' routing/health reports and the handler chain all read from
+//     it later, while the router, breakers and cache were built from the values
+//     visible at this moment. Configure first, then construct: mutating the
+//     config afterwards changes what the admin endpoints *report* without
+//     changing what the server *does*, which is a silent inconsistency rather
+//     than a configuration change.
 func NewServer(cfg *config.Config, logger logAdapter) (*Server, error) {
 	registry, err := upstream.New(cfg)
 	if err != nil {
