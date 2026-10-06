@@ -1,6 +1,7 @@
 package repofmt
 
 import (
+	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -279,6 +280,108 @@ func TestProseCitesSymbolsNotLineNumbers(t *testing.T) {
 	for _, offender := range offenders {
 		t.Errorf("%s", offender)
 	}
+}
+
+// TestCommentsCiteSymbolsNotLineNumbers applies the rule above to the comments of
+// this repository's Go and PowerShell files.
+//
+// WHY IT IS A SEPARATE CHECK. TestEveryCitedRepoPathExists deliberately leaves
+// code out of its surface list: a script may legitimately name a file it is about
+// to write, and a comment there is read next to the statement that uses it. The
+// rule here is narrower, and it is not about paths: it is about a comment that
+// locates another file's behaviour by line number, which nothing in a comment can
+// keep true. Four such citations had already gone wrong by the time the prose
+// checks landed -- the token-key comment in cmd/verify-m3/governance.go named
+// three lines of internal/quota/quota.go and all three had moved or been
+// replaced, and internal/gateway/cachepath.go pointed into the middle of
+// proxy.go's retry loop at a line that is now a bare return. Every one of them
+// was invisible to every other check in this file, because comments are not a
+// surface any of those checks reads.
+//
+// WHAT IT LOOKS AT. Lines whose first non-space characters are the Go comment
+// marker or the PowerShell one, in the Go and PowerShell files under cmd/,
+// internal/ and scripts/ -- where the comments that cite code live. Block
+// comments and here-string bodies stay out of scope: a here-string is quoted
+// output, the same exemption a fenced markdown block gets.
+func TestCommentsCiteSymbolsNotLineNumbers(t *testing.T) {
+	root := repoRoot(t)
+	files := commentSurfaces(t, root)
+	if len(files) < 100 {
+		t.Fatalf("walked %d Go/PowerShell files under cmd/, internal/ and scripts/, want at least 100: the walk is not reaching the tree", len(files))
+	}
+
+	// The leading character is part of the match because RE2 has no lookbehind;
+	// it is what stops a URL path from being read as a citation.
+	lineNumber := regexp.MustCompile(`(?:^|[^\w./\\-])([\w.\\/-]*[\w-]\.(?:go|md|ps1|sh|yaml|yml|json)):\d+`)
+	// Every file named in a comment at all, cited by line or not. This is the
+	// denominator, so a comment style this parser stops understanding cannot
+	// turn the check into a no-op that passes.
+	mentions := regexp.MustCompile(`[\w.\\/-]+\.(?:go|md|ps1|sh|yaml|yml|json)`)
+
+	total := 0
+	var offenders []string
+	for _, file := range files {
+		text, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("reading %s: %v", file, err)
+		}
+		rel, err := filepath.Rel(root, file)
+		if err != nil {
+			t.Fatalf("relativising %s: %v", file, err)
+		}
+		rel = filepath.ToSlash(rel)
+		marker := "//"
+		if strings.EqualFold(filepath.Ext(file), ".ps1") {
+			marker = "#"
+		}
+
+		for i, line := range strings.Split(string(text), "\n") {
+			if !strings.HasPrefix(strings.TrimSpace(line), marker) {
+				continue
+			}
+			total += len(mentions.FindAllString(line, -1))
+			for _, m := range lineNumber.FindAllStringSubmatch(line, -1) {
+				offenders = append(offenders, rel+":"+strconv.Itoa(i+1)+": cites "+m[1]+
+					" by line; name the symbol instead, or say which lines moved and why")
+			}
+		}
+	}
+
+	t.Logf("read %d files; their comments name %d files", len(files), total)
+	if total < 100 {
+		t.Fatalf("only %d file mentions found in comments; the pattern is not matching and this check cannot fail", total)
+	}
+	for _, offender := range offenders {
+		t.Errorf("%s", offender)
+	}
+}
+
+// commentSurfaces returns every Go and PowerShell file under the three trees that
+// hold the comments citing code, sorted so a failure reads the same every run.
+func commentSurfaces(t *testing.T, root string) []string {
+	t.Helper()
+	var files []string
+	for _, dir := range []string{"cmd", "internal", "scripts"} {
+		base := filepath.Join(root, dir)
+		err := filepath.WalkDir(base, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				return nil
+			}
+			switch strings.ToLower(filepath.Ext(path)) {
+			case ".go", ".ps1":
+				files = append(files, path)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walking %s: %v", base, err)
+		}
+	}
+	sort.Strings(files)
+	return files
 }
 
 // TestEveryMarkdownLinkResolvesInTheTree pins the links the prose makes to its
