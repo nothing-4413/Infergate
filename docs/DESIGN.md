@@ -308,6 +308,14 @@ internal/gateway ──► internal/router ──► internal/upstream
 半开状态只放行 `half_open_probes` 次探测，探测成功才闭合；探测失败立即重新跳闸（不用再攒样本），
 因为"刚试过，坏了"本身就是最新的事实。
 
+还有第三条出路，是"这次探测什么都没说"：客户端在生成过程中断了、或者请求根本没能构造出来。
+这两种结局都**不构成对后端的判断**（把客户端的行为记成后端失败，会让一个健康后端被踢出去），
+但也不能什么都不做——半开只放行一次探测并等结果，一次放行而永远不回话，那个后端就会被
+`half-open probe already in flight` 拒绝到进程结束。所以 `internal/breaker` 的
+`ReleaseProbe()` 只归还这个名额、不写任何样本；`internal/gateway/proxy.go` 在
+`attemptUpstream` 里用一个 `defer` 兜底：八个报结论的出口（`reportSuccess` / `reportFailure`）
+会把它标成已报，其余所有返回路径都走归还。
+
 ### 8.4 故障转移：每次尝试一个预算
 
 `upstream_timeout` 是**每次尝试**的预算，不是整条请求的共享预算。这一条是实测改出来的：

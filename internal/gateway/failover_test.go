@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"net/http"
@@ -492,6 +493,123 @@ func TestBreakerHalfOpenAdmitsOneProbeAndRecovers(t *testing.T) {
 	}
 	if got := res.Header().Get(HeaderUpstreamName); got != "primary" {
 		t.Errorf("%s = %q, want the recovered primary to answer", HeaderUpstreamName, got)
+	}
+	if got := breakers.Get("primary").State(); got != breaker.StateClosed {
+		t.Fatalf("primary breaker = %s after a successful probe, want closed", got)
+	}
+}
+
+// TestCanceledProbeGivesTheHalfOpenSlotBack is the end-to-end half of the
+// release: the probe is admitted, the caller disappears before the backend
+// answers, and the NEXT request must still be able to reach that backend.
+//
+// The path it covers is the one that reports no verdict -- a canceled caller is
+// not evidence about the backend -- so the half-open slot has to be handed back
+// explicitly. Without that, primary is refused with "half-open probe already in
+// flight" for the life of the process and every request is answered by the
+// backup: a backend that was slow once is dropped for good.
+func TestCanceledProbeGivesTheHalfOpenSlotBack(t *testing.T) {
+	const (
+		modeFailing int32 = iota
+		modeHanging
+		modeHealthy
+	)
+	var mode atomic.Int32
+	mode.Store(modeFailing)
+	probeStarted := make(chan struct{}, 1)
+
+	primary := newBackend(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch mode.Load() {
+		case modeHanging:
+			// Announce the attempt, then wait for the caller to vanish. The
+			// proxy cancels this context when the client disconnects or the
+			// caller's own context is canceled.
+			select {
+			case probeStarted <- struct{}{}:
+			default:
+			}
+			<-r.Context().Done()
+			return
+		case modeHealthy:
+			_, _ = w.Write([]byte(chatCompletionBody))
+		default:
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":{"message":"down"}}`))
+		}
+	})
+	// The backup is healthy first (so the failing primary can be reached and
+	// tripped), then down, so the plan has to fall through to primary.
+	var backupDown atomic.Bool
+	backup := newBackend(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if backupDown.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":{"message":"also down"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(chatCompletionBody))
+	})
+
+	health := testHealthConfig()
+	health.MinRequests = 2
+	health.OpenDuration = config.Duration(50 * time.Millisecond)
+	health.HalfOpenProbes = 1
+	health.RetryBackoff = config.Duration(0)
+	p, breakers := newFailoverProxy(t, failoverOptions{
+		primary: primary.URL, backup: backup.URL, health: health,
+	}, metrics.Nop{})
+
+	for i := 0; i < 2; i++ {
+		if res := mustPost(t, p, "/v1/chat/completions", chatRequestBody); res.Code != http.StatusOK {
+			t.Fatalf("request %d: status = %d, want 200 from the backup", i+1, res.Code)
+		}
+	}
+	if got := breakers.Get("primary").State(); got != breaker.StateOpen {
+		t.Fatalf("primary breaker = %s, want open", got)
+	}
+
+	mode.Store(modeHanging)
+	backupDown.Store(true)
+	time.Sleep(60 * time.Millisecond)
+
+	// The probe: primary is admitted for its single half-open attempt and never
+	// answers, because the caller goes away first.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(chatRequestBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer caller-key")
+	req = req.WithContext(ctx)
+	served := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		p.ServeHTTP(rec, req)
+		served <- rec
+	}()
+
+	select {
+	case <-probeStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the probe never reached primary: the half-open slot was not usable at all")
+	}
+	cancel()
+	res := <-served
+	if res.Body.Len() != 0 {
+		t.Errorf("a canceled caller received %d bytes of body: %q", res.Body.Len(), res.Body.String())
+	}
+
+	// The decisive assertion: primary must still be reachable. If the canceled
+	// probe kept the slot, this request is refused and the client gets a 502
+	// naming a breaker state the backend never earned.
+	mode.Store(modeHealthy)
+	res = mustPost(t, p, "/v1/chat/completions", chatRequestBody)
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d (%s), want 200 from primary", res.Code, strings.TrimSpace(res.Body.String()))
+	}
+	if got := res.Header().Get(HeaderUpstreamName); got != "primary" {
+		t.Fatalf("%s = %q, want primary: a canceled probe must not keep the backend out for good",
+			HeaderUpstreamName, got)
 	}
 	if got := breakers.Get("primary").State(); got != breaker.StateClosed {
 		t.Fatalf("primary breaker = %s after a successful probe, want closed", got)

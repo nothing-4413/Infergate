@@ -374,6 +374,7 @@ There is not enough space on the disk.` 与 `compile: writing output: write .\.g
 | 全部候选失败 | 回传最后一个 Provider 的状态与响应体 | `TestAllCandidatesFailForwardsTheProviderError`、`TestLastCandidateTimeoutAnswers504` |
 | 重试预算有上界 | `max_failures_per_request` 封顶尝试次数 | `TestMaxAttemptsCapsTheFailoverBudget`、verify-m1 `checkMaxAttemptsBudget` |
 | 熔断状态机 | closed → open → half-open → closed，半开只放 1 个探针 | `TestHalfOpenAdmitsExactlyOneProbe`、`TestFailedProbeReopensImmediately`、`TestHalfOpenProbesCloseTheBreaker` |
+| 探测名额不会漏 | 探针被放行后若"什么都没说"（客户端断开、请求没构造出来），名额归还而不是记成失败：否则该后端会被 `half-open probe already in flight` 拒到进程结束 | `internal/breaker` 的 `TestReleaseProbeGivesTheHalfOpenSlotBack`、`internal/gateway` 的 `TestCanceledProbeGivesTheHalfOpenSlotBack`（去掉归还后这条会红，实测报文 `no upstream could serve this request: primary: half-open probe already in flight`） |
 | 样本不足不熔断 | 低于 `min_requests` 永不跳闸：未知 ≠ 坏了 | `TestBelowMinRequestsNeverTrips` |
 | 熔断不吞请求 | open 的后端排最后而非剔除；全熔断时给出 502 而不是挂住 | `TestBreakerStopsRoutingToADeadBackend`、verify-m1 段 5 |
 | 能力路由 | 只送给声明了该能力的后端；无匹配返回 400 而不降级 | `TestCapabilityHeaderExcludesABackend`、`TestUnmatchedCapabilityIs400NotADowngrade` |

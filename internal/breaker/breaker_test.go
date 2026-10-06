@@ -93,6 +93,43 @@ func TestHalfOpenAdmitsExactlyOneProbe(t *testing.T) {
 	}
 }
 
+// TestReleaseProbeGivesTheHalfOpenSlotBack covers the attempt that ends without
+// a verdict. A half-open breaker admits one attempt and waits to be told how it
+// went; a caller that hangs up mid-generation says nothing about the backend, so
+// the slot must be handed back rather than reported as a failure -- otherwise
+// the next caller is refused with "half-open probe already in flight" and the
+// backend never gets another chance.
+func TestReleaseProbeGivesTheHalfOpenSlotBack(t *testing.T) {
+	b, window, advance := newTestBreaker()
+	for i := 0; i < 4; i++ {
+		window.RecordFailure(false)
+		b.RecordFailure(false)
+	}
+	advance(11 * time.Second)
+
+	if d := b.Allow(); !d.Probe {
+		t.Fatalf("first call after cooldown = %+v, want the probe", d)
+	}
+	if d := b.Allow(); d.Allowed {
+		t.Fatalf("a second attempt was admitted as another probe: %+v", d)
+	}
+
+	b.ReleaseProbe()
+
+	next := b.Allow()
+	if !next.Allowed || !next.Probe {
+		t.Fatalf("after ReleaseProbe the next call = %+v, want a fresh probe: the backend would "+
+			"otherwise be refused for the life of the process", next)
+	}
+	if got := b.State(); got != StateHalfOpen {
+		t.Fatalf("state = %s, want half-open: handing the slot back makes no claim about the backend", got)
+	}
+	// Releasing is not a verdict, so the window must be exactly as it was.
+	if got := window.Snapshot(); got.Attempts != 4 || got.Failures != 4 {
+		t.Fatalf("window = %+v after ReleaseProbe, want the 4 failures it already had", got)
+	}
+}
+
 func TestFailedProbeReopensImmediately(t *testing.T) {
 	b, window, advance := newTestBreaker()
 	for i := 0; i < 4; i++ {

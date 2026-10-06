@@ -842,9 +842,16 @@ func (p *Proxy) attemptUpstream(w http.ResponseWriter, r *http.Request, rec *rec
 	// One decision per attempt, taken immediately before it: asking earlier
 	// would let a breaker that tripped meanwhile be ignored, and asking later
 	// (after the request is built) would waste the work.
-	var allowed, probe bool
+	//
+	// The breaker is looked up once, because the half-open release below and
+	// every verdict reported later must be about the same one.
+	brk := (*breaker.Breaker)(nil)
 	if p.breakers != nil {
-		d := p.breakers.Get(target.Name).Allow()
+		brk = p.breakers.Get(target.Name)
+	}
+	var allowed, probe bool
+	if brk != nil {
+		d := brk.Allow()
 		allowed, probe = d.Allowed, d.Probe
 		if !allowed {
 			// A rejection is a decision, not an exchange: it gets an event
@@ -857,11 +864,39 @@ func (p *Proxy) attemptUpstream(w http.ResponseWriter, r *http.Request, rec *rec
 			return &attemptError{err: errors.New(target.Name + ": " + d.Reason), retryable: true}, false
 		}
 	}
-	// probe marks this attempt as the half-open probe. It is recorded so that
-	// the outcome is always reported back: admitting a probe and then failing to
-	// report it leaves the breaker stuck half-open forever, because a half-open
-	// breaker admits exactly one attempt and waits.
-	_ = probe
+	// reported is set by every line below that tells the breaker how this
+	// attempt ended; the two closures exist so that setting it cannot be
+	// forgotten at one of the eight verdict sites.
+	//
+	// The paths that deliberately report NOTHING about the backend -- the caller
+	// hung up, the request could not even be built -- still have to hand back the
+	// half-open slot: a half-open breaker admits exactly one attempt and waits,
+	// so a probe that is admitted and never reported leaves that backend
+	// rejected with "half-open probe already in flight" for the life of the
+	// process. A canceled client is not evidence about the backend, which is why
+	// this releases the slot instead of charging a failure for it.
+	reported := false
+	if probe {
+		defer func() {
+			if !reported {
+				brk.ReleaseProbe()
+			}
+		}()
+	}
+	reportSuccess := func() {
+		if brk == nil {
+			return
+		}
+		reported = true
+		brk.RecordSuccess()
+	}
+	reportFailure := func(timeout bool) {
+		if brk == nil {
+			return
+		}
+		reported = true
+		brk.RecordFailure(timeout)
+	}
 
 	// One client span per admitted attempt. The defer closes it on every return
 	// path below, including the ones that never reach the network, so a trace
@@ -920,9 +955,7 @@ func (p *Proxy) attemptUpstream(w http.ResponseWriter, r *http.Request, rec *rec
 			rec.outcome = metrics.OutcomeTimeout
 			rec.status = http.StatusGatewayTimeout
 			rec.reason = "upstream timeout: " + target.Name
-			if p.breakers != nil {
-				p.breakers.Get(target.Name).RecordFailure(true)
-			}
+			reportFailure(true)
 			p.observeAttempt(target, http.StatusGatewayTimeout, rec.outcome, time.Since(attemptStart))
 			return &attemptError{
 				err:       errors.New(target.Name + ": gateway deadline exceeded"),
@@ -936,9 +969,7 @@ func (p *Proxy) attemptUpstream(w http.ResponseWriter, r *http.Request, rec *rec
 			rec.outcome = metrics.OutcomeUpstreamErr
 			rec.reason = target.Name + ": " + err.Error()
 			p.observeAttempt(target, 0, rec.outcome, time.Since(attemptStart))
-			if p.breakers != nil {
-				p.breakers.Get(target.Name).RecordFailure(false)
-			}
+			reportFailure(false)
 			return &attemptError{err: err, retryable: true}, false
 		}
 	}
@@ -955,9 +986,7 @@ func (p *Proxy) attemptUpstream(w http.ResponseWriter, r *http.Request, rec *rec
 			failureBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 			outcome := metrics.OutcomeUpstreamErr
 			p.observeAttempt(target, resp.StatusCode, outcome, time.Since(attemptStart))
-			if p.breakers != nil {
-				p.breakers.Get(target.Name).RecordFailure(resp.StatusCode == http.StatusGatewayTimeout)
-			}
+			reportFailure(resp.StatusCode == http.StatusGatewayTimeout)
 			rec.outcome = outcome
 			rec.reason = target.Name + ": upstream status " + resp.Status
 			return &attemptError{
@@ -984,12 +1013,10 @@ func (p *Proxy) attemptUpstream(w http.ResponseWriter, r *http.Request, rec *rec
 		}
 		p.passThroughError(w, resp, rec)
 		p.observeAttempt(target, resp.StatusCode, rec.outcome, time.Since(attemptStart))
-		if p.breakers != nil {
-			// A 4xx is charged to the caller, not the backend, so it must not
-			// count toward the breaker's failure ratio. Counting it would let a
-			// client with a bad payload trip a healthy upstream out of rotation.
-			p.breakers.Get(target.Name).RecordSuccess()
-		}
+		// A 4xx is charged to the caller, not the backend, so it must not
+		// count toward the breaker's failure ratio. Counting it would let a
+		// client with a bad payload trip a healthy upstream out of rotation.
+		reportSuccess()
 		return nil, false
 	}
 
@@ -1008,20 +1035,16 @@ func (p *Proxy) attemptUpstream(w http.ResponseWriter, r *http.Request, rec *rec
 		// protocol violation. It only counts against the breaker if the failure
 		// was the upstream's, not the client's.
 		if rec.outcome == metrics.OutcomeSuccess {
-			if p.breakers != nil {
-				p.breakers.Get(target.Name).RecordSuccess()
-			}
-		} else if p.breakers != nil && rec.outcome != metrics.OutcomeCanceled {
-			p.breakers.Get(target.Name).RecordFailure(false)
+			reportSuccess()
+		} else if rec.outcome != metrics.OutcomeCanceled {
+			reportFailure(false)
 		}
 	} else {
 		rec.outcome = p.copyWhole(w, r, resp, rec)
 		if rec.outcome == metrics.OutcomeSuccess {
-			if p.breakers != nil {
-				p.breakers.Get(target.Name).RecordSuccess()
-			}
-		} else if p.breakers != nil && rec.outcome != metrics.OutcomeCanceled {
-			p.breakers.Get(target.Name).RecordFailure(rec.outcome == metrics.OutcomeTimeout)
+			reportSuccess()
+		} else if rec.outcome != metrics.OutcomeCanceled {
+			reportFailure(rec.outcome == metrics.OutcomeTimeout)
 		}
 	}
 

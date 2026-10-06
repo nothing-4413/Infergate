@@ -219,6 +219,23 @@ func (b *Breaker) RecordFailure(timeout bool) {
 	}
 }
 
+// ReleaseProbe gives back the half-open slot without recording a verdict.
+//
+// A half-open breaker admits exactly one attempt and waits to be told how it
+// went, so that it can be neither stampeded nor left half-open forever. Those
+// two goals conflict when an attempt ends without anything to say about the
+// backend: the caller hung up mid-generation, or the request could not even be
+// built. Recording a failure there would charge a healthy backend for the
+// client's behaviour, and recording nothing would keep the single probe
+// occupied for good -- every later caller is then rejected with "half-open
+// probe already in flight" and the backend never gets another chance.
+// Releasing the slot keeps the second guarantee without making the first claim.
+func (b *Breaker) ReleaseProbe() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.probeInFlight = false
+}
+
 // trip opens the breaker. The caller must hold b.mu.
 func (b *Breaker) trip() {
 	if b.state != StateOpen {
