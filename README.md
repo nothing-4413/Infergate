@@ -184,7 +184,7 @@ docker compose down
 容器里用的是 `configs/docker.yaml`：上游写服务名 `http://mockupstream:9000`、存储写 `miniredis:6399`
 （写 `127.0.0.1` 会指到网关自己）。端口特意都不是默认值，可用 `INFERGATE_GATEWAY_PORT` 等环境变量覆盖。
 **这一节只做到了"配置正确"这一层**：compose 语法与 `configs/docker.yaml` 都用真实加载器验过，
-`scripts/verify-docker-profile.ps1` 把同一份配置换成本地地址、用真进程跑了 16 项检查全过；
+`scripts/verify-docker-profile.ps1` 把同一份配置换成本地地址、用真进程跑了 20 项检查全过；
 但**镜像从未被构建过**（写这份文档的机器上 Docker 守护进程没运行），明细见
 [deploy/README.md](deploy/README.md) §7.1。
 

@@ -47,8 +47,9 @@ curl 门编译真二进制、拉真进程、用真 `curl.exe` 打真 socket，�
 | `gofmt -l ./cmd ./internal` | 格式门 | 绿（加入这一步时仓库里有 7 个文件不干净，已一并修好） |
 | `go test ./... -count=1 -timeout 20m` | 全部单元/集成测试（Linux，无 `-race`） | 绿 |
 | `go test -race` **逐个包**（`go list ./...` 循环，失败继续跑下一个） | 竞态检测（**本机做不到**：无 gcc） | 已定位并修复；**尚未在 runner 上复测**（见下） |
-| `.\tools\go.cmd run .\cmd\verify*` | 2353 条 Go 端到端断言 | 尚未接入（需要 Windows runner） |
-| `.\scripts\verify-m*.ps1` | 1060 条 curl 端到端断言 | **绿**：`curl gates (M0-M6, operator token)` job 在 run 37374000997 上 119 秒跑完，8 个门（M0–M6 + 管理面令牌门）全过 |
+| `.\tools\go.cmd run .\cmd\verify*` | 2353 条 Go 端到端断言 | 尚未接入（Linux job 跑不了；`windows-2022` 的 curl job 具备条件，但还没加步骤） |
+| `.\scripts\verify-m*.ps1` + `verify-hardening.ps1` | 1060 条 curl 端到端断言 + 44 条管理面令牌断言 | **绿**：`curl gates (M0-M6, operator token)` job 在 run 37374000997 上 119 秒跑完，9 个门全过 |
+| `scripts/verify-docker-profile.ps1` | 20 条容器画像断言（真二进制、真端口、真 miniredis） | 绿（本机 25 秒，见下「容器的证据边界」） |
 
 两个 `go test` 步骤把整份 transcript 写进 `/tmp`，再由 `scripts/ci-summarize-go-test.sh`
 捕出失败测试与**完整的 DATA RACE 报告**，写进一个分片文件（`/tmp/ci-summary-*.md`）。这个文件随后被
@@ -67,13 +68,23 @@ curl -s https://api.github.com/repos/nothing-4413/Infergate/commits/<sha>/check-
 **修改 GitHub 为本 job 创建的那个 check run** 是两回事，后者会被回收。
 
 **这条通路本身尚未在真实 CI 上验证到**，原因是 GitHub 侧的一次异常：从 run 37380607350
-（head `760c303`）起，一直到 `3a7f2e4`，`GET /actions/runs/{id}/jobs` 与
+（head `760c303`）起，一直到 `e746a5b`，`GET /actions/runs/{id}/jobs` 与
 `GET /commits/{sha}/check-runs` 都返回 `total_count: 0`，而更早的 run 37374000997 / 37377940124 /
 37379724217 仍然分别返回 2 / 3 / 4 个 job。同一批 run 的 `name` 字段也从 `ci` 变成了
 `.github/workflows/ci.yml`（`workflow_id` 仍是 375731182），并且 `3a7f2e4` 的 runner 页面对匿名
-读者返回 404。也就是说**红/绿结论读得到，job 与 check run 的元数据读不到**，所以 relay 是"已接线、
-本机验证过、外部待验证"。判据是：等上面两个接口对这些 sha 恢复返回 job 后，
+读者返回 404。
+
+更彻底的实测（`760c303` 之后的新 run）：**run 的 HTML 页面本身也被重定向到 commit 页**——
+`<title>` 是 commit 标题（`... · nothing-4413/Infergate@<sha> · GitHub`），正文只有 3127 字符并含
+`flash-error`/`404`/`Sign in`；而旧 run 37374000997 的页面是 220473 字节、正文里 `curl gates` 出现 3 次。
+所以对这批 sha 而言，**匿名读者只剩终态**：`GET /actions/runs/{id}` 里的 `status`/`conclusion`
+（以及 `/runs?per_page=N` 的列表），**连"哪一步红"都读不到**。
+
+因此 relay 是"已接线、本机验证过、外部待验证"，而 race 与 curl 门这两项的 runner 结论暂时只有
+红/绿、没有原因。判据是：等上面两个接口对这些 sha 恢复返回 job 后，
 `check-runs` 里应当出现 `ci failure: build / vet / test / race` 且 `output.summary` 非空。
+按这个边界，`e746a5b` 之后每个 run 能读到的只有"两个 job 各自的终态"：base job 红、curl gates job 绿，
+**红在哪一步、为什么红，在本机读不到**。所以 race 那一项的状态是"代码已按判据改过，复测结论待外部通路恢复"。
 
 **为什么 race 那一项从"红"改成了"已定位"**：它在 runner 上红，而本机普通 `go test` 全绿、连
 `-count=3` 都无抖动。依据是两处**测试代码**的共享计数器——`internal/embed/embed_test.go` 的
@@ -144,6 +155,40 @@ kubelet、compose healthcheck、Prometheus 抓取器都不带凭证，要求凭�
 
 这一段在 Go 单测之外补 curl 门的原因很直接：单测走的是 `srv.Handler()`，它证明的是策略正确；
 只有真二进制 + 真 socket 能证明 401 真的会从 HTTP 层发出来、且 `WWW-Authenticate` 真的在线上。
+
+---
+
+### 容器的证据边界
+
+`scripts/verify-docker-profile.ps1` 跑的是「容器画像」这一层：把 `configs/docker.yaml` 里的服务名换成
+`127.0.0.1`，用**真二进制、真端口、真 miniredis** 起一遍，断言 20 条（`20 passed, 0 failed`，本机 25 秒）。
+它证的是一件事：**那份配置里的每个键都真的被加载器读进去了**——因为加载器不启用
+`DisallowUnknownFields`，键名写错会静默失效、`-check` 照样绿，只有真跑一次才能证伪。
+
+它**不证**的是：镜像构建、`docker compose up`、服务名解析、容器网络、卷挂载。Docker 守护进程在本机
+从未起过，所以这四条一条都没被执行验证过，判据只能来自一台有 Docker 的机器。
+
+这道门本身在 2026-10-06 修过一轮稳健性，原因值得记住：它曾经在一次 **miniredis 根本没起来**的运行里
+报出 `first request is a miss got 'skip'` 与 `the replayed body is byte-identical`——**环境没准备好，
+看起来却像被测对象错了**。改动是四处：
+
+1. **前置检查放在最前**：三个端口必须空闲（否则打印占用者与改用端口的参数并退出）、派生配置必须先过
+   `-check`、两个 store 必须先接受连接，之后才允许出现任何关于缓存的断言。
+2. **失败时打印证据**：转储 gateway 日志的 error/warn/listen 行与两份响应文件的前几行，而不是只报文件名。
+3. **`catch` 不再 rethrow**：rethrow 会跳过结尾的 pass/fail 汇总，让读者拿不到计数。
+4. **清理按端口认进程**：原来只按 `ExecutablePath` 前缀匹配 `tmp/`，**实测漏杀**过活着的
+   `infergate.exe` 与 `miniredis.exe`；现在与「三个端口上的 owning process」取并集。
+
+同一次删掉一个**永远返回空**的 `Get-JobPid`：它问 WMI 要 `ParentProcessId = $job.Id` 的进程，而
+PowerShell 作业的 `Id` 是**序列号不是进程号**（实测 `Start-Job` 报 `Id=1`，而子进程的真实父进程是另一个
+`powershell.exe -s -NoLogo -NoProfile` 宿主）。它唯一的消费者是一行日志，代价是每个作业 30 次 CIM 查询
+——门因此白花了两分多钟。**教训：要认自己启动的进程，就用它占的端口，不要用作业 id 猜父子关系。**
+
+还有一个与代码无关、但会让门说谎的环境条件：**磁盘写满**。`C:` 只剩 0.45GB 时
+`go build ./...` 大面积失败，报 `link.exe: resize output file failed: truncate ...\a.out.exe:
+There is not enough space on the disk.` 与 `compile: writing output: write .\.gotmp\...\_pkg_.a`。
+同一个门在那种状态下要跑 145–164 秒（正常 25 秒），因为链接器在反复重试。判读一个"变慢了"或"红了"的
+门之前，先看磁盘余量。
 
 ---
 

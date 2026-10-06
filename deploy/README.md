@@ -273,11 +273,14 @@ compose 的三个服务就是这么来的。构建细节写在 `Dockerfile` 顶�
 
 * `docker compose -f docker-compose.yml config --quiet` 通过（YAML 与 compose 语法，不需要 daemon）。
 * `configs/docker.yaml` 用真实加载器校验通过：`go run ./cmd/infergate -config configs/docker.yaml -check` → `configuration OK`。
-* **`scripts/verify-docker-profile.ps1` 16 项全过**：把 `configs/docker.yaml` 里的服务名换成本地地址，
+* **`scripts/verify-docker-profile.ps1` 20 项全过**（本机 25 秒）：把 `configs/docker.yaml` 里的服务名换成本地地址，
   用仓库自己的三个二进制真起一遍（网关 + mock 上游 + miniredis），证明这些键不只是"能被解析"，而是**真的生效**：
   `capacity`（幂等 512 / 会话 512）、`max_response_bytes`、`recent_per_session`、`tracing.jsonl_path: ""`，
   以及缓存/幂等/会话/配额/追踪五个面在 RESP2 存储上的往返。这一条最值得看，因为加载器**不拒绝未知键**——
   键名写错（例如把 `capacity` 写成 `max_entries`）会静默不生效，只有真跑起来看 admin 面才能证伪。
+  这道门在 2026-10-06 加了一层前置检查（端口空闲、`-check` 通过、两个 store 可达）后才敢下结论：
+  在此之前它曾在 **miniredis 根本没起来**的运行里报出 `first request is a miss got 'skip'`，
+  把"环境没准备好"显示成"缓存错了"。判读这类失败前先看门开头的三条前置断言。
 
 **未验证**
 
