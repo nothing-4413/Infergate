@@ -93,6 +93,58 @@ type logAdapter interface {
 	Warn(msg string, args ...any)
 }
 
+// reportUnpricedModels says which models the upstreams declare but the price
+// book does not cover, because their cost is then whatever pricing.default is.
+//
+// The two cases are not equally quiet, so they are not logged the same way. A
+// nonzero default still records a real number (a guess, which is the documented
+// behaviour of the default price) and is worth an info line. A default of zero
+// records $0, which is the direction that lets spend grow without ever tripping
+// a cost budget, so it is a warning naming what to set.
+//
+// A "/" catch-all is reported separately rather than expanded into a list: it
+// accepts model names this configuration never mentions, so the most it can say
+// is that unpriced traffic can arrive on models nobody named.
+func reportUnpricedModels(cfg *config.Config, book *gateway.PriceBook, logger logAdapter) {
+	var declared []string
+	catchAll := false
+	for _, u := range cfg.Upstreams {
+		for _, m := range u.Models {
+			switch m {
+			case "":
+				// Names nothing; upstream.New rejects an empty allow-list, and
+				// an empty entry inside one is not a model.
+			case "/":
+				catchAll = true
+			default:
+				declared = append(declared, m)
+			}
+		}
+	}
+
+	unpriced := book.Unpriced(declared)
+	if len(unpriced) == 0 && !catchAll {
+		return
+	}
+
+	models := strings.Join(unpriced, ", ")
+	if models == "" {
+		models = "(none named: the catch-all accepts whatever a client sends)"
+	}
+	def := cfg.Pricing.Default
+	args := []any{
+		"models", models,
+		"catch_all", catchAll,
+		"default_in_usd_per_mtok", def.In,
+		"default_out_usd_per_mtok", def.Out,
+	}
+	if def.In == 0 && def.Out == 0 {
+		logger.Warn("pricing: these models have no price and pricing.default is 0, so their cost_usd is 0 and cost budgets cannot see their traffic", args...)
+		return
+	}
+	logger.Info("pricing: these models have no price and are billed at pricing.default", args...)
+}
+
 // NewServer wires configuration, upstream resolution, metrics and routing into
 // a runnable server.
 //
@@ -133,6 +185,15 @@ func NewServer(cfg *config.Config, logger logAdapter) (*Server, error) {
 
 	recorder := metrics.NewRecorder()
 	priceBook := gateway.NewPriceBook(cfg.Pricing)
+
+	// Name the models this configuration cannot price, here and once. The
+	// router already refuses to treat an unlisted model as free when it sorts
+	// candidates, but billing has no such guard: CostUSD multiplies an unlisted
+	// model by pricing.default, which is $0 unless the operator set one, so
+	// those requests are summed as costing nothing and a cost budget cannot see
+	// them. Nothing else in the process is in a position to say so -- the
+	// request path would turn a configuration gap into per-request noise.
+	reportUnpricedModels(cfg, priceBook, logger)
 
 	// One circuit breaker per configured backend, sharing this process's health
 	// window with the router. They are created even when every upstream is

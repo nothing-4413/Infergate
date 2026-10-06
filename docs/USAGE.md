@@ -180,6 +180,21 @@ access:                                      # 运营者令牌：默认关闭，
   protect: []                                # 空 = ["/admin", "/stats"]
 ```
 
+**`pricing` 这一节**：单价单位是 USD / 1M tokens，只用来给每个请求挂一个花费数字（不是账单）。
+启动时网关会把"上游声明了、价格表里却没有"的模型**点名报一次**，因为这个缺失在计费侧没有护栏：
+未标价的模型按 `pricing.default` 折算，default 没配（= 0）时 `cost_usd` 就是 0，`cost_per_day_usd`
+这类预算永远看不见这些流量——这种情形打 WARN；default 配了非 0 值（按 default 折算是猜测，不是 0）
+打 INFO；所有声明过的模型都标了价就一行都不打。上游声明了 `"/"` 兜底时无法列出具体模型名，
+报文里 `catch_all=true` 并说明兜底可能收到任何模型名：
+
+```text
+level=WARN msg="pricing: these models have no price and pricing.default is 0, so their cost_usd is 0 and cost budgets cannot see their traffic" models=bge-m3 catch_all=false default_in_usd_per_mtok=0 default_out_usd_per_mtok=0
+```
+
+（`configs/infergate.yaml` 里的 `Qwen3-8B-AWQ` 就是这样被发现的：它声明在本地 vLLM 上，
+但价格表里当初只写了 `Qwen3-8B`。测试见 `internal/server/server_test.go` 的
+`TestNewServerReportsModelsItCannotPrice`。）
+
 环境变量覆盖：`INFERGATE_LISTEN`、`INFERGATE_LOG_LEVEL`、`INFERGATE_MAX_BODY_BYTES`。
 请求级控制头：`X-InferGate-Upstream: <name>` 强制指定上游（用于灰度与排障）。
 路由顺序：显式头 → 模型精确匹配（大小写不敏感）→ 兜底 `"/"` → 只剩一个后端时吸收任意模型名。

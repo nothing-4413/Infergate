@@ -83,6 +83,13 @@ pricing:
     gpt-4o-mini:
       in: 0.15
       out: 0.60
+    # The two local vLLM names cost nothing in API terms; the AWQ build is the
+    # same weights quantised, so it is priced the same rather than falling
+    # through to the default. The gateway names any declared model it cannot
+    # price at startup, which is how this line got written.
     Qwen3-8B:
+      in: 0.0
+      out: 0.0
+    Qwen3-8B-AWQ:
       in: 0.0
       out: 0.0

@@ -574,3 +574,155 @@ func TestNewServerNormalisesTheConfigItIsGiven(t *testing.T) {
 		t.Errorf("base_url trailing slash not trimmed: got %q", got)
 	}
 }
+
+// loggedLine is one call the server made into its logger, kept whole so a test
+// can assert on the level, the message and the key/value arguments.
+type loggedLine struct {
+	level string
+	msg   string
+	args  []any
+}
+
+// recordingLogger captures the server's startup lines. The server logs through
+// an interface precisely so a test can substitute one, and this is the test that
+// needs to read what an operator would read.
+type recordingLogger struct{ lines []loggedLine }
+
+func (l *recordingLogger) Info(msg string, args ...any)  { l.add("info", msg, args) }
+func (l *recordingLogger) Warn(msg string, args ...any)  { l.add("warn", msg, args) }
+func (l *recordingLogger) Error(msg string, args ...any) { l.add("error", msg, args) }
+
+func (l *recordingLogger) add(level, msg string, args []any) {
+	l.lines = append(l.lines, loggedLine{level: level, msg: msg, args: args})
+}
+
+// pricingLines returns the startup lines about prices, and nothing else: the
+// server is free to log about anything it likes as long as this one report says
+// what it claims to.
+func (l *recordingLogger) pricingLines() []loggedLine {
+	var out []loggedLine
+	for _, line := range l.lines {
+		if strings.HasPrefix(line.msg, "pricing:") {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+// arg returns the value logged under key, so an assertion can name the field it
+// depends on instead of the whole argument list.
+func (l loggedLine) arg(key string) (any, bool) {
+	for i := 0; i+1 < len(l.args); i += 2 {
+		if k, ok := l.args[i].(string); ok && k == key {
+			return l.args[i+1], true
+		}
+	}
+	return nil, false
+}
+
+// TestNewServerReportsModelsItCannotPrice pins the one place the process admits
+// that an unlisted model's cost is a guess.
+//
+// The distinction it keeps is between a guess and a zero: with a nonzero
+// pricing.default the recorded cost is at least the right order of magnitude and
+// an info line is enough, but with the default left at 0 the request is summed
+// as costing nothing, so no cost budget can ever trip on it. That is the
+// direction this repository treats as dangerous, hence a warning that names the
+// models and the two knobs.
+func TestNewServerReportsModelsItCannotPrice(t *testing.T) {
+	upstream := func(models ...string) []config.UpstreamConfig {
+		return []config.UpstreamConfig{{
+			Name:    "local",
+			Kind:    "openai",
+			BaseURL: "http://127.0.0.1:1",
+			Models:  models,
+		}}
+	}
+	price := func(in, out float64) map[string]config.ModelPrice {
+		return map[string]config.ModelPrice{"gpt-4o": {In: in, Out: out}}
+	}
+
+	cases := []struct {
+		name       string
+		upstreams  []config.UpstreamConfig
+		pricing    config.PricingConfig
+		wantLevel  string // "" means the report must stay silent
+		wantModels string
+		wantCatch  bool
+	}{
+		{
+			name:       "an unpriced model with a zero default warns",
+			upstreams:  upstream("gpt-4o", "bge-m3"),
+			pricing:    config.PricingConfig{Models: price(2.5, 10)},
+			wantLevel:  "warn",
+			wantModels: "bge-m3",
+		},
+		{
+			name:      "every declared model priced says nothing at all",
+			upstreams: upstream("gpt-4o"),
+			pricing:   config.PricingConfig{Models: price(2.5, 10)},
+		},
+		{
+			name:       "a nonzero default is a guess, so it is info rather than a warning",
+			upstreams:  upstream("gpt-4o", "bge-m3"),
+			pricing:    config.PricingConfig{Default: config.ModelPrice{In: 1, Out: 3}, Models: price(2.5, 10)},
+			wantLevel:  "info",
+			wantModels: "bge-m3",
+		},
+		{
+			// The catch-all accepts model names this configuration never
+			// mentions, so the report cannot name them; it still has to say that
+			// unpriced traffic can arrive.
+			name:       "a catch-all alone is still reported",
+			upstreams:  upstream("/"),
+			wantLevel:  "warn",
+			wantModels: "catch-all",
+			wantCatch:  true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := accessTestConfig()
+			cfg.Upstreams = tc.upstreams
+			cfg.Pricing = tc.pricing
+			logger := &recordingLogger{}
+			if _, err := NewServer(&cfg, logger); err != nil {
+				t.Fatalf("NewServer: %v", err)
+			}
+
+			lines := logger.pricingLines()
+			if tc.wantLevel == "" {
+				if len(lines) != 0 {
+					t.Fatalf("a fully priced configuration still reported %d line(s): %+v", len(lines), lines)
+				}
+				return
+			}
+			if len(lines) != 1 {
+				t.Fatalf("got %d pricing line(s), want exactly 1: %+v", len(lines), lines)
+			}
+			line := lines[0]
+			if line.level != tc.wantLevel {
+				t.Errorf("level = %q, want %q (message: %s)", line.level, tc.wantLevel, line.msg)
+			}
+			models, ok := line.arg("models")
+			if !ok {
+				t.Fatalf("the report does not name the models: %+v", line.args)
+			}
+			if got, want := models.(string), tc.wantModels; !strings.Contains(got, want) {
+				t.Errorf("models = %q, want it to contain %q", got, want)
+			}
+			// The report is only actionable if it says what the fallback price
+			// is, because that value is what turns a guess into a silent zero.
+			if _, ok := line.arg("default_in_usd_per_mtok"); !ok {
+				t.Errorf("the report does not state the default input price: %+v", line.args)
+			}
+			if got, ok := line.arg("catch_all"); !ok || got.(bool) != tc.wantCatch {
+				t.Errorf("catch_all = %v (present=%v), want %v", got, ok, tc.wantCatch)
+			}
+			if tc.wantLevel == "warn" && !strings.Contains(line.msg, "cost_usd") {
+				t.Errorf("the warning does not say what the cost is recorded as: %s", line.msg)
+			}
+		})
+	}
+}

@@ -325,7 +325,7 @@ There is not enough space on the disk.` 与 `compile: writing output: write .\.g
 | 字节透明 | 响应体与上游逐字节一致 | `TestPassthroughNonStreaming`、verify 断言 |
 | 首字延迟可测 | 注入 250ms 停顿，实测首帧 268.0ms | curl `--trace-time` |
 | `[DONE]` 补齐 | 上游省略时网关补齐 | `X-Mock-Omit-Done: 1` 断言通过 |
-| 成本计量 | 采信 provider usage 并按单价折算 | 日志 `cost_usd=`、`infergate_tokens_total` |
+| 成本计量 | 采信 provider usage 并按单价折算 | 日志 `cost_usd=`、`infergate_tokens_total`；上游声明但未标价的模型在启动时被点名（`reportUnpricedModels`，default 为 0 时 WARN、非 0 时 INFO、全标价时不打），测试 `TestNewServerReportsModelsItCannotPrice`、`TestPriceBookUnpriced` |
 | 字节账目一致 | 日志 `resp_bytes=1718` 等于 curl 落盘 1718 字节 | `tmp\stream.out` 交叉核对 |
 
 ---

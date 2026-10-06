@@ -35,8 +35,9 @@ func NewPriceBook(pc config.PricingConfig) *PriceBook {
 }
 
 // Price returns the price entry for model and whether it was an explicit match.
-// A false second return means the default price applied, which is worth
-// surfacing in logs: unlisted models are the ones whose cost is a guess.
+// A false second return means the default price applied: unlisted models are the
+// ones whose cost is a guess. Unpriced exists so that fact can be said out loud
+// once at startup instead of per request.
 func (p *PriceBook) Price(model string) (config.ModelPrice, bool) {
 	if p == nil {
 		return config.ModelPrice{}, false
@@ -53,6 +54,43 @@ func (p *PriceBook) Price(model string) (config.ModelPrice, bool) {
 		return price, true
 	}
 	return p.defaultPrice, false
+}
+
+// Unpriced returns the models from the given list that have no explicit entry
+// in the book, in the order given, with duplicates and the "/" catch-all
+// dropped. Those are precisely the models CostUSD multiplies by the default
+// price.
+//
+// It exists because the two consumers of a price disagree about what an
+// unlisted model means. The router sorts it last, so a forgotten price line can
+// never make a backend look free and therefore preferred (see
+// internal/router's cost strategy); CostUSD has no such guard, so the same
+// forgotten line makes that model's traffic cost the default price -- which is
+// $0 in a configuration that never set one, and thus invisible to a cost
+// budget. Reporting the list once at startup is the only place the second half
+// can be said without putting a configuration gap on the request path as log
+// noise.
+func (p *PriceBook) Unpriced(models []string) []string {
+	var out []string
+	seen := make(map[string]bool, len(models))
+	for _, m := range models {
+		if m == "" || m == "/" {
+			continue
+		}
+		if _, ok := p.Price(m); ok {
+			continue
+		}
+		// Case and surrounding space do not make a second model: Price folds
+		// both, so a duplicate that differs only there would otherwise be
+		// reported twice.
+		key := strings.ToLower(strings.TrimSpace(m))
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, m)
+	}
+	return out
 }
 
 // CostUSD returns the USD cost of a response.
