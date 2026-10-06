@@ -187,8 +187,9 @@ func proseSurfaces(t *testing.T, root string) []string {
 // line break, so offsets and line numbers still line up.
 //
 // WHY. A fenced block is quoted output or an example, not a description of the
-// tree: `go test` output naming script_test.go:462 and a sample config naming an
-// illustrative file both belong there. Prose is where a path claims to exist.
+// tree: a `go test` FAIL line that names the source line it came from, and a
+// sample config naming an illustrative file, both belong there. Prose is where a
+// path claims to exist.
 func withoutFencedCodeBlocks(text string) string {
 	lines := strings.Split(text, "\n")
 	var out strings.Builder

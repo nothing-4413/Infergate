@@ -35,6 +35,13 @@ Windows PowerShell 5.1 读无 BOM 的 `.ps1` 时用机器代码页解码，那�
 每一句只引用一个门的地方——`docs/DESIGN.md` 的里程碑条目、`docs/USAGE.md` 的命令块、`docs/RESUME.md`
 的小结——由同一个文件里的 `TestEveryQuotedGateCountMatchesTheTable` 逐个对表核，数错哪一行就报哪一行。
 
+文档里的**指路**也有一层检查，都在 `internal/repofmt/citedpaths_test.go`：散文里点到的仓库路径必须真实存在
+（围栏代码块是引用而不是主张，所以整块跳过）、引用只点名符号而不写行号、每一句 Markdown 链接连同它的
+标题锚点都要能在树里解析。扫描面是 README、`docs` 与 `deploy` 下的 markdown、`configs` 下的 yaml，
+外加 Makefile 与 compose 文件——**代码注释不在其中**。`cmd/verify-m3/governance.go` 与
+`internal/gateway/cachepath.go` 里各有一处引用 `internal/quota/quota.go` 和 `internal/gateway/proxy.go`
+行号的注释，前者引的三行在门禁建成时就已经全错，两道检查都没看见，只能手工扫（`741e985`、`96e5e0f`）。
+
 管理面鉴权默认关闭，所以 M0–M6 的两条证据链一行都没有覆盖它。它有自己的第三条链：
 `scripts/verify-hardening.ps1`，**真进程 + 真 curl + 44 条断言**，见下方「管理面鉴权的证据边界」。
 它的数字单独列成一行而不是并进合计——把一条 2026 年才加的安全门混进里程碑总数，
