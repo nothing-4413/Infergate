@@ -189,7 +189,17 @@ func TestSummarizeGatesFailsClosed(t *testing.T) {
 		t.Run(tc.what, func(t *testing.T) {
 			// Not t.TempDir(), which resolves to the Go build's own temp area
 			// (.gotmp/...). This is the directory the script is aimed at in ci.yml.
-			dir, err := os.MkdirTemp(filepath.Join(root, "tmp"), "gate-check-")
+			//
+			// tmp/ is ignored by git and nothing tracks it, so a fresh checkout does
+			// not have it and MkdirTemp cannot make a child of a directory that is
+			// not there ("GetFileAttributesEx ...\tmp: The system cannot find the
+			// file specified"). Make it first; on this machine it only ever passed
+			// because years of scratch runs had left one behind.
+			tmp := filepath.Join(root, "tmp")
+			if err := os.MkdirAll(tmp, 0o755); err != nil {
+				t.Fatalf("creating %s: %v", tmp, err)
+			}
+			dir, err := os.MkdirTemp(tmp, "gate-check-")
 			if err != nil {
 				t.Fatalf("making a scratch directory under tmp/: %v", err)
 			}
