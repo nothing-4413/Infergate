@@ -279,7 +279,7 @@ compose 的三个服务就是这么来的。构建细节写在 `Dockerfile` 顶�
   以及缓存/幂等/会话/配额/追踪五个面在 RESP2 存储上的往返。这道门量的是**值有没有起作用**；
   至于**键名有没有写对**，现在是加载器的性质：严格解码（`miniyaml.UnmarshalStrict` →
   `json.Decoder.DisallowUnknownFields`）会在加载期点名拒绝未知键（把 `capacity` 写成 `max_entries`
-  → `unknown field "max_entries"`，退出码 1）。`configs/docker.yaml:123-129` 那段注释曾经是这里唯一的防线，
+  → `unknown field "max_entries"`，退出码 1）。`configs/docker.yaml` 里 `idempotency:` 那段注释曾经是这里唯一的防线，
   因为它当时只能提醒读者去真跑一次。
   这道门在 2026-10-06 加了一层前置检查（端口空闲、`-check` 通过、两个 store 可达）后才敢下结论：
   在此之前它曾在 **miniredis 根本没起来**的运行里报出 `first request is a miss got 'skip'`，

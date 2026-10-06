@@ -123,11 +123,16 @@ quota:
 # Idempotent replay and the session ledger.
 #
 # The bound is spelled `capacity`, not `max_entries` — only the cache section
-# uses `max_entries_per_scope` (internal/config/config.go:356 for the cache,
-# :710 idempotency, :733 sessions). The loader refuses a key it has no field
-# for, so writing `max_entries` here would stop the process at startup with
-# `unknown field "max_entries"` instead of bounding nothing. This comment used
-# to be the only guard against that, back when an unknown key was ignored.
+# uses `max_entries_per_scope` (`config.CacheConfig.MaxEntriesPerScope`; the
+# idempotency and session ledgers have their own `Capacity` fields, in
+# `IdempotencyConfig` and `SessionsConfig`). The loader refuses a key it has no
+# field for, so writing `max_entries` here would stop the process at startup
+# with `unknown field "max_entries"` instead of bounding nothing. This comment
+# used to be the only guard against that, back when an unknown key was ignored.
+#
+# The three line numbers this comment used to cite for those fields had all
+# drifted onto unrelated lines by the time anyone looked, which is why they are
+# named instead.
 idempotency:
   enabled: true
   ttl: "15m"

@@ -185,13 +185,16 @@ access:                                      # 运营者令牌：默认关闭，
 ```
 
 **不认识的键会让加载失败**：加载器走严格解码（`miniyaml.UnmarshalStrict` →
-`json.Decoder.DisallowUnknownFields`），文档里出现一个结构体上没有的键，进程就拒绝启动并点名它。
-下面这行是真的 stderr（`.\bin\infergate.exe -check -config .\configs\typo.yaml`，退出码 1，那份配置只是
-把 `quota:` 写成了 `quotas:`）：
+`json.Decoder.DisallowUnknownFields`），配置里出现一个结构体上没有的键，进程就拒绝启动并点名它。
+把 `configs/infergate.yaml` 复制到 `tmp/typo.yaml`、在末尾追加一行 `quotas: {}`（也就是把 `quota:`
+写成 `quotas:`），再跑 `.\bin\infergate.exe -check -config .\tmp\typo.yaml`，它退出码为 1，stderr 是：
 
 ```text
-infergate: configuration error: config: parse .\configs\typo.yaml: miniyaml: decode: json: unknown field "quotas"
+infergate: configuration error: config: parse .\tmp\typo.yaml: miniyaml: decode: json: unknown field "quotas"
 ```
+
+那份配置放在 `tmp/` 而不是 `configs/`：`configs/` 下每一份 `.yaml` 都被 `TestEveryShippedConfigDecodes`
+要求能严格解码，所以一份故意写坏键名的配置不可能作为出厂配置留在仓库里。
 
 以前这一行不会出现：未知键被静默丢掉，`quota:` 写成 `quotas:` 时所有限额悄悄回到默认值，`-check` 还是绿的
 ——这是当时唯一没有任何断言盯着的失败形态。`configs/` 下 14 份出厂配置由 `internal/config` 的

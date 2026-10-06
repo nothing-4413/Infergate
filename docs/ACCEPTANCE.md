@@ -312,7 +312,7 @@ kubelet、compose healthcheck、Prometheus 抓取器都不带凭证，要求凭�
 不再是这道门替它兜的底：`internal/config` 走严格解码（`miniyaml.UnmarshalStrict` →
 `json.Decoder.DisallowUnknownFields`），键名写错在加载期就被点名拒绝——真二进制上是
 `configuration error: config: parse …: miniyaml: decode: json: unknown field "quotas"`、退出码 1，
-`configs/docker.yaml:123-129` 那段注释就是为此改写的。证据是 `internal/config` 的
+`configs/docker.yaml` 里 `idempotency:` 那段注释（`capacity` 与 `max_entries` 的区别）就是为此改写的。证据是 `internal/config` 的
 `TestLoadRejectsAKeyWithNoFieldBehindIt`（未知键被点名）与 `TestEveryShippedConfigDecodes`（14 份出厂配置
 逐份过严格解码），以及 `internal/miniyaml` 的 `TestUnmarshalStrictNamesTheKeyItRefuses`。
 在此之前它确实只有真跑一次才能证伪：未知键被静默丢掉，`-check` 照样绿。
