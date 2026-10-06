@@ -182,7 +182,25 @@ jobs:
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash scripts/ci-publish-failure-check.sh "ci failure: build / vet / test / race" /tmp/ci-summary-test.md /tmp/ci-summary-race.md
+          # THE TITLE TRAVELS IN AN ENVIRONMENT VARIABLE, AND THAT IS NOT STYLE.
+          # A plain YAML scalar may not contain a colon followed by a space, and
+          # this title has one ("ci failure: ..."). Written inline on the `run:`
+          # line -- which is how 760c303 wrote it -- the file stopped being valid
+          # YAML:
+          #
+          #   go-yaml load error in scanner at L185.C66: mapping values are not
+          #   allowed in this context
+          #
+          # GitHub cannot start a job from a file it cannot parse, so every push
+          # from 760c303 to 03655b2 produced a run with ZERO JOBS, status failure
+          # and no annotation: the workflow appeared to be red for six commits
+          # while in fact nothing ran. The run's display name fell back to the
+          # file path (`.github/workflows/ci.yml` instead of `ci`), which is the
+          # one clue it gave. Quoting the scalar, or moving the colon out of the
+          # `run:` line as here, both fix it; single quotes inside a YAML scalar
+          # keep the colon without the ambiguity.
+          CHECK_TITLE: 'ci failure: build / vet / test / race'
+        run: bash scripts/ci-publish-failure-check.sh "$CHECK_TITLE" /tmp/ci-summary-test.md /tmp/ci-summary-race.md
 
       - name: Upload test transcripts
         if: always()

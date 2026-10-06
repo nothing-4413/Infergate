@@ -381,16 +381,24 @@ access:
 
 - **CI 的 race 步曾经一直红，根因已在本机复现并修掉**：`internal/cache/redis.go` 的 `RedisStore.stats`
   是裸字段，29 处写入点分布在每个请求 goroutine 上，而 `/admin/cache` 会并发读它（§4 有本机跑
-  `-race` 的配方）。修复提交是 `ec83c07`。但**"runner 上复测绿了"这句话目前没有外部证明**：
-  从 run 37380607350 起，匿名读者能读到的只有终态。
-  - 设计里原本给 race 失败准备了两条读法，**两条都被实测关掉了**：`$GITHUB_STEP_SUMMARY` 不进
-    check-runs 的 `output.summary`；`PATCH` 本 job 自己的 check run 返回 2xx 但 job 一结束字段即被清空
-    （run 37377940124 测定）。唯一活下来的是 `scripts/ci-publish-failure-check.sh` 用
-    `POST /check-runs` 建一个**自己的** check run——"创建"与"修改"是两回事，自己创建的不会被回收
-    （run 37379724217 的探测证实）。
-  - **但那条通路对这批 sha 也没有可读证据**：`GET /actions/runs/{id}/jobs` 与
-    `GET /commits/{sha}/check-runs` 对新 run 一律返回 `total_count: 0`，新 run 的 HTML 页面本身也被
-    重定向到 commit 页。所以 race 与 curl 门这两项的 runner 结论暂时只有红/绿、没有原因。
+  `-race` 的配方）。修复提交是 `ec83c07`。
+  设计里原本给 race 失败准备了两条读法，**两条都被实测关掉了**：`$GITHUB_STEP_SUMMARY` 不进
+  check-runs 的 `output.summary`；`PATCH` 本 job 自己的 check run 返回 2xx 但 job 一结束字段即被清空
+  （run 37377940124 测定）。唯一活下来的是 `scripts/ci-publish-failure-check.sh` 用
+  `POST /check-runs` 建一个**自己的** check run——"创建"与"修改"是两回事，自己创建的不会被回收
+  （run 37379724217 的探测证实）。
+- **从 `760c303` 起的六个提交其实什么都没跑，原因不是 GitHub，是 `ci.yml` 本身不是合法 YAML**：
+  那个提交把一个含"冒号加空格"的标题直接写在了 `run:` 的裸标量里
+  （`run: bash ... "ci failure: build / vet / test / race" ...`），YAML 裸标量不允许这样写，
+  于是整份文件解析失败（`go-yaml load error in scanner at L185.C66: mapping values are not allowed
+  in this context`，用 `docker compose -f .github/workflows/ci.yml config` 复现）。
+  **GitHub 从解析不了的文件里起不了 job**：run 是零 job 的 `completed/failure`，显示名退回文件路径
+  （`.github/workflows/ci.yml` 而不是 `ci`），`updated_at` 等于 `created_at`，`jobs` 与 `check-runs`
+  自然 `total_count: 0`——`760c303` 到 `03655b2` 之间的每一次 push 都是如此，Linux 门、八个 Windows
+  curl 门、check-run relay 一个都没执行过。此前这里写的是"GitHub 侧的一次异常"：那些观察（`total_count: 0`、
+  `name` 变路径、run 页面被重定向到 commit 页）都是真的，解释是错的。修法是把标题挪进 `env:` 变量，
+  并加了 `internal/repofmt/workflow_yaml_test.go` 把这个规则本身钉住。`docs/ACCEPTANCE.md` 的
+  「自动化的那一层」一节有完整取证与判据（push 后 `/jobs` 应重新返回 2 个 job）。
   - job 日志（`GET /actions/jobs/{id}/logs`）与 artifact 下载对匿名读者都是 **403**
     （`{"message":"Must have admin rights to Repository.", "status":403}`）。
 - **测量不是容量承诺**：绝对 QPS 依赖这台主机、这个 mock 和这个客户端；带轮间噪声带的结论才算结论。
