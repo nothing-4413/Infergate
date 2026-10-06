@@ -42,14 +42,18 @@ curl 门编译真二进制、拉真进程、用真 `curl.exe` 打真 socket，�
 
 | 步骤 | 跑什么 | 状态 |
 | --- | --- | --- |
-| `go build ./...` | 全仓库编译 | 绿 |
-| `go vet ./...` | 静态检查 | 绿 |
+| `go build ./...` | 全仓库编译 | 绿（run 37408647484 step 4） |
+| `go vet ./...` | 静态检查 | 绿（同 run step 5） |
 | `gofmt -l ./cmd ./internal` | 格式门 | 绿（加入这一步时仓库里有 7 个文件不干净，已一并修好） |
-| `go test ./... -count=1 -timeout 20m` | 全部单元/集成测试（Linux，无 `-race`） | 绿 |
-| `go test -race` **逐个包**（`go list ./...` 循环，失败继续跑下一个） | 竞态检测（**本机现在能跑了**：msys64 的 gcc 15.2.0，配方见下） | 本机 36 个包全绿（218 秒，0 条 `DATA RACE`）；**runner 侧从未执行**（`ci.yml` 当时是非法 YAML，见下） |
+| `go test ./... -count=1 -timeout 20m` | 全部单元/集成测试（Linux，无 `-race`） | 绿（同 run step 7） |
+| `go test -race` **逐个包**（`go list ./...` 循环，失败继续跑下一个） | 竞态检测（本机配方见下） | **runner 绿**：run 37408647484 step 9 `go test -race` success（整个 job 2 分 28 秒）；本机同样 36 个包全绿（218 秒，0 条 `DATA RACE`） |
 | `.\tools\go.cmd run .\cmd\verify*` | 2353 条 Go 端到端断言 | 尚未接入（Linux job 跑不了；`windows-2022` 的 curl job 具备条件，但还没加步骤） |
-| `.\scripts\verify-m*.ps1` + `verify-hardening.ps1` | 1060 条 curl 端到端断言 + 44 条管理面令牌断言 | **绿**：`curl gates (M0-M6, operator token)` job 在 run 37374000997 上 119 秒跑完，9 个门全过 |
+| `.\scripts\verify-m*.ps1` + `verify-hardening.ps1` | 1060 条 curl 端到端断言 + 44 条管理面令牌断言 | **绿**：`curl gates (M0-M6, operator token)` job 在 run 37408647484 上 1 分 55 秒跑完，9 个门（M0–M6 + operator token）全部 success |
 | `scripts/verify-docker-profile.ps1` | 20 条容器画像断言（真二进制、真端口、真 miniredis） | 绿（本机 25 秒，见下「容器的证据边界」） |
+
+**这批结论是 run 37408647484（head `29ed38c`）的**，也就是修好 `ci.yml` 之后的第一个真正执行的 run：
+`GET /actions/runs/37408647484/jobs` 返回 2 个 job，两个都是 `success`，`GET /commits/29ed38c/check-runs`
+同样返回 2 条（匿名可读，`total_count: 2`）。步级结论对匿名读者可见，所以上面每一行都能被外部核对。
 
 两个 `go test` 步骤把整份 transcript 写进 `/tmp`，再由 `scripts/ci-summarize-go-test.sh`
 捕出失败测试与**完整的 DATA RACE 报告**，写进一个分片文件（`/tmp/ci-summary-*.md`）。这个文件随后被
@@ -67,12 +71,17 @@ curl -s https://api.github.com/repos/nothing-4413/Infergate/commits/<sha>/check-
 就是失败测试名与 race 报告。这是 run 37379724217 测定出来的：**创建一个 check run** 与
 **修改 GitHub 为本 job 创建的那个 check run** 是两回事，后者会被回收。
 
-**这条通路仍然没有在真实 CI 上验证过，但原因不是 GitHub——是这个仓库自己把工作流写成了一份
-无法解析的 YAML。** 有一段时间这里写的是"GitHub 侧的一次异常"：从 run 37380607350（head `760c303`）
+**这条通路本身仍未在真实 CI 上触发过，但原因不再是阻塞，而是没人红过**：修好 YAML 之后的第一个
+run（37408647484）两个 job 全绿，`publish the failure summary where anonymous readers can reach it`
+这一步按设计是 `skipped`（它只在失败时跑）。钉住这条通路的是 `internal/repofmt` 的
+`TestRedRunPublishesAReadableTranscript`（断言接线存在）与 run 37379724217 上的一次真实 POST 探测
+（`summary_len=28`）——**而不是这个 run**。要拿到它的端到端证据，需要下一个失败的 run。
+
+在它变成"从未执行"之前，这里曾经写的是"GitHub 侧的一次异常"：从 run 37380607350（head `760c303`）
 起，`GET /actions/runs/{id}/jobs` 与 `GET /commits/{sha}/check-runs` 都返回 `total_count: 0`，而更早的
 run 37374000997 / 37377940124 / 37379724217 仍分别返回 2 / 3 / 4 个 job；同一批 run 的 `name` 也从
 `ci` 变成了 `.github/workflows/ci.yml`（`workflow_id` 仍是 375731182），run 的 HTML 页面被重定向到
-commit 页。**那些观察都是真的，那个解释是错的。**
+commit 页。**那些观察都是真的，那个解释是错的**，原因见下。
 
 真正的原因是 `760c303` 加的那个发布步骤，把标题直接写在了 `run:` 行的裸标量里：
 
@@ -109,10 +118,13 @@ run: bash scripts/ci-publish-failure-check.sh "$CHECK_TITLE" /tmp/ci-summary-tes
 它不假装是 YAML 解析器——这个模块没有依赖，也不会为一个测试引入一个——但它覆盖了整类错误，而不是
 这一个实例；`TestPlainScalarColonDetection` 用真正出问题的那一行证明它非空转。
 
-因此 relay 的现状是：**已接线、判据明确、但从 760c303 之后从未真正执行过**。判据不变——push 之后
-`GET /actions/runs/{id}/jobs` 应当重新返回 2 个 job，红的那次 `check-runs` 里应当出现
-`ci failure: build / vet / test / race` 且 `output.summary` 非空。在此之前，race 与 curl 门这两项的
-runner 结论只有 760c303 之前那一批。
+**修复已由一次真实 run 判定**：push `29ed38c` 之后 run **37408647484** 的 `name` 重新变回 `ci`，
+`GET /actions/runs/37408647484/jobs` 返回 **2 个 job**（`build / vet / test / race` 与
+`curl gates (M0-M6, operator token)`），两个都 `success`，匿名 `check-runs` 接口同样返回 2 条——
+也就是说 `760c303` 之后第一次真的跑了东西，而且跑绿了。剩下的唯一未验证点收窄成：relay 那一步只在
+红的时候执行，而这个 run 是绿的，所以**"红的时候 check run 真会被创建"仍待下一个失败的 run 来证明**
+（判据：`GET /commits/{sha}/check-runs` 里出现名为 `ci failure: build / vet / test / race` 的条目且
+`output.summary` 非空）。
 
 **为什么 race 那一项有把握说是绿了**：它在 runner 上红，而本机普通 `go test` 全绿、连 `-count=3`
 都无抖动。第一轮修的是两处**测试代码**的共享计数器——`internal/embed/embed_test.go` 的
@@ -150,10 +162,12 @@ Redis store 漏了——很可能因为 Redis 客户端的连接池本身并发�
 4 个 writer 和 1 个 `Stats()` reader，补上的正是旧 conformance 测试缺的那一环（它并发驱动
 Put/Get/Search，但**从没有人一边写一边读 Stats()**，而 /admin 正是这么读的）。
 
-**这仍然是本机证据，不是 runner 证据**：逐包跑完全树是 **36 个包、0 个失败、0 条 `DATA RACE` 行、
-218 秒**，但 `ec83c07` 之后的 run 从来没有真正执行过（`ci.yml` 当时不是合法 YAML，见上），
-所以"runner 上的 race 步绿了"这句话目前既没有证明、也没有反证。这一段的诚实说法是：
-**根因已在本机复现并修掉，全树 `-race` 本机全绿；runner 复测要等 YAML 修好后的第一个 run**。
+**这条现在有 runner 证据了**：本机逐包跑完全树是 **36 个包、0 个失败、0 条 `DATA RACE` 行、218 秒**，
+而修好 `ci.yml` 之后的第一个真 run（37408647484）的 step 9 `go test -race` 是 **success**。
+也就是说 `ec83c07` 修掉的那条确实是 runner 一直在报的竞态——这也第一次让"runner 上 race 红"
+这件事有了闭环：本机用 msys64 的 gcc 复现并定位到 `internal/cache/redis.go`，修完两边都绿。
+需要留意的是这个 run 绿过不代表 race 步从此不抖；`-race` 的结论依赖调度，所以真正的保证是
+`internal/cache` 的那把锁，以及那 16 个 goroutine 的回归测试。
 
 四条被测定为死路、不要再试的做法：
 
