@@ -7,16 +7,24 @@ package config
 // config.Defaults() and fails on either half of the drift -- a key that no
 // longer exists, or a default that is no longer the one the loader uses.
 //
-// It deliberately only checks rows whose first segment is a real top-level
-// section of Config, so the same file's tables of response headers, metric
-// names and benchmark numbers are left alone. A row is skipped when its
-// documented value is not a scalar (a wildcard row such as `cache.redis.*`, or
-// prose such as "全 0"): the check is for keys this test can compare exactly.
+// The same file holds a dozen other tables -- response headers, metric names,
+// benchmark numbers -- so the rows that are configuration are identified by
+// their table header (`键` / `默认`) rather than by the shape of the key. That
+// distinction is load bearing: inside a configuration table every row must name
+// a real section and a real field, where a row of some other table is simply
+// not this test's business. An earlier version keyed off "does the first
+// segment exist" and therefore skipped a misspelled SECTION without a word --
+// `quotas.ttl` looked exactly like a benchmark row.
+//
+// A row is skipped when its documented value is not a scalar (a wildcard row
+// such as `cache.redis.*`, or prose such as "全 0"): the check is for keys this
+// test can compare exactly. A wildcard row still has to name a real section.
 
 import (
 	"fmt"
 	"os"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -24,6 +32,30 @@ import (
 )
 
 const usageDocPath = "../../docs/USAGE.md"
+
+// configTableLines marks the 1-based line numbers that belong to a table whose
+// header names the configuration columns. The header is the line above the
+// `| --- |` separator, and the table runs until a line that is not a row.
+func configTableLines(doc string) map[int]bool {
+	lines := strings.Split(doc, "\n")
+	separator := regexp.MustCompile(`^\|[\s:|-]+\|$`)
+	rows := map[int]bool{}
+	inside := false
+	for i, line := range lines {
+		if separator.MatchString(line) {
+			inside = i > 0 && strings.Contains(lines[i-1], "键") && strings.Contains(lines[i-1], "默认")
+			continue
+		}
+		if !strings.HasPrefix(line, "| ") {
+			inside = false
+			continue
+		}
+		if inside {
+			rows[i+1] = true
+		}
+	}
+	return rows
+}
 
 // jsonField returns the field of the struct in v whose json tag matches name.
 func jsonField(v reflect.Value, name string) (reflect.Value, bool) {
@@ -101,9 +133,13 @@ func TestDocumentedDefaultsMatchTheLoader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading %s: %v", usageDocPath, err)
 	}
+	text := string(raw)
+	configRows := configTableLines(text)
 	checked := 0
-	for i, line := range strings.Split(string(raw), "\n") {
+	rows := 0
+	for i, line := range strings.Split(text, "\n") {
 		at := fmt.Sprintf("docs/USAGE.md:%d", i+1)
+		inConfigTable := configRows[i+1]
 		if !strings.HasPrefix(line, "| ") {
 			continue
 		}
@@ -112,14 +148,32 @@ func TestDocumentedDefaultsMatchTheLoader(t *testing.T) {
 			continue
 		}
 		key := strings.Trim(strings.TrimSpace(cols[1]), "`")
-		doc := strings.Trim(strings.TrimSpace(cols[2]), "`")
-		if key == "" || doc == "" || strings.ContainsAny(key, "*[] ") {
+		documented := strings.Trim(strings.TrimSpace(cols[2]), "`")
+		if key == "" || documented == "" {
+			continue
+		}
+		if inConfigTable {
+			rows++
+		}
+		if inConfigTable && strings.Contains(key, "*") {
+			// A wildcard row documents every key of a section, so the section
+			// itself is the claim to check (`cache.redis.*`).
+			if _, err := walkDefaults(strings.TrimSuffix(key, ".*")); err != nil {
+				t.Errorf("%s: the table documents %s, but %v", at, key, err)
+			}
+			continue
+		}
+		if strings.ContainsAny(key, "*[] ") {
 			continue
 		}
 		// Only rows anchored in a real section are configuration keys; the same
-		// tables' header and metric rows are not.
+		// tables' header and metric rows are not -- but inside a configuration
+		// table a missing section is the failure this check exists to name.
 		root := strings.Split(key, ".")[0]
 		if _, ok := jsonField(reflect.ValueOf(Defaults()), root); !ok {
+			if inConfigTable {
+				t.Errorf("%s: the table documents %s, but %q is not a section of Config", at, key, root)
+			}
 			continue
 		}
 		field, err := walkDefaults(key)
@@ -130,17 +184,24 @@ func TestDocumentedDefaultsMatchTheLoader(t *testing.T) {
 		if field.Kind() == reflect.Struct || field.Kind() == reflect.Map || field.Kind() == reflect.Slice {
 			continue // a section or a list, not a scalar with one documented value
 		}
-		if strings.ContainsAny(doc, " /") {
+		if strings.ContainsAny(documented, " /") {
 			continue // the row documents more than one value, or prose
 		}
-		if ok, why := matchesDefault(field, doc); !ok {
-			t.Errorf("%s: %s is documented as %s, but %s", at, key, doc, why)
+		if ok, why := matchesDefault(field, documented); !ok {
+			t.Errorf("%s: %s is documented as %s, but %s", at, key, documented, why)
 			continue
 		}
 		checked++
 	}
+	// Two guards, because the two halves fail differently: too few compared
+	// values means the value parsing broke, and too few rows inside a
+	// configuration table means the header detection broke -- and with it the
+	// only thing that checks a section name.
 	if checked < 12 {
 		t.Fatalf("only %d documented defaults were compared: the table parsing stopped working", checked)
 	}
-	t.Logf("compared %d documented defaults against config.Defaults()", checked)
+	if rows < 12 {
+		t.Fatalf("only %d rows were read as configuration: the table header detection stopped working", rows)
+	}
+	t.Logf("compared %d documented defaults across %d configuration rows", checked, rows)
 }

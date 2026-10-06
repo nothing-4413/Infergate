@@ -453,9 +453,11 @@ curl.exe -s -X POST http://127.0.0.1:8082/admin/cache/flush          # 清空（
 | `cache.embedding.provider` | `hashing` | `hashing`（离线词法，零依赖）/ `http`（OpenAI 兼容 `/embeddings`）/ `none`（只做精确命中） |
 | `cache.redis.*` | `127.0.0.1:6379` / `ig:cache` | 共享缓存；本机没有 Redis 时可用 `cmd/miniredis`（默认 :6399） |
 
-> 这两张表里的默认值不是抄来的：`internal/config` 的 `TestDocumentedDefaultsMatchTheLoader` 逐行读
-> 本文的表格，把"键名 + 默认值"对照 `config.Defaults()`。键名写错（例如 `quota.chars_per_token`
-> 这种不存在的字段）和默认值过时（例如把 `cache.ttl` 写成 `16m`）都会让它红，并指出是哪一行。
+> 这两张表里的默认值不是抄来的：`internal/config` 的 `TestDocumentedDefaultsMatchTheLoader` 按表头
+> （`键` / `默认`）认出这两张表，逐行把"章节 + 键名 + 默认值"对照 `config.Defaults()`。章节名写错
+> （例如把 `cache.ttl` 写成 `caches.ttl`）、字段名写错（例如 `quota.chars_per_token` 这种不存在的
+> 字段）和默认值过时（例如把 `cache.ttl` 写成 `16m`）都会让它红，并指出是哪一行。响应头、指标名、
+> 实测数字那些表格靠表头被排除在外——表头一旦认不出来，检查会自己先 Fatal，而不是悄悄放过每一行。
 
 共享缓存的最小本地栈（无需安装 Redis）：
 
@@ -586,8 +588,8 @@ curl.exe -s "http://127.0.0.1:8084/admin/quota?tenant=acme&session=sess-1"   # �
 | `quota.tenants[]` | — | 每租户一份策略：四个维度 + `on_exceed`（`reject` / `degrade`）+ `downgrade_model` + `max_tokens_cap`；租户名重复是配置错误而不是后者覆盖前者 |
 | `quota.redis.*` | `127.0.0.1:6379` / `ig:quota` | 共享计数；本机没有 Redis 时用 `cmd/miniredis`（默认 :6399） |
 
-> 这张表和上面的缓存表一样被 `TestDocumentedDefaultsMatchTheLoader` 逐行核对：键名与默认值都必须
-> 是 `config.Defaults()` 里真实存在的那一个，否则测试会指出 `docs/USAGE.md` 的行号。
+> 这张表和上面的缓存表一样被 `TestDocumentedDefaultsMatchTheLoader` 逐行核对：章节名、键名与默认值
+> 都必须是 `config.Defaults()` 里真实存在的那一个，否则测试会指出 `docs/USAGE.md` 的行号。
 
 共享计数的最小本地栈（无需安装 Redis）：
 
