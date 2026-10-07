@@ -28,7 +28,9 @@ import (
 // different number is a failure rather than a coin flip. When a key is not unique
 // by name alone (m4-summary.json has one ratio per variant, m2-summary.json a
 // hit_rate per sweep step) the entry names the object it means with a marker, so
-// adding a variant or a step cannot silently move which number is read.
+// adding a variant or a step cannot silently move which number is read. An entry
+// may also name several files and ask for their sum, which is how a total spread
+// over the three load runs is read.
 //
 // WHAT IT DOES NOT CHECK. Whether the run was any good, or whether the baseline
 // still describes today's code: a baseline is one afternoon's measurement on one
@@ -80,61 +82,123 @@ func TestHeadlineClaimsMatchTheBaseline(t *testing.T) {
 			find: map[string]any{"workload": "non-stream", "concurrency": 128.0},
 			path: []string{"direct_minus_gateway_pct"}, digits: 2,
 		},
+		{
+			quote: "13", phrase: "13 对近似语料", file: "m2-corpus.json",
+			path: []string{"should_hit"}, digits: 0,
+		},
+		{
+			quote: "0", phrase: "0 误命中", file: "m2-summary.json",
+			find: map[string]any{"should_not_hit_requests": 26.0},
+			path: []string{"false_hits"}, digits: 0,
+		},
+		{
+			quote: "16", phrase: "16 个请求", file: "m4-summary.json",
+			path: []string{"tiering", "mix", "requests_total"}, digits: 0,
+		},
+		{
+			quote: "20", phrase: "20/20", file: "m3-summary.json",
+			path: []string{"fail_closed", "requests_during_outage"}, digits: 0,
+		},
+		{
+			quote: "20", phrase: "20/20", file: "m3-summary.json",
+			path: []string{"fail_closed", "outage_status_codes", "503"}, digits: 0,
+		},
+		{
+			quote: "0", phrase: "上游 0 调用", file: "m3-summary.json",
+			path: []string{"fail_closed", "upstream_calls_during_outage"}, digits: 0,
+		},
+		{
+			quote: "18000", phrase: "18000 个请求", sum: true,
+			files: []string{"m1-load-faulted-r1.json", "m1-load-faulted-r2.json", "m1-load-faulted-r3.json"},
+			path:  []string{"*", "requests"}, digits: 0,
+		},
+		{
+			quote: "0", phrase: "0 错误", sum: true,
+			files: []string{"m1-load-faulted-r1.json", "m1-load-faulted-r2.json", "m1-load-faulted-r3.json"},
+			path:  []string{"*", "errors"}, digits: 0,
+		},
 	}
 	if len(claims) < 8 {
 		t.Fatalf("only %d claims; this check has been hollowed out", len(claims))
 	}
 
 	parsed := map[string]any{}
-	for _, claim := range claims {
-		doc, ok := parsed[claim.file]
+	docFor := func(name string) any {
+		doc, ok := parsed[name]
 		if !ok {
-			doc = parseBaseline(t, root, claim.file)
-			parsed[claim.file] = doc
+			doc = parseBaseline(t, root, name)
+			parsed[name] = doc
+		}
+		return doc
+	}
+
+	for _, claim := range claims {
+		names := claim.files
+		if len(names) == 0 {
+			names = []string{claim.file}
 		}
 
-		values := numbersAt(doc, claim.path)
-		if len(claim.find) > 0 {
-			values = nil
-			for _, object := range findObjects(doc, claim.find) {
-				values = append(values, numbersAt(object, claim.path)...)
+		var values []float64
+		for _, name := range names {
+			found := numbersAt(docFor(name), claim.path)
+			if len(claim.find) > 0 {
+				found = nil
+				for _, object := range findObjects(docFor(name), claim.find) {
+					found = append(found, numbersAt(object, claim.path)...)
+				}
 			}
+			if len(found) == 0 {
+				t.Errorf("docs/baseline/%s has no value at %s%s; the record moved",
+					name, marker(claim.find), strings.Join(claim.path, "."))
+			}
+			values = append(values, found...)
 		}
 		if len(values) == 0 {
-			t.Errorf("docs/baseline/%s has no value at %s%s; the record moved",
-				claim.file, marker(claim.find), strings.Join(claim.path, "."))
 			continue
 		}
-		distinct := map[float64]bool{}
-		for _, value := range values {
-			distinct[value] = true
-		}
-		if len(distinct) > 1 {
-			t.Errorf("docs/baseline/%s carries %d different values for %s%s; name the one this claim means",
-				claim.file, len(distinct), marker(claim.find), strings.Join(claim.path, "."))
-			continue
+
+		total := values[0]
+		if claim.sum {
+			total = 0
+			for _, value := range values {
+				total += value
+			}
+		} else {
+			distinct := map[float64]bool{}
+			for _, value := range values {
+				distinct[value] = true
+			}
+			if len(distinct) > 1 {
+				t.Errorf("docs/baseline/%s carries %d different values for %s%s; name the one this claim means",
+					strings.Join(names, ", "), len(distinct), marker(claim.find), strings.Join(claim.path, "."))
+				continue
+			}
 		}
 
 		factor := claim.scale
 		if factor == 0 {
 			factor = 1
 		}
-		got := strconv.FormatFloat(values[0]*factor, 'f', claim.digits, 64)
+		got := strconv.FormatFloat(total*factor, 'f', claim.digits, 64)
 		if got != claim.quote {
 			t.Errorf("docs/baseline/%s%s reads %s, but README.md prints %s",
-				claim.file, marker(claim.find), got, claim.quote)
+				strings.Join(names, ", "), marker(claim.find), got, claim.quote)
 		}
-		if !strings.Contains(readme, claim.quote) {
-			t.Errorf("README.md no longer prints %s anywhere; if the claim moved, move this entry too", claim.quote)
+		phrase := claim.phrase
+		if phrase == "" {
+			phrase = claim.quote
+		}
+		if !strings.Contains(readme, phrase) {
+			t.Errorf("README.md no longer prints %s anywhere; if the claim moved, move this entry too", phrase)
 		}
 	}
 
 	// The 23.6x in the M1 bullet is arithmetic on the two readings above rather
 	// than a field of its own, so it is computed here from the same record.
-	closed := singleNumber(t, parsed["m1-summary.json"],
-		map[string]any{"scenario": "stalled-primary behind a per-attempt timeout"}, "median_ms_while_breaker_closed")
-	open := singleNumber(t, parsed["m1-summary.json"],
-		map[string]any{"scenario": "stalled-primary behind a per-attempt timeout"}, "median_ms_once_breaker_open")
+	closed := singleNumber(t, docFor("m1-summary.json"),
+		map[string]any{"scenario": "stalled-primary behind a per-attempt timeout"}, []string{"median_ms_while_breaker_closed"})
+	open := singleNumber(t, docFor("m1-summary.json"),
+		map[string]any{"scenario": "stalled-primary behind a per-attempt timeout"}, []string{"median_ms_once_breaker_open"})
 	factor := strconv.FormatFloat(closed/open, 'f', 1, 64)
 	if factor != "23.6" {
 		t.Errorf("m1-summary.json's two medians give %s, but README.md prints 23.6", factor)
@@ -143,13 +207,29 @@ func TestHeadlineClaimsMatchTheBaseline(t *testing.T) {
 		t.Errorf("README.md does not print %s next to the two medians", factor+"×")
 	}
 
-	t.Logf("checked %d headline claims against docs/baseline", len(claims)+1)
+	// "16 requests split 8:8" is a total plus how it divides, so the split is
+	// checked as a shape rather than as one more number.
+	mix := docFor("m4-summary.json")
+	simple := singleNumber(t, mix, nil, []string{"tiering", "mix", "simple_per_kind"})
+	hard := singleNumber(t, mix, nil, []string{"tiering", "mix", "hard_per_kind"})
+	split := strconv.FormatFloat(simple, 'f', 0, 64) + ":" + strconv.FormatFloat(hard, 'f', 0, 64)
+	if simple != hard {
+		t.Errorf("m4-summary.json splits %v simple and %v hard requests, so it is not the even split README.md prints",
+			simple, hard)
+	} else if !strings.Contains(readme, split) {
+		t.Errorf("m4-summary.json's split is %s, but README.md does not print it", split)
+	}
+
+	t.Logf("checked %d headline claims against docs/baseline", len(claims)+2)
 }
 
 // baselineClaim is one number the README prints, and where its record keeps it.
 type baselineClaim struct {
 	quote  string         // exactly what README.md prints, already scaled and rounded
 	file   string         // file under docs/baseline/
+	files  []string       // several records, when the claim is their total
+	sum    bool           // add the values instead of requiring them to agree
+	phrase string         // what to look for in README.md; the quote itself when empty
 	find   map[string]any // key/value pairs naming the object to read, when the path alone is ambiguous
 	path   []string       // keys from that object down to the number; a leading "*" searches the file
 	scale  float64        // 100 to turn a stored ratio into the percent the README prints; 0 means none
@@ -264,15 +344,19 @@ func numbersAt(node any, path []string) []float64 {
 	return nil
 }
 
-func singleNumber(t *testing.T, doc any, find map[string]any, key string) float64 {
+func singleNumber(t *testing.T, doc any, find map[string]any, path []string) float64 {
 	t.Helper()
 
 	var values []float64
-	for _, object := range findObjects(doc, find) {
-		values = append(values, numbersAt(object, []string{key})...)
+	if len(find) == 0 {
+		values = numbersAt(doc, path)
+	} else {
+		for _, object := range findObjects(doc, find) {
+			values = append(values, numbersAt(object, path)...)
+		}
 	}
 	if len(values) != 1 {
-		t.Fatalf("expected exactly one %s in docs/baseline, found %d", key, len(values))
+		t.Fatalf("expected exactly one value at %s, found %d", strings.Join(path, "."), len(values))
 	}
 	return values[0]
 }

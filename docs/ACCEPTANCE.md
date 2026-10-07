@@ -59,12 +59,17 @@ yaml，外加 Makefile、compose 文件、Dockerfile 与 `.github` 下的 workfl
 
 README 第一屏那几条量化结论也有对着记录的一层：`internal/repofmt/baseline_test.go` 的
 `TestHeadlineClaimsMatchTheBaseline` 把那些数字（超时场景的两个中位数、缓存命中率与成本降幅、AWQ 的吞吐与
-倍数、分层省下的比例、导出的 span 条数、与直连相比的 QPS 差，以及由两个中位数算出来的倍数）从
-`docs/baseline/` 下那次运行的 JSON 里读回来，按 README 打印的精度重新格式化一遍，两边任一侧漂了都会报。
-同一个键在一个文件里出现多次而值不同时（`m5-summary.json` 的 `direct_minus_gateway_pct` 每个并发一档），
-这一条要求用同一个对象上的标记键（`workload`、`concurrency`、`variant`）指名读的是哪一个，而不是靠数组
-下标——数组里插一行不该换掉读的是谁。README 里另外两句量化结论——Warden 端到端的通过数、注入停顿后的
-首帧延迟——在这批 JSON 里没有对应字段，没有被这一条覆盖；它们是手工记录，不在这条链上。
+倍数、分层省下的比例、导出的 span 条数、与直连相比的 QPS 差、语料对数与 0 误命中、fail-closed 的 20/20 与
+上游 0 调用、分层那 16 个请求的 8:8 分流，以及由两个中位数算出来的倍数）从 `docs/baseline/` 下那次运行的
+JSON 里读回来，按 README 打印的精度重新格式化一遍，两边任一侧漂了都会报。跨文件相加的合计（M1 那次压测的
+请求总数与错误数）按和核对，整体被改写也会报。同一个键在一个文件里出现多次而值不同时（`m5-summary.json` 的
+`direct_minus_gateway_pct` 每个并发一档），这一条要求用同一个对象上的标记键（`workload`、`concurrency`、
+`variant`）指名读的是哪一个，而不是靠数组下标——数组里插一行不该换掉读的是谁。
+
+README 里另外三处量化结论不在这条链上，边界各不相同：Warden 端到端的通过数来自拿另一个 Agent 项目 Warden
+对着网关跑的那次运行，它的原始输出不在这个仓库里；注入停顿后的首帧延迟由 `scripts/verify-m0.ps1` 每次现场
+量、现场打印（`first data frame at ...`），但那个读数不落盘；幂等重放期间的上游调用次数在 `m6-summary.json`
+里记成了一条检查的 `ok`，不是一个数字。
 
 管理面鉴权默认关闭，所以 M0–M6 的两条证据链一行都没有覆盖它。它有自己的第三条链：
 `scripts/verify-hardening.ps1`，**真进程 + 真 curl + 44 条断言**，见下方「管理面鉴权的证据边界」。
