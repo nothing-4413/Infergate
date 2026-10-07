@@ -374,6 +374,114 @@ func TestHeadlineClaimsMatchTheBaseline(t *testing.T) {
 			path: []string{"fail_closed", "upstream_calls_during_outage"}, digits: 0,
 		},
 		{
+			// The M2 cost readings are an extrapolation from a configured price
+			// table rather than a bill: the measured workload cost divided by its
+			// request count, scaled to 1000. The record says so in its own
+			// "extrapolation" note.
+			quote: "0.036692", file: "m2-summary.json",
+			path: []string{"cost", "cost_per_1k_requests_without_cache"}, digits: 6,
+		},
+		{
+			quote: "0.016", file: "m2-summary.json",
+			path: []string{"cost", "cost_per_1k_requests_with_cache"}, digits: 3,
+		},
+		{
+			// The M3 reservation ledger. Each document phrases it its own way,
+			// and both phrases are checked.
+			quote: "2872", file: "m3-summary.json",
+			docs: []claimPrint{
+				{phrase: "预扣 2872"},
+				{file: "docs/RESUME.md", phrase: "预扣 **2872**"},
+			},
+			path: []string{"accuracy", "reserved_tokens_delta"}, digits: 0,
+		},
+		{
+			quote: "320", file: "m3-summary.json",
+			docs: []claimPrint{
+				{phrase: "结算 320"},
+				{file: "docs/RESUME.md", phrase: "真实结算 **320**"},
+			},
+			path: []string{"accuracy", "settled_tokens_delta"}, digits: 0,
+		},
+		{
+			quote: "2608", file: "m3-summary.json",
+			docs: []claimPrint{
+				{phrase: "释放 2608"},
+				{file: "docs/RESUME.md", phrase: "返还 **2608**"},
+			},
+			path: []string{"accuracy", "released_tokens_delta"}, digits: 0,
+		},
+		{
+			quote: "56", file: "m3-summary.json",
+			docs: []claimPrint{
+				{phrase: "超发 56"},
+				{file: "docs/RESUME.md", phrase: "超支 **56** token"},
+			},
+			path: []string{"accuracy", "overshoot_tokens"}, digits: 0,
+		},
+		{
+			quote: "171", phrase: "**171** 微美元", file: "m3-summary.json", docs: resumeOnly,
+			path: []string{"accuracy", "overshoot_cost_micros"}, digits: 0,
+		},
+		{
+			quote: "222", phrase: "平均绝对偏差 222", file: "m3-summary.json", docs: resumeOnly,
+			path: []string{"accuracy", "mean_absolute_deviation_tokens"}, digits: 0,
+		},
+		{
+			// The record holds 212.667; the prose prints it to one decimal and
+			// with the plus sign it uses for a signed deviation.
+			quote: "212.7", phrase: "平均有符号偏差 +212.7", file: "m3-summary.json", docs: resumeOnly,
+			path: []string{"accuracy", "mean_signed_deviation_tokens"}, digits: 1,
+		},
+		{
+			// The M3 budget arm: forty requests against a 280-token day budget,
+			// sent one at a time so each reservation settles before the next
+			// admission.
+			quote: "40", phrase: "40/40", file: "m3-summary.json", docs: resumeOnly,
+			find: map[string]any{"budget_tokens_per_day": 280.0},
+			path: []string{"without_quota", "client_status_codes", "200"}, digits: 0,
+		},
+		{
+			quote: "1", phrase: "1×200", file: "m3-summary.json", docs: resumeOnly,
+			find: map[string]any{"budget_tokens_per_day": 280.0},
+			path: []string{"with_budget", "client_status_codes", "200"}, digits: 0,
+		},
+		{
+			quote: "39", phrase: "39×429", file: "m3-summary.json", docs: resumeOnly,
+			find: map[string]any{"budget_tokens_per_day": 280.0},
+			path: []string{"with_budget", "client_status_codes", "429"}, digits: 0,
+		},
+		{
+			quote: "97.5", phrase: "97.5% 被拒", file: "m3-summary.json", docs: resumeOnly,
+			find: map[string]any{"budget_tokens_per_day": 280.0},
+			path: []string{"with_budget", "client_429_rate_percent"}, digits: 1,
+		},
+		{
+			quote: "9", phrase: "停在 9", file: "m3-summary.json", docs: resumeOnly,
+			find: map[string]any{"budget_tokens_per_day": 280.0},
+			path: []string{"with_budget", "tenant_tokens_today_after"}, digits: 0,
+		},
+		{
+			// Both ends of the "upstream calls 40 -> 1" arrow, each read from
+			// its own arm.
+			quote: "40", phrase: "上游调用 **40 → 1**", file: "m3-summary.json", docs: resumeOnly,
+			find: map[string]any{"budget_tokens_per_day": 280.0},
+			path: []string{"without_quota", "upstream_calls"}, digits: 0,
+		},
+		{
+			quote: "1", phrase: "上游调用 **40 → 1**", file: "m3-summary.json", docs: resumeOnly,
+			find: map[string]any{"budget_tokens_per_day": 280.0},
+			path: []string{"with_budget", "upstream_calls"}, digits: 0,
+		},
+		{
+			// The no-budget arm's wall clock. It is a timing, so a regeneration
+			// moves it; the gate failing there is the point, since the prose
+			// states it.
+			quote: "4.11", phrase: "（40×200，4.11s）", file: "m3-summary.json", docs: resumeOnly,
+			find: map[string]any{"budget_tokens_per_day": 280.0},
+			path: []string{"without_quota", "wall_s"}, digits: 2,
+		},
+		{
 			// The two documents word this one differently: the README counts
 			// requests, the RESUME just says how many there were.
 			quote: "18000", file: "m1-summary.json", sum: true,
@@ -390,7 +498,7 @@ func TestHeadlineClaimsMatchTheBaseline(t *testing.T) {
 			path:  []string{"*", "errors"}, digits: 0,
 		},
 	}
-	if len(claims) < 60 {
+	if len(claims) < 80 {
 		t.Fatalf("only %d claims; this check has been hollowed out", len(claims))
 	}
 
