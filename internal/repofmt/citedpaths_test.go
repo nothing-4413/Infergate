@@ -554,6 +554,138 @@ func resolveLinkTarget(fromDir, target string) (string, bool) {
 	return "", false
 }
 
+// TestCitedSectionsExist pins the fifth kind of citation this prose makes: a
+// section number.
+//
+// WHY IT EXISTS. A section number survives a rename and dies in a renumbering,
+// and §-references are scattered through the documents and through the comments
+// in the configs, the compose file and the Dockerfile -- 36 of them. Nothing read
+// them, so a section that moves takes every sentence pointing at it out of reach
+// while leaving those sentences standing.
+//
+// WHAT IT CHECKS. Every §N.M has to be a number that some document in this
+// repository carries as an ATX heading. Which document a citation means is read
+// from the label in front of it (`docs/DESIGN.md`, `DESIGN`, `deploy/README`);
+// with no label the number is accepted if any of the documents has it, because
+// this prose writes "§12.5" on a line whose paragraph named DESIGN a sentence
+// earlier, and a check that demanded the label be repeated would be a check
+// about style. A line naming an RFC is skipped: `RFC 7230 §6.1` is someone
+// else's document.
+func TestCitedSectionsExist(t *testing.T) {
+	root := repoRoot(t)
+
+	documents := []struct {
+		rel    string
+		labels []string
+	}{
+		{"README.md", []string{"README.md", "README"}},
+		{"docs/DESIGN.md", []string{"docs/DESIGN.md", "DESIGN"}},
+		{"docs/USAGE.md", []string{"docs/USAGE.md", "USAGE"}},
+		{"docs/RESUME.md", []string{"docs/RESUME.md", "RESUME"}},
+		{"docs/ACCEPTANCE.md", []string{"docs/ACCEPTANCE.md", "ACCEPTANCE"}},
+		{"deploy/README.md", []string{"deploy/README.md", "deploy/README"}},
+	}
+
+	heading := regexp.MustCompile(`(?m)^#{1,6}[ \t]+§?(\d+(?:\.\d+)*)[.\s]`)
+	headings := make([]map[string]bool, len(documents))
+	headingTotal := 0
+	for i, doc := range documents {
+		path := filepath.Join(root, filepath.FromSlash(doc.rel))
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("%s is gone, so this check no longer covers it: %v", doc.rel, err)
+		}
+		headings[i] = map[string]bool{}
+		for _, m := range heading.FindAllStringSubmatch(readFile(t, path), -1) {
+			headings[i][m[1]] = true
+			headingTotal++
+		}
+	}
+	// A heading set that came back empty or half-read would make every citation
+	// below look wrong, so it is checked before it is used.
+	if headingTotal < 60 {
+		t.Fatalf("found %d numbered headings across %d documents; the pattern or the document list is wrong",
+			headingTotal, len(documents))
+	}
+
+	section := regexp.MustCompile(`§\s*(\d+(?:\.\d+)*)`)
+	rfc := regexp.MustCompile(`(?i)\bRFC[ \t]*\d`)
+
+	total := 0
+	for _, file := range proseSurfaces(t, root) {
+		body := readFile(t, file)
+		if strings.EqualFold(filepath.Ext(file), ".md") {
+			body = withoutFencedCodeBlocks(body)
+		}
+		rel, err := filepath.Rel(root, file)
+		if err != nil {
+			t.Fatalf("relativising %s: %v", file, err)
+		}
+		rel = filepath.ToSlash(rel)
+
+		for _, m := range section.FindAllStringSubmatchIndex(body, -1) {
+			line := lineAround(body, m[0])
+			if rfc.MatchString(line) {
+				continue
+			}
+			total++
+
+			// The label is looked for in the line itself and in the couple of
+			// hundred characters before it, which is enough to reach the
+			// sentence that named the document without reaching the last one.
+			context := line
+			if start := m[0] - 200; start > 0 {
+				context = body[start:m[0]] + " " + line
+			}
+
+			var candidates []int
+			for i, doc := range documents {
+				for _, label := range doc.labels {
+					if strings.Contains(context, label) {
+						candidates = append(candidates, i)
+						break
+					}
+				}
+			}
+			if len(candidates) == 0 {
+				for i := range documents {
+					candidates = append(candidates, i)
+				}
+			}
+
+			number := body[m[2]:m[3]]
+			named := make([]string, 0, len(candidates))
+			found := false
+			for _, i := range candidates {
+				named = append(named, documents[i].rel)
+				if headings[i][number] {
+					found = true
+				}
+			}
+			if found {
+				continue
+			}
+			t.Errorf("%s:%d: cites §%s, but no heading in %s has that number",
+				rel, 1+strings.Count(body[:m[0]], "\n"), number, strings.Join(named, ", "))
+		}
+	}
+
+	t.Logf("checked %d section citations against %d numbered headings across %d documents",
+		total, headingTotal, len(documents))
+	if total < 20 {
+		t.Fatalf("found %d section citations; the pattern or the surface list is wrong", total)
+	}
+}
+
+// lineAround returns the text of the line that contains offset.
+func lineAround(text string, offset int) string {
+	start := strings.LastIndexByte(text[:offset], '\n') + 1
+	end := strings.IndexByte(text[offset:], '\n')
+	if end < 0 {
+		return text[start:]
+	}
+	return text[start : offset+end]
+}
+
 // headingAnchors returns the fragments the ATX headings in text produce:
 // lower-cased, every character that is not a letter, a digit, an underscore or a
 // hyphen dropped, spaces turned into hyphens.

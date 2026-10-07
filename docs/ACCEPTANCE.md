@@ -42,9 +42,12 @@ Makefile 里每个 `verify-*` target 上方那段 `##` 注释也被它读：注�
 文档里的**指路**也有一层检查，都在 `internal/repofmt/citedpaths_test.go`：散文里点到的仓库路径必须真实存在
 （围栏代码块是引用而不是主张，所以整块跳过）、引用只点名符号而不写行号、点到的测试名必须真的被树里某个
 `func Test...` 定义（`TestCitedTestNamesExist`：本文 M3 表里三个名字从来没有存在过，其中两个改到真名、
-第三个的名字本次才补上真测试，`acb8cf2`）、每一句 Markdown
+第三个的名字本次才补上真测试，`acb8cf2`）、每一处 `§N.M` 章节引用都要是某份文档真的用标题拥有的编号
+（`TestCitedSectionsExist`：36 条引用对着 6 份文档的 104 个编号标题；引的是哪份文档看它前面的标签，没写
+标签就只要任何一份文档有那个编号——正文里 `§12.5` 常出现在上一句已点名 DESIGN 的地方；点 RFC 的行跳过，
+那一节属于 RFC 自己。这一条本次才加，加之前 36 条全部可解析，只是没有东西看着它们）、每一句 Markdown
 链接连同它的标题锚点都要能在树里解析。扫描面是 README、`docs` 与 `deploy` 下的 markdown、`configs` 下的
-yaml，外加 Makefile 与 compose 文件。行号这一条还多走一层：`TestCommentsCiteSymbolsNotLineNumbers` 读 `cmd`、
+yaml，外加 Makefile、compose 文件与 Dockerfile。行号这一条还多走一层：`TestCommentsCiteSymbolsNotLineNumbers` 读 `cmd`、
 `internal`、`scripts` 下 Go 与 PowerShell 文件的注释行（块注释和 here-string 算引用，跳过），因为
 `cmd/verify-m3/governance.go` 引 `internal/quota/quota.go` 三行、`internal/gateway/cachepath.go` 引
 `internal/gateway/proxy.go` 一行的那两处注释全漂了，而当时没有任何检查看得见它们（`741e985`、`96e5e0f`）。
