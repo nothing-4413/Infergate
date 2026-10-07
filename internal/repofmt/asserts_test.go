@@ -21,11 +21,13 @@ import (
 // or FAIL exactly as before.
 //
 // This test resolves every Assert-* call against the helper defined in the same
-// file and fails when a call passes more positional arguments than that helper
-// declares. It is deliberately conservative -- a call that passes a named
-// parameter (-Min, -Detail, ...) is skipped, because switch/value binding cannot
-// be reconstructed from text -- and it refuses to pass unless it judged a floor
-// of call sites, so a change to the scripts' style cannot turn it into a no-op.
+// file and fails when the call binds more arguments than that helper declares:
+// the ones it binds by position, plus the distinct parameters it names. A named
+// parameter is taken to consume the token after it unless that token is itself
+// named, and the "-Name:value" form consumes none -- the conservative read, since
+// believing a token is some parameter's value can only make this test quieter. It
+// refuses to pass unless it judged a floor of call sites, so a change to the
+// scripts' style cannot turn it into a no-op.
 func TestAssertionCallsDoNotOutrunTheirHelpers(t *testing.T) {
 	root := repoRoot(t)
 	scripts, err := filepath.Glob(filepath.Join(root, "scripts", "*.ps1"))
@@ -36,7 +38,7 @@ func TestAssertionCallsDoNotOutrunTheirHelpers(t *testing.T) {
 		t.Fatalf("found %d gate scripts under scripts/, want at least 8 (m0..m6 and hardening)", len(scripts))
 	}
 
-	judged, skipped, definitions := 0, 0, 0
+	judged, skipped, definitions, byName := 0, 0, 0, 0
 	for _, path := range scripts {
 		src := readFile(t, path)
 		helpers := assertHelperArities(src)
@@ -56,14 +58,14 @@ func TestAssertionCallsDoNotOutrunTheirHelpers(t *testing.T) {
 				skipped++
 				continue
 			}
-			if call.hasNamed {
-				skipped++
-				continue
-			}
+			positional, named := bindingCounts(call.args)
 			judged++
-			if len(call.args) > helper.arity {
-				t.Errorf("%s:%d: %s is called with %d positional arguments, but this file's %s declares %d (%s): the extra argument is silently discarded, so the detail it carries never reaches a failing gate",
-					rel, call.line, call.name, len(call.args), call.name, helper.arity, helper.decl)
+			if call.hasNamed {
+				byName++
+			}
+			if bound := positional + named; bound > helper.arity {
+				t.Errorf("%s:%d: %s binds %d arguments (%d by position, %d by name), but this file's %s declares %d (%s): an argument PowerShell cannot bind is silently discarded, so the detail it carries never reaches a failing gate",
+					rel, call.line, call.name, bound, positional, named, call.name, helper.arity, helper.decl)
 			}
 		}
 	}
@@ -74,14 +76,15 @@ func TestAssertionCallsDoNotOutrunTheirHelpers(t *testing.T) {
 	if judged < 400 {
 		t.Fatalf("judged only %d assertion calls (%d skipped), want at least 400: the scripts' call style must have changed in a way this parser does not understand", judged, skipped)
 	}
-	// Calls land in the skipped bucket when this parser cannot compare them. The
-	// scripts pass named parameters only occasionally, so a large skipped share
-	// means the parser has gone blind -- every one of those calls stops being
-	// checked while the test still reports success.
+	// Calls land in the skipped bucket only when the helper they call is not
+	// defined in the file they live in -- today, no call at all. A share this
+	// large means the scripts started resolving helpers from somewhere this test
+	// does not read, and every one of those calls stops being checked while the
+	// test still reports success.
 	if skipped > judged/20 {
-		t.Fatalf("skipped %d of %d assertion calls: that is more than the named-parameter and cross-file calls this tree has, so this test is no longer looking at the scripts' arguments", skipped, judged+skipped)
+		t.Fatalf("skipped %d of %d assertion calls: that is more than the cross-file calls this tree has, so this test is no longer looking at the scripts' arguments", skipped, judged+skipped)
 	}
-	t.Logf("judged %d assertion calls (%d skipped as named/foreign) against %d Assert-* definitions", judged, skipped, definitions)
+	t.Logf("judged %d assertion calls (%d of them bind at least one named parameter, %d skipped as foreign) against %d Assert-* definitions", judged, byName, skipped, definitions)
 }
 
 // assertHelper is one Assert-* helper: how many parameters its param(...) block
@@ -163,6 +166,78 @@ type assertCall struct {
 	line     int
 	args     []string
 	hasNamed bool
+}
+
+// bindingCounts reports how many arguments a call binds by position and how many
+// distinct parameters it binds by name; the two together are what PowerShell has
+// to fit into the helper's parameters.
+//
+// The value of a named parameter is not an argument of its own, so the token
+// after "-Name" is skipped unless it is itself named, while the "-Name:value"
+// form carries its value inside the same token and skips nothing. A switch
+// parameter followed by a positional argument is therefore read as taking that
+// argument as its value, which under-counts and can only make this test quieter.
+func bindingCounts(args []string) (positional, named int) {
+	seen := make(map[string]bool, 4)
+	for i := 0; i < len(args); i++ {
+		name, isNamed := namedArg(args[i])
+		if !isNamed {
+			positional++
+			continue
+		}
+		if !seen[name] {
+			seen[name] = true
+			named++
+		}
+		if strings.Contains(args[i], ":") || i+1 >= len(args) {
+			continue
+		}
+		if _, nextIsNamed := namedArg(args[i+1]); !nextIsNamed {
+			i++
+		}
+	}
+	return positional, named
+}
+
+// namedArg reports whether a token is a parameter name ("-Min", "-Detail:3") and
+// returns that name without its leading dash or its value. A token that merely
+// starts with a dash is not one: a negative number is a value.
+func namedArg(tok string) (string, bool) {
+	if len(tok) < 2 || tok[0] != '-' || !unicode.IsLetter(rune(tok[1])) {
+		return "", false
+	}
+	name := tok[1:]
+	if colon := strings.IndexByte(name, ':'); colon >= 0 {
+		name = name[:colon]
+	}
+	return name, true
+}
+
+// TestBindingCountsReadNamedParametersConservatively pins the reading the arity
+// guard rests on. Every row that could go either way is pinned on the quieter
+// side: a token that cannot be told apart from a parameter's value is counted as
+// one, because over-counting is what reports a violation that does not exist.
+func TestBindingCountsReadNamedParametersConservatively(t *testing.T) {
+	cases := []struct {
+		what       string
+		args       []string
+		positional int
+		named      int
+	}{
+		{"all positional", []string{"'label'", "$ok"}, 2, 0},
+		{"named parameters bind their values", []string{"-Label", "$Label", "-Condition", "$ok", "-Detail", "$detail"}, 0, 3},
+		{"a value in the name's own token", []string{"-Detail:3", "'x'"}, 1, 1},
+		{"repeating a parameter name counts once", []string{"-Min", "0", "-Min", "1"}, 0, 1},
+		{"a negative number is a value, not a parameter", []string{"-1", "$x"}, 2, 0},
+		{"a switch cannot be told from a value-taking parameter", []string{"-Verbose", "$x"}, 0, 1},
+	}
+	for _, c := range cases {
+		positional, named := bindingCounts(c.args)
+		if positional != c.positional || named != c.named {
+			t.Errorf("%s: bindingCounts(%q) = %d positional, %d named; want %d, %d",
+				c.what, c.args, positional, named, c.positional, c.named)
+		}
+	}
 }
 
 // findAssertCalls returns every call to an Assert-* helper whose argument list
