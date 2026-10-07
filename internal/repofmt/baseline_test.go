@@ -239,6 +239,33 @@ func TestHeadlineClaimsMatchTheBaseline(t *testing.T) {
 			path: []string{"*", "latency_ratio_fresh_over_replay"}, digits: 3,
 		},
 		{
+			// "重放期间 provider 调用 0 次" is not a field of its own: the B
+			// block keeps one row per pair and every one of them saw the mock
+			// not move, so the prose's zero is that column's sum. The README
+			// prints it in two shapes and the RESUME counts the pairs, so all
+			// three wordings hang off the same sum.
+			quote: "0", sum: true, file: "m6-summary.json",
+			find: map[string]any{"replay_upstream": "replay"},
+			path: []string{"mock_calls_replay"}, digits: 0,
+			docs: []claimPrint{
+				{phrase: "重放期间 provider 调用 **0** 次"},
+				{phrase: "同 key 重放 0 次 provider 调用"},
+				{file: "docs/RESUME.md", phrase: "20/20 次重放没有打到上游"},
+			},
+		},
+		{
+			// A sum of zero over no rows at all would read the same, so the
+			// pair count is pinned as well: the claim above needs rows to sum.
+			quote: "20", file: "m6-summary.json",
+			find: map[string]any{"question": "what does a replayed turn buy?"},
+			path: []string{"samples"}, digits: 0,
+			docs: []claimPrint{
+				{file: "docs/RESUME.md", phrase: "20 对"},
+				{file: "docs/USAGE.md", phrase: "重放 20 对"},
+				{file: "docs/DESIGN.md", phrase: "打 20 对"},
+			},
+		},
+		{
 			// The storage arm of the M6 record: a cap of 256 keys, 300 distinct
 			// keys pumped through it one at a time, and what the admin endpoint
 			// and the metric reported afterwards. The RESUME quotes them in one
@@ -500,7 +527,7 @@ func TestHeadlineClaimsMatchTheBaseline(t *testing.T) {
 	}
 	claims = append(claims, m0Claims()...)
 	claims = append(claims, m4SecondCopies()...)
-	if len(claims) < 145 {
+	if len(claims) < 147 {
 		t.Fatalf("only %d claims; this check has been hollowed out", len(claims))
 	}
 
@@ -612,6 +639,24 @@ func TestHeadlineClaimsMatchTheBaseline(t *testing.T) {
 			simple, hard)
 	} else if !strings.Contains(readme, split) {
 		t.Errorf("m4-summary.json's split is %s, but README.md does not print it", split)
+	}
+
+	// "省 11 token/轮" is the two per-turn usage counts added up rather than a
+	// field of its own, so it is computed here from the same record.
+	turns := docFor("m6-summary.json")
+	perTurn := map[string]any{"prompt_tokens": 6.0}
+	avoided := singleNumber(t, turns, perTurn, []string{"prompt_tokens"}) +
+		singleNumber(t, turns, perTurn, []string{"completion_tokens"})
+	if avoided != 11 {
+		t.Errorf("m6-summary.json's per-turn usage adds up to %v, but the prose prints 11 token", avoided)
+	}
+	for _, want := range []claimPrint{
+		{phrase: "省 11 token/轮"},
+		{file: "docs/RESUME.md", phrase: "11 token"},
+	} {
+		if !strings.Contains(textOf(want.document()), want.phrase) {
+			t.Errorf("%s no longer prints %s; the replay payoff moved", want.document(), want.phrase)
+		}
 	}
 
 	t.Logf("checked %d headline claims against docs/baseline", len(claims)+2)
