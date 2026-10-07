@@ -39,6 +39,10 @@ Makefile 里每个 `verify-*` target 上方那段 `##` 注释也被它读：注�
 "over 5,000" 那两处才被看见（`35612ff`）；`measure-*` 与 `run-*` 的注释不在其中，它们报的是自己那次
 运行打印的合计，是测量结果而不是表里的一行。
 
+同一个总数还以英文写在两处注释里：`.github/workflows/ci.yml` 里解释 `continue-on-error` 代价的那段，和
+`internal/repofmt/curl_gates_test.go` 的文件头。这两份互相不一致——一份停在 1060（上面那句里读者已经被告知
+不可信的旧合计），另一份是 1068——而表里 curl 列的和已经是 1081；现在这两处也在扫描面上。
+
 文档里的**指路**也有一层检查，都在 `internal/repofmt/citedpaths_test.go`：散文里点到的仓库路径必须真实存在
 （围栏代码块是引用而不是主张，所以整块跳过）、引用只点名符号而不写行号、点到的测试名必须真的被树里某个
 `func Test...` 定义（`TestCitedTestNamesExist`：本文 M3 表里三个名字从来没有存在过，其中两个改到真名、

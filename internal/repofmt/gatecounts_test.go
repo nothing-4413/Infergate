@@ -106,20 +106,32 @@ func TestDocumentedGateTotalsAreTheSumOfTheirRows(t *testing.T) {
 			regexp.MustCompile(`(\d+)\s*条进程内 Go 断言`), 1, 0, 0},
 		{"docs/RESUME.md's résumé bullet",
 			regexp.MustCompile(`Go (\d+) 条 \+ 真实进程 curl (\d+) 条`), 1, 2, 0},
+		// The same sentence is written out in two comments -- the ci.yml block
+		// that explains the flag and this package's own header -- and the two
+		// copies disagreed: one said 1060 (the stale 合计 a reader had already
+		// been told not to believe) and the other 1068, while the table added up
+		// to 1081. Both halves are checked because the sentence pairs the two
+		// totals, so a table that moves has to move both comments with it.
+		{"the counterweight comment in .github/workflows/ci.yml and in this package",
+			regexp.MustCompile(`(\d+)[\s\S]{0,40}?curl assertions and all (\d+) in-process ones`), 2, 1, 0},
 	}
 
-	docs := []string{filepath.Join(root, "README.md")}
+	surfaces := []string{
+		filepath.Join(root, "README.md"),
+		filepath.Join(root, ".github", "workflows", "ci.yml"),
+		filepath.Join(root, "internal", "repofmt", "curl_gates_test.go"),
+	}
 	globbed, err := filepath.Glob(filepath.Join(root, "docs", "*.md"))
 	if err != nil {
 		t.Fatalf("globbing docs: %v", err)
 	}
-	docs = append(docs, globbed...)
-	if len(docs) < 5 {
-		t.Fatalf("only %d documents to scan; the check is looking in the wrong place", len(docs))
+	surfaces = append(surfaces, globbed...)
+	if len(surfaces) < 5 {
+		t.Fatalf("only %d surfaces to scan; the check is looking in the wrong place", len(surfaces))
 	}
 
 	restatements := 0
-	for _, path := range docs {
+	for _, path := range surfaces {
 		rel, err := filepath.Rel(root, path)
 		if err != nil {
 			t.Fatalf("relativising %s: %v", path, err)
@@ -147,18 +159,18 @@ func TestDocumentedGateTotalsAreTheSumOfTheirRows(t *testing.T) {
 		}
 	}
 	if restatements < len(claims) {
-		t.Fatalf("only %d restatements of the totals found across %d documents, want at least %d (one per wording)",
-			restatements, len(docs), len(claims))
+		t.Fatalf("only %d restatements of the totals found across %d surfaces, want at least %d (one per wording)",
+			restatements, len(surfaces), len(claims))
 	}
 	for i := range claims {
 		if claims[i].hits == 0 {
-			t.Errorf("no document states %s any more; if the wording changed, update the pattern in this test "+
+			t.Errorf("no surface states %s any more; if the wording changed, update the pattern in this test "+
 				"rather than leaving the total unstated", claims[i].wording)
 		}
 	}
 
-	t.Logf("checked %d milestone rows in each gate table (%d Go / %d curl) and %d restatements across %d documents",
-		len(milestoneNames), goSum, curlSum, restatements, len(docs))
+	t.Logf("checked %d milestone rows in each gate table (%d Go / %d curl) and %d restatements across %d surfaces",
+		len(milestoneNames), goSum, curlSum, restatements, len(surfaces))
 }
 
 // TestEveryQuotedGateCountMatchesTheTable extends the arithmetic check to the

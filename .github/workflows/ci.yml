@@ -255,7 +255,7 @@ jobs:
   #   "When a continue-on-error step fails, the outcome is failure, but the final
   #    conclusion is success."   -- contexts reference, steps.<step_id>.outcome
   #
-  # So with the flag on every gate step and no other step that can fail, all 1060
+  # So with the flag on every gate step and no other step that can fail, all 1081
   # curl assertions and all 2353 in-process ones could be red while the job, the
   # run, the badge and the anonymous jobs API all said success. The flag stays,
   # because all of them running is worth more than the first one failing loudly --
