@@ -40,9 +40,11 @@ Makefile 里每个 `verify-*` target 上方那段 `##` 注释也被它读：注�
 运行打印的合计，是测量结果而不是表里的一行。
 
 文档里的**指路**也有一层检查，都在 `internal/repofmt/citedpaths_test.go`：散文里点到的仓库路径必须真实存在
-（围栏代码块是引用而不是主张，所以整块跳过）、引用只点名符号而不写行号、每一句 Markdown 链接连同它的
-标题锚点都要能在树里解析。扫描面是 README、`docs` 与 `deploy` 下的 markdown、`configs` 下的 yaml，
-外加 Makefile 与 compose 文件。行号这一条还多走一层：`TestCommentsCiteSymbolsNotLineNumbers` 读 `cmd`、
+（围栏代码块是引用而不是主张，所以整块跳过）、引用只点名符号而不写行号、点到的测试名必须真的被树里某个
+`func Test...` 定义（`TestCitedTestNamesExist`：本文 M3 表里三个名字从来没有存在过，其中两个改到真名、
+第三个的名字本次才补上真测试，`acb8cf2`）、每一句 Markdown
+链接连同它的标题锚点都要能在树里解析。扫描面是 README、`docs` 与 `deploy` 下的 markdown、`configs` 下的
+yaml，外加 Makefile 与 compose 文件。行号这一条还多走一层：`TestCommentsCiteSymbolsNotLineNumbers` 读 `cmd`、
 `internal`、`scripts` 下 Go 与 PowerShell 文件的注释行（块注释和 here-string 算引用，跳过），因为
 `cmd/verify-m3/governance.go` 引 `internal/quota/quota.go` 三行、`internal/gateway/cachepath.go` 引
 `internal/gateway/proxy.go` 一行的那两处注释全漂了，而当时没有任何检查看得见它们（`741e985`、`96e5e0f`）。
@@ -502,15 +504,15 @@ M2 的取舍与已知边界（同样写在代码注释里）：
 | 静态检查 | 全绿 | `go vet ./...` exit 0 |
 | Go 端到端 | 470/470 断言通过 | `go run ./cmd/verify-m3` |
 | curl 端到端 | 323/323 断言通过 | `scripts/verify-m3.ps1`（内存 + 真 Redis 协议服务） |
-| 日 token 预算 | 第三次 40-token 请求被拒（`tokens_per_day`），计数器停在已准入的量 | `checkDailyTokenBudget`、`TestDailyTokenBudgetRejects` |
+| 日 token 预算 | 第三次 40-token 请求被拒（`tokens_per_day`），计数器停在已准入的量 | `checkDailyTokenBudget`、`TestDailyTokenBudget` |
 | 日成本预算 | 同一套逻辑走微美元账目，拒绝原因为 `cost_per_day_usd` | `checkCostBudget` |
 | 每分钟限流 | 第 N+1 次拒绝（`requests_per_minute`），分钟计数不涨 | `checkMinuteRateLimit` |
 | 每会话预算 | 会话独立计量，会话缺失时不预扣 | `checkSessionBudget` |
-| 降级仍是一次请求 | 200 + `degrade` + 改写模型/上限，预扣保留、结算返还差额 | `checkDegrade`、`TestDegradeKeepsTheReservation` |
+| 降级仍是一次请求 | 200 + `degrade` + 改写模型/上限，预扣保留、结算返还差额 | `checkDegrade`、`TestDegradeWithDowngradeModel` |
 | 账本按条目配平 | 混合流量（日 + 会话两个 token 维度、拒绝、缓存命中）下 `reserved − released + overshoot == settled` | verify-m3 `identityOK`、verify-m3-curl 段 11 |
 | 拒绝不产生上游调用 | 拒绝时上游调用计数不变（预算挡下的正是 provider 账单） | `checkUpstreamNotCalled`、实测 `provider_calls_prevented: 39` |
 | 缓存命中仍占配额 | 命中按 `Usage{Requests: 1}` 结算，token 记 0 | `checkCacheHitSettlesRequestsOnly` |
-| fail-closed 是默认 | store 不可读 → 503 `infergate_quota_unavailable`，且 **Redis 连不上时启动失败** | `checkFailClosedOpen`、`TestNewServerFailsWhenQuotaRedisIsDown` |
+| fail-closed 是默认 | store 不可读 → 503 `infergate_quota_unavailable`，且 **Redis 连不上时启动失败** | `checkFailClosedOpen`、`TestNewRedisStoreRejectsABadAddress`（store 层）、`TestNewServerFailsWhenQuotaRedisIsDown`（启动层） |
 | fail-open 可显式打开 | 同一次故障下 5/5 放行，`store_errors` 照记，且决策计数记 `allow` | `checkFailClosedOpen`、`docs/baseline/m3-summary.json` 的 `fail_open` |
 | 键隔离与单射转义 | 配置里 `acme:inc` 与 `acme_inc` 各记各的账 | `checkKeyIsolation`、`TestKeyLayoutAndBucketFormats` |
 | 三个观测面 | `/admin/quota`、`/stats` 的 `quota` 块、`/metrics` 七个 `infergate_quota_*` 族三者同源 | `checkSurfaces` |

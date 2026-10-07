@@ -475,6 +475,67 @@ func TestEveryMarkdownLinkResolvesInTheTree(t *testing.T) {
 	}
 }
 
+// TestCitedTestNamesExist pins the fourth kind of citation the prose makes: the
+// name of a test it offers as evidence.
+//
+// WHY IT EXISTS. The M3 table in docs/ACCEPTANCE.md cited three tests that had
+// never existed under the names it used -- TestDailyTokenBudgetRejects,
+// TestDegradeKeepsTheReservation and TestNewServerFailsWhenQuotaRedisIsDown --
+// while the tests that do carry those claims are called TestDailyTokenBudget,
+// TestDegradeWithDowngradeModel and TestNewRedisStoreRejectsABadAddress. A
+// renamed test leaves the sentence behind, still reading like evidence, and the
+// reader who greps for the name finds nothing: a citation to a test rots the
+// same way a line number does, one rename at a time.
+//
+// WHAT IT CHECKS. Every `Test...` name inside backticks on a prose surface has
+// to be defined by a func in cmd/ or internal/. Fenced blocks are blanked first:
+// a transcript quotes a name, it does not claim one exists.
+func TestCitedTestNamesExist(t *testing.T) {
+	root := repoRoot(t)
+	cited := regexp.MustCompile("`(Test[A-Za-z0-9_]+)`")
+	defined := regexp.MustCompile(`(?m)^func (Test[A-Za-z0-9_]+)\(`)
+
+	names := map[string]bool{}
+	for _, file := range commentSurfaces(t, root) {
+		if !strings.HasSuffix(file, "_test.go") {
+			continue
+		}
+		for _, m := range defined.FindAllStringSubmatch(readFile(t, file), -1) {
+			names[m[1]] = true
+		}
+	}
+	if len(names) < 200 {
+		t.Fatalf("found %d tests under cmd/ and internal/; this check is reading the wrong tree", len(names))
+	}
+
+	quoted := map[string]bool{}
+	total := 0
+	for _, file := range proseSurfaces(t, root) {
+		body := withoutFencedCodeBlocks(readFile(t, file))
+		rel, err := filepath.Rel(root, file)
+		if err != nil {
+			t.Fatalf("relativising %s: %v", file, err)
+		}
+		rel = filepath.ToSlash(rel)
+
+		for _, m := range cited.FindAllStringSubmatchIndex(body, -1) {
+			name := body[m[2]:m[3]]
+			total++
+			quoted[name] = true
+			if names[name] {
+				continue
+			}
+			t.Errorf("%s:%d: cites %s, which no test in the tree defines; name the test that covers it, or rename this one",
+				rel, 1+strings.Count(body[:m[0]], "\n"), name)
+		}
+	}
+
+	t.Logf("checked %d quoted test names (%d distinct) against %d defined tests", total, len(quoted), len(names))
+	if len(quoted) < 30 {
+		t.Fatalf("found %d distinct test names quoted in the prose; the pattern or the surface list is wrong", len(quoted))
+	}
+}
+
 // resolveLinkTarget turns a markdown link target into the file it names,
 // relative to the document making the claim. A target may be percent-encoded
 // (a link to a file with a space in its name), so the decoded form is tried
