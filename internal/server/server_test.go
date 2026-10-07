@@ -488,6 +488,35 @@ func TestNewServerValidatesTheConfigItIsGiven(t *testing.T) {
 	}
 }
 
+// TestNewServerFailsWhenQuotaRedisIsDown pins the store half of the quota
+// section: with `store: redis`, a store that cannot be reached has to stop
+// construction instead of letting the process run with budgets it cannot read.
+//
+// The alternative is worse than a failed start. Coming up anyway would, with the
+// default fail-closed setting, refuse every request, and with fail-open on it
+// would admit every request -- either way the operator finds out from traffic
+// rather than from the boot log. The store-level half of the same claim is
+// TestNewRedisStoreRejectsABadAddress.
+func TestNewServerFailsWhenQuotaRedisIsDown(t *testing.T) {
+	cfg := accessTestConfig()
+	cfg.Quota.Enabled = true
+	cfg.Quota.Store = config.QuotaStoreRedis
+	cfg.Quota.Redis.Addr = "127.0.0.1:1" // nothing listens here
+
+	srv, err := NewServer(&cfg, testLogger{})
+	if err == nil {
+		t.Fatal("NewServer came up with an unreachable quota store; a budget that cannot be read is not a budget")
+	}
+	// The stage has to be visible, for the same reason the validation errors
+	// above have to name theirs.
+	if !strings.Contains(err.Error(), "server: quota: redis") {
+		t.Errorf("error does not name the stage that failed: %v", err)
+	}
+	if srv != nil {
+		t.Error("NewServer returned a server alongside an error")
+	}
+}
+
 // TestNewServerNormalisesTheConfigItIsGiven pins a behaviour that is easy to
 // mistake for a bug: NewServer hands the config to cfg.Validate, and Validate is
 // a normaliser as well as a checker -- it fills unset defaults in place, on the
