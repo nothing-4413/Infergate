@@ -239,6 +239,116 @@ func TestHeadlineClaimsMatchTheBaseline(t *testing.T) {
 			path: []string{"*", "latency_ratio_fresh_over_replay"}, digits: 3,
 		},
 		{
+			// The storage arm of the M6 record: a cap of 256 keys, 300 distinct
+			// keys pumped through it one at a time, and what the admin endpoint
+			// and the metric reported afterwards. The RESUME quotes them in one
+			// paragraph and says what the byte figures do not claim.
+			quote: "300", file: "m6-summary.json", docs: resumeOnly,
+			find: map[string]any{"keys_pumped": 300.0},
+			path: []string{"keys_pumped"}, digits: 0,
+		},
+		{
+			quote: "256", phrase: "容量 256", file: "m6-summary.json", docs: resumeOnly,
+			find: map[string]any{"keys_pumped": 300.0},
+			path: []string{"capacity"}, digits: 0,
+		},
+		{
+			quote: "256", phrase: "封顶 256/256", file: "m6-summary.json", docs: resumeOnly,
+			find: map[string]any{"keys_pumped": 300.0},
+			path: []string{"stored_final"}, digits: 0,
+		},
+		{
+			quote: "320", file: "m6-summary.json", docs: resumeOnly,
+			find: map[string]any{"keys_pumped": 300.0},
+			path: []string{"stats_stored"}, digits: 0,
+		},
+		{
+			quote: "340", file: "m6-summary.json", docs: resumeOnly,
+			find: map[string]any{"keys_pumped": 300.0},
+			path: []string{"stats_lookups"}, digits: 0,
+		},
+		{
+			quote: "44", file: "m6-summary.json", docs: resumeOnly,
+			find: map[string]any{"keys_pumped": 300.0},
+			path: []string{"stats_evicted"}, digits: 0,
+		},
+		{
+			quote: "44", file: "m6-summary.json", docs: resumeOnly,
+			find: map[string]any{"keys_pumped": 300.0},
+			path: []string{"metric_evicted_total"}, digits: 0,
+		},
+		{
+			// The provider was asked once per distinct key, which is what the
+			// RESUME means by "asked exactly 300 times".
+			quote: "300", file: "m6-summary.json", docs: resumeOnly,
+			find: map[string]any{"keys_pumped": 300.0},
+			path: []string{"provider_calls"}, digits: 0,
+		},
+		{
+			quote: "285", file: "m6-summary.json", docs: resumeOnly,
+			find: map[string]any{"keys_pumped": 300.0},
+			path: []string{"answer_bytes"}, digits: 0,
+		},
+		{
+			// 72960 bytes over 256 entries is a floor, which is why the record
+			// keeps bytes_per_stored_entry null and the RESUME declines to claim
+			// a number per entry. The claim reads the bytes, because the prose's
+			// 71.3 KiB rounds that exact 71.25 up while Go rounds it down.
+			quote: "72960", phrase: "71.3 KiB", file: "m6-summary.json", docs: resumeOnly,
+			find: map[string]any{"keys_pumped": 300.0},
+			path: []string{"stored_answer_bytes_floor"}, digits: 0,
+		},
+		{
+			quote: "174.2", file: "m6-summary.json", docs: resumeOnly,
+			find: map[string]any{"keys_pumped": 300.0},
+			path: []string{"sequential_qps"}, digits: 1,
+		},
+		{
+			quote: "5.3", file: "m6-summary.json", docs: resumeOnly,
+			find: map[string]any{"keys_pumped": 300.0},
+			path: []string{"sequential_median_ms"}, digits: 1,
+		},
+		{
+			// RSS is quoted in MiB and with a real minus sign (U+2212) in the
+			// prose, so that phrase is spelled out instead of left to the
+			// number, which formats with an ASCII hyphen.
+			quote: "-4.05", phrase: "−4.05 MiB", file: "m6-summary.json", docs: resumeOnly,
+			find: map[string]any{"keys_pumped": 300.0},
+			path: []string{"rss_growth_bytes"}, digits: 2, scale: 1.0 / 1048576,
+		},
+		{
+			// The concurrency arm: sixteen clients through one barrier against
+			// one key, one provider call, no second generation.
+			quote: "16", file: "m6-summary.json", docs: resumeOnly,
+			find: map[string]any{"window": "300ms"},
+			path: []string{"clients"}, digits: 0,
+		},
+		{
+			quote: "1", phrase: "1 × 200 新答案", file: "m6-summary.json", docs: resumeOnly,
+			find: map[string]any{"window": "300ms"},
+			path: []string{"observed_mix", "produced_200_fresh"}, digits: 0,
+		},
+		{
+			quote: "15", phrase: "15 × 409 in-flight", file: "m6-summary.json", docs: resumeOnly,
+			find: map[string]any{"window": "300ms"},
+			path: []string{"observed_mix", "in_flight_409"}, digits: 0,
+		},
+		{
+			quote: "0", phrase: "0 × 200 重放", file: "m6-summary.json", docs: resumeOnly,
+			find: map[string]any{"window": "300ms"},
+			path: []string{"observed_mix", "replayed_200"}, digits: 0,
+		},
+		{
+			quote: "0", phrase: "0 其他", file: "m6-summary.json", docs: resumeOnly,
+			find: map[string]any{"window": "300ms"},
+			path: []string{"observed_mix", "other"}, digits: 0,
+		},
+		{
+			quote: "1", phrase: "恰好 **+1**", file: "m6-summary.json", docs: resumeOnly,
+			find: map[string]any{"window": "300ms"},
+			path: []string{"provider_calls"}, digits: 0,
+		},
+		{
 			quote: "13", phrase: "13 对近似语料", file: "m2-corpus.json",
 			path: []string{"should_hit"}, digits: 0,
 		},
@@ -280,7 +390,7 @@ func TestHeadlineClaimsMatchTheBaseline(t *testing.T) {
 			path:  []string{"*", "errors"}, digits: 0,
 		},
 	}
-	if len(claims) < 40 {
+	if len(claims) < 60 {
 		t.Fatalf("only %d claims; this check has been hollowed out", len(claims))
 	}
 
