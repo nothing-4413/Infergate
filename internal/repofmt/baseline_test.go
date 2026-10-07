@@ -115,6 +115,30 @@ func TestHeadlineClaimsMatchTheBaseline(t *testing.T) {
 			path: []string{"direct_minus_gateway_pct"}, digits: 2,
 		},
 		{
+			// The idempotency payoff of the RESUME is B_replay_payoff in the M6
+			// record: fresh generation against the replayed answer over 20 pairs.
+			// The fresh column is paced by the mock, which the RESUME says out
+			// loud next to the ratio, so the ratio is quoted rather than sold.
+			quote: "5.7", phrase: "5.7ms", file: "m6-summary.json", docs: resumeOnly,
+			path: []string{"*", "fresh_median_ms"}, digits: 1,
+		},
+		{
+			quote: "8.1", phrase: "8.1ms", file: "m6-summary.json", docs: resumeOnly,
+			path: []string{"*", "fresh_p95_ms"}, digits: 1,
+		},
+		{
+			quote: "4.5", phrase: "4.5ms", file: "m6-summary.json", docs: resumeOnly,
+			path: []string{"*", "replay_median_ms"}, digits: 1,
+		},
+		{
+			quote: "24.9", phrase: "24.9ms", file: "m6-summary.json", docs: resumeOnly,
+			path: []string{"*", "replay_p95_ms"}, digits: 1,
+		},
+		{
+			quote: "1.267", file: "m6-summary.json", docs: resumeOnly,
+			path: []string{"*", "latency_ratio_fresh_over_replay"}, digits: 3,
+		},
+		{
 			quote: "13", phrase: "13 对近似语料", file: "m2-corpus.json",
 			path: []string{"should_hit"}, digits: 0,
 		},
@@ -156,7 +180,7 @@ func TestHeadlineClaimsMatchTheBaseline(t *testing.T) {
 			path:  []string{"*", "errors"}, digits: 0,
 		},
 	}
-	if len(claims) < 18 {
+	if len(claims) < 24 {
 		t.Fatalf("only %d claims; this check has been hollowed out", len(claims))
 	}
 
