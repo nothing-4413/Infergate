@@ -349,7 +349,7 @@ M0 的经验是"验证工具本身会骗人"，M1 把它变成了两条互补的
 - `cmd/verify-m1`（Go，64 条断言）：用 `internal/mockbackend` 在**进程内**起后端，可以按后端
   注入故障（`SetFailStatus` / `SetStall`），从而确定性地构造"只有某一个后端坏"的场景。
   它不依赖端口、不依赖外部进程，所以是 CI 门禁。
-- `scripts/verify-m1.ps1`（curl，56 条断言）：真进程 + 真 curl，覆盖 operator 视角的路径
+- `scripts/verify-m1.ps1`（curl，58 条断言）：真进程 + 真 curl，覆盖 operator 视角的路径
   （编译、起三副本、杀进程、`/admin/*`、日志）。它测的是 Go 验收器测不到的东西：
   真实的 socket、真实的进程生命周期、真实的管理端点。
 
@@ -1047,7 +1047,7 @@ requests / ok / failed、token 三态、按**实际服务的模型**定价的成
 - `cmd/verify-m6`（Go，**381** 条断言，CI 门禁）：在进程内起真实 server 与真实上游，六段——幂等重放、
   什么不会被记住、幂等管理面与指标、会话账本、声明式能力面与活体探测、一次完整的 Agent 工具调用对话
   （工具调用 → 工具结果 → 回答，以及重放与冲突各自如何入账）。
-- `scripts/verify-m6.ps1`（curl，**151** 条断言）：真进程 + 真 curl，上游是仓库内**脚本化** mock
+- `scripts/verify-m6.ps1`（curl，**152** 条断言）：真进程 + 真 curl，上游是仓库内**脚本化** mock
   （`cmd/mockupstream -script`），并用 mock 自己的 `GET /calls` 作外部证人——"两次客户端尝试、上游只被
   调用一次"这句话由上游数出来，而不是由网关自己声称。
 - `scripts/measure-m6.ps1`：M6 的代价与收益（下节），原始数据落在

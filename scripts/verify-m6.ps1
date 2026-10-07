@@ -476,8 +476,11 @@ try {
     $policyReplayCapacity = Get-ConfigScalar -Text $cfg -Block 'idempotency' -Key 'capacity'
     $policyReplayTTL = Get-ConfigScalar -Text $cfg -Block 'idempotency' -Key 'ttl'
     $policyReplayMaxBytes = Get-ConfigScalar -Text $cfg -Block 'idempotency' -Key 'max_response_bytes'
+    $policyRoutingStrategy = Get-ConfigScalar -Text $cfg -Block 'routing' -Key 'strategy'
     Assert-True 'the rendered config declares the model context window' `
         ($null -ne $policyContextWindow) "read $cfgPath"
+    Assert-True 'the rendered config declares the routing strategy' `
+        ($null -ne $policyRoutingStrategy) "read $cfgPath"
     Assert-True 'the rendered config declares the replay store settings' `
         ($null -ne $policyReplayCapacity -and $null -ne $policyReplayTTL -and $null -ne $policyReplayMaxBytes) "read $cfgPath"
 
@@ -501,7 +504,7 @@ try {
         # A catch-all backend claims no model BY NAME, so the index is empty: the
         # fallback is a routing rule, not an entry in the model table.
         Assert-Equal 'a catch-all backend claims no model by name' 0 @($upstreams.model_index.PSObject.Properties).Count
-        Assert-Equal 'the routing strategy is the configured one' 'priority' $upstreams.routing.strategy
+        Assert-Equal "the routing strategy is the config's $policyRoutingStrategy" $policyRoutingStrategy $upstreams.routing.strategy
         Assert-Equal 'the breaker starts closed' 'closed' $upstreams.breaker_states.'scripted-mock'
     }
     $calls = Get-Json "$mockURL/calls" 'calls'

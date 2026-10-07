@@ -102,6 +102,19 @@ function Read-Text {
     try { return $reader.ReadToEnd() } finally { $reader.Dispose() }
 }
 
+function Get-ConfigScalar {
+    param([string]$Text, [string]$Block, [string]$Key)
+    # A top-level block is named at column zero and owns everything indented
+    # under it, up to the next column-zero line. Scoping the lookup that way is
+    # what lets `strategy` come from the `routing` block rather than from
+    # whichever nested `strategy` happens to appear first in the file.
+    $b = [regex]::Match($Text, "(?ms)^$([regex]::Escape($Block)):[^\r\n]*\r?\n(.*?)(?=^\S|\z)")
+    if (-not $b.Success) { return $null }
+    $k = [regex]::Match($b.Groups[1].Value, "(?m)^\s*$([regex]::Escape($Key)):\s*([^\s#]+)")
+    if (-not $k.Success) { return $null }
+    return $k.Groups[1].Value.Trim('"')
+}
+
 function New-BodyFile {
     <#
         Writes a JSON request body to a temp file and returns the '@path' form for
@@ -246,6 +259,17 @@ $rewritten = (Read-Text (Join-Path $repo 'configs\routing-local.yaml')) `
 [System.IO.File]::WriteAllText($gatewayCfg, $rewritten, $utf8NoBom)
 Write-Host "  wrote $gatewayCfg (gateway :$GatewayPort -> primary :$PrimaryPort / secondary :$SecondaryPort / tools :$ToolsPort)"
 
+# The strategy and the failover cap are NOT this script's constants: they belong
+# to the fleet config it just rendered. Reading them back out of that text is
+# what keeps a config edit from turning a gateway that did exactly what it was
+# told red - the same rule the M0/M2/M4/M6 gates follow.
+$policyStrategy = Get-ConfigScalar -Text $rewritten -Block 'routing' -Key 'strategy'
+$policyMaxFailures = Get-ConfigScalar -Text $rewritten -Block 'health' -Key 'max_failures_per_request'
+Assert-True 'the rendered fleet config declares its routing strategy' `
+    ($null -ne $policyStrategy) "read $gatewayCfg"
+Assert-True 'the rendered fleet config declares its failover cap' `
+    ($null -ne $policyMaxFailures) "read $gatewayCfg"
+
 function Start-Replica {
     param([int]$Port, [string]$Name, [string]$LogName)
     $log = Join-Path $tmpDir $LogName
@@ -306,8 +330,8 @@ try {
 
     $upstreamDoc = (Invoke-Curl @('-s', "$base/admin/upstreams")) | ConvertFrom-Json
     Assert-Equal 'the fleet has exactly three backends' 3 @($upstreamDoc.upstreams).Count
-    Assert-Equal 'routing strategy comes from the config file' 'priority' $upstreamDoc.routing.strategy
-    Assert-Equal 'the failover chain is capped by max_failures_per_request' 2 $upstreamDoc.routing.max_attempts
+    Assert-Equal "routing strategy comes from the config file ('$policyStrategy')" $policyStrategy $upstreamDoc.routing.strategy
+    Assert-Equal "the failover chain is capped by max_failures_per_request ($policyMaxFailures)" ([int]$policyMaxFailures) $upstreamDoc.routing.max_attempts
 
     $chatBody = New-BodyFile 'm1-chat.json' '{"model":"mock-gpt","messages":[{"role":"user","content":"hello from curl"}]}'
     $streamBody = New-BodyFile 'm1-stream.json' '{"model":"mock-gpt","stream":true,"messages":[{"role":"user","content":"stream please"}]}'

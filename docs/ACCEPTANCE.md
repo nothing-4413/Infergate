@@ -9,13 +9,13 @@ M4–M6 的验收与实测段落与各自的启动方式写在一起，见 [USAG
 | 里程碑 | Go 进程内（`cmd/verify*`） | 真实进程 + curl（`scripts/verify-m*.ps1`） | 原始数据 |
 | --- | --- | --- | --- |
 | M0 透传与 SSE | 38 | 47 | `baseline/m0-baseline.json` |
-| M1 路由与熔断 | 64 | 56 | `baseline/m1-summary.json`（+ 9 条压测逐轮文件） |
+| M1 路由与熔断 | 64 | 58 | `baseline/m1-summary.json`（+ 9 条压测逐轮文件） |
 | M2 语义缓存 | 103 | 158 | `baseline/m2-summary.json`（+ 语料、阈值扫描、6 条压测逐轮文件） |
 | M3 配额治理 | 470 | 323 | `baseline/m3-summary.json` |
 | M4 分层与量化 | 877 | 127 | `baseline/m4-summary.json` |
 | M5 可观测与压测 | 420 | 211 | `baseline/m5-summary.json`（+ 24 条逐轮文件） |
-| M6 幂等/账本/能力 | 381 | 151 | `baseline/m6-summary.json` |
-| **合计** | **2353** | **1073** | |
+| M6 幂等/账本/能力 | 381 | 152 | `baseline/m6-summary.json` |
+| **合计** | **2353** | **1076** | |
 | 管理面鉴权（`access`，不属任何里程碑） | 50 | 44 | 无（证据是 `scripts/verify-hardening.ps1` 的输出） |
 
 M5 的 curl 门从 203 条变成 211 条，加的是 8 条解析器自检（`10.0a`–`10.0h`）：
@@ -93,6 +93,14 @@ M6 那一节盯的是运行中的能力面与重放账本，走的是同一条�
 把 `context_window` 改成 64000、`idempotency.ttl` 改成 `"20m"`，两条断言分别报 `the config's 64000` 与
 `the config's 20m` 并通过——TTL 两侧先折成秒再比，因为配置写 `10m`、Go 报 `10m0s`；改动前它们按写死的
 128000 与 `10m0s` 比，同一处有意调整会让门禁变红。
+同一类耦合还有字符串这一半，两个门禁各修一处：`scripts/verify-m1.ps1` 不再拿写死的 `'priority'` 与 `2` 去比
+`/admin/upstreams` 报的路由策略与失效转移上限，而是用 `Get-ConfigScalar` 从它自己刚渲染出来的
+`configs/routing-local.yaml` 文本里按块取（`routing.strategy`、`health.max_failures_per_request`）；
+`scripts/verify-m6.ps1` 的 `/admin/upstreams` 那一节同理，策略从交给网关的 `configs/agent-local.yaml` 的
+`routing.strategy` 读回来。把那份样例的策略改成 `weighted`，M6 这条断言就报 `the routing strategy is the config's
+weighted` 并通过（改动前它按写死的 `priority` 比，网关照配置做对的事却判红）；把 `max_failures_per_request` 改成
+3，M1 报 `the failover chain is capped by max_failures_per_request (3)` 并通过。两条期望值都各自带一条存在性断言，
+键名搬走时是"读不到"这种独立失败，不会退化成拿一个错值去比。
 这条链抓到的第一类是四舍五入：`m0-baseline.json` 里 5496.49 与 1095.45 在 RESUME 与 USAGE 里被印成
 5497 与 1096，记录本身没错，是那三处字符串错了。
 
@@ -126,7 +134,7 @@ M4 那次运行用的单价表是个例外里的一例：它不是写死在记�
 管理面鉴权默认关闭，所以 M0–M6 的两条证据链一行都没有覆盖它。它有自己的第三条链：
 `scripts/verify-hardening.ps1`，**真进程 + 真 curl + 44 条断言**，见下方「管理面鉴权的证据边界」。
 它的数字单独列成一行而不是并进合计——把一条 2026 年才加的安全门混进里程碑总数，
-会让"1073"这个从 M0 起就写在 README 里的数字变得不可对账。
+会让"1076"这个从 M0 起就写在 README 里的数字变得不可对账。
 
 那一行的 Go 列数的是**检查点**（源码里 `t.Error*`/`t.Fatal*` 的调用点），不是执行到的断言：
 `cmd/verify*` 那套会打印自己跑了多少的计数器不覆盖它，而这张表里其余各行的 Go 数字都是它打印出来的。
@@ -150,7 +158,7 @@ curl 门编译真二进制、拉真进程、用真 `curl.exe` 打真 socket，�
 | `go test ./... -count=1 -timeout 20m` | 全部单元/集成测试（Linux，无 `-race`） | 绿（同 run step 7） |
 | `go test -race` **逐个包**（`go list ./...` 循环，失败继续跑下一个） | 竞态检测（本机配方见下） | **runner 绿**：run 37408647484 step 9 `go test -race` success（整个 job 2 分 28 秒）；本机同样 36 个包全绿（218 秒，0 条 `DATA RACE`） |
 | `.\tools\go.cmd run .\cmd\verify*` | 2353 条 Go 端到端断言 | **runner 绿**：run 37413713212（head `6ec3554`）的 `curl gates` job step 12 `go verify gates (M0-M6)` success —— 这是它第一次在 runner 上跑；本机 31 秒跑完七包、2353/2353、写 marker 0 |
-| `.\scripts\verify-m*.ps1` + `verify-hardening.ps1` | 1073 条 curl 端到端断言 + 44 条管理面令牌断言 | **绿**：`curl gates (M0-M6, operator token)` job 在 run 37408647484 上 1 分 55 秒跑完，八个门（M0–M6 + operator token）全部 success——那次还没有 `go verify gates (M0-M6)`，也还没有反制步骤；run 37413713212 上是九个门全 success（head `6ec3554`，多了那个 Go 门，该 job 2 分 15 秒） |
+| `.\scripts\verify-m*.ps1` + `verify-hardening.ps1` | 1076 条 curl 端到端断言 + 44 条管理面令牌断言 | **绿**：`curl gates (M0-M6, operator token)` job 在 run 37408647484 上 1 分 55 秒跑完，八个门（M0–M6 + operator token）全部 success——那次还没有 `go verify gates (M0-M6)`，也还没有反制步骤；run 37413713212 上是九个门全 success（head `6ec3554`，多了那个 Go 门，该 job 2 分 15 秒） |
 | `scripts/lib/summarize-gates.ps1`（job 内**唯一**不允许失败的一步） | 9 个门（八个 curl + 一个 Go）的 marker 文件都在且都写着 0 | **绿**：run 37413713212（head `6ec3554`）step 13 `every gate must have passed` success，它前面**九个门步骤全部 success**——第一次读齐九个 marker；更早的 run 37410701867（head `e248c7a`）step 12 是只有八个门时的同一结论；本机 5 个用例全过（见下） |
 | `scripts/verify-docker-profile.ps1` | 20 条容器画像断言（真二进制、真端口、真 miniredis） | 绿（本机 25 秒，见下「容器的证据边界」） |
 
@@ -478,7 +486,7 @@ There is not enough space on the disk.` 与 `compile: writing output: write .\.g
 | 单元 / 集成测试 | 全绿 | `go test ./...` exit 0（gateway / router / breaker / stats / sse / miniyaml） |
 | 静态检查 | 全绿 | `go vet ./...` exit 0 |
 | Go 端到端 | 64/64 断言通过 | `go run ./cmd/verify-m1` |
-| curl 端到端 | 56/56 断言通过 | `scripts/verify-m1.ps1` |
+| curl 端到端 | 58/58 断言通过 | `scripts/verify-m1.ps1` |
 | 优先级路由 | 无异常时第一名恒为 priority=1 | `TestPriorityIsTheDefaultOrder`、verify-m1 段 3 |
 | 成本排序 | 更便宜的后端胜过更优先的贵后端 | `TestCostOrderingBeatsPriority`、`TestFreeBackendWinsOnCost` |
 | 延迟排序 | 按窗口实测均值排，没测过的排最后 | `TestLatencyOrderingUsesTheMeasuredWindow`、`TestUnmeasuredBackendSortsLast` |

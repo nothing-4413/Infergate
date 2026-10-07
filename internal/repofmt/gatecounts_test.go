@@ -209,7 +209,7 @@ func TestEveryQuotedGateCountMatchesTheTable(t *testing.T) {
 			what:         "a docs/DESIGN.md bullet about a Go gate",
 			rx:           regexp.MustCompile("`cmd/verify(?:-m(\\d))?`（[^）]{0,40}?(\\d+)\\s*条断言"),
 			milestoneGrp: 1, countGrp: 2},
-		{ // "`scripts/verify-m1.ps1`（curl，56 条断言）"
+		{ // "`scripts/verify-m1.ps1`（curl，58 条断言）"
 			what:         "a docs/DESIGN.md bullet about a curl gate",
 			rx:           regexp.MustCompile("`scripts/verify-m(\\d)\\.ps1`（[^）]{0,40}?(\\d+)\\s*条断言"),
 			milestoneGrp: 1, countGrp: 2, curl: true},

@@ -59,7 +59,7 @@ verify-m1:
 ## verify-m1-curl: the same claims through the real binary and real curl.exe,
 ## over a real three-replica fleet on :19100-19102 (the M0 lesson: the in-process
 ## gate proves the gateway is correct, a real fleet proves it is operable).
-## 56 assertions.
+## 58 assertions.
 verify-m1-curl:
 	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-m1.ps1
 
@@ -181,8 +181,8 @@ verify-m6:
 
 ## verify-m6-curl: the same claims through the real binary and real curl.exe over
 ## a real scripted upstream process, with the mock's /calls counter as the
-## external witness that a replay caused zero extra provider calls.  151
-## assertions; the seven gates' curl rows add up to 1073 assertions.
+## external witness that a replay caused zero extra provider calls.  152
+## assertions; the seven gates' curl rows add up to 1076 assertions.
 verify-m6-curl:
 	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-m6.ps1
 

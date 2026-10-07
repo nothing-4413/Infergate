@@ -99,7 +99,7 @@ curl.exe -s "$base/metrics"   # Prometheus 文本
 .\tools\go.cmd run .\cmd\verify                                        # M0，38 条断言
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m0.ps1   # M0 curl，47 条
 .\tools\go.cmd run .\cmd\verify-m1                                     # M1，64 条断言
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m1.ps1   # M1 curl，56 条
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m1.ps1   # M1 curl，58 条
 .\tools\go.cmd run .\cmd\verify-m2                                     # M2，103 条断言
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m2.ps1   # M2 curl，158 条（内存 + Redis）
 .\tools\go.cmd run .\cmd\verify-m3                                     # M3，470 条断言
@@ -109,7 +109,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m4.ps1   # 
 .\tools\go.cmd run .\cmd\verify-m5                                     # M5，420 条断言
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m5.ps1   # M5 curl，211 条
 .\tools\go.cmd run .\cmd\verify-m6                                     # M6，381 条断言
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m6.ps1   # M6 curl，151 条（幂等 / 账本 / 能力发现）
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m6.ps1   # M6 curl，152 条（幂等 / 账本 / 能力发现）
 ```
 
 `scripts/verify-m0.ps1` 会自行编译两个二进制、拉起两个真实进程、跑完 47 条断言，并在 `finally` 中
@@ -342,7 +342,7 @@ pricing:                        # USD / 1M tokens；cost 策略与日志里的 c
 
 ```powershell
 .\tools\go.cmd run .\cmd\verify-m1                                            # 64/64 断言
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m1.ps1    # 56/56 断言
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m1.ps1    # 58/58 断言
 ```
 
 `scripts/verify-m1.ps1` 自己编译二进制、拉起三个副本和一个网关，依次验证：优先级路由 → 杀掉一个
@@ -905,7 +905,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\measure-m4.ps1  # 
   根本没有自定义头参数，所以它量的是 M6 接线的每请求固定成本，不是"存下一条答案"的成本。
 
 
-验收：Go `cmd/verify-m6` **381** 条断言 + 真实进程 curl `scripts/verify-m6.ps1` **151** 条断言
+验收：Go `cmd/verify-m6` **381** 条断言 + 真实进程 curl `scripts/verify-m6.ps1` **152** 条断言
 （上游是仓库内可脚本化的 `cmd/mockupstream`，并用它自己的 `GET /calls` 作外部证人——"两次客户端尝试、
 上游只被调用一次"这句话由上游数出来，不是由网关自己声称）+ `scripts/measure-m6.ps1` 的检查全部通过。
 设计取舍与全部口径见 `docs/DESIGN.md` §13。

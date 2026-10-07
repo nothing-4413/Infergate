@@ -7,7 +7,7 @@
 稳定性治理、本地推理服务化与全链路可观测。它同时是另一个 Agent 项目 Warden 的底层模型接入层。
 
 **M0–M6 七个里程碑全部完成**，每个里程碑都有两条互相独立的验收路径和一份可复现的实测数据：
-Go 进程内端到端 **2353** 条断言、真实进程 + 真实 `curl.exe` **1073** 条断言，两条都绿；
+Go 进程内端到端 **2353** 条断言、真实进程 + 真实 `curl.exe` **1076** 条断言，两条都绿；
 `go test ./...` 与 `go vet ./...` 均 exit 0。原始数据见 `docs/baseline/`。
 
 - **透传正确性**：OpenAI 兼容协议 + SSE 逐帧透传，`tool_call` 增量按 `index` 拼回合法 JSON；
@@ -36,7 +36,7 @@ Go 进程内端到端 **2353** 条断言、真实进程 + 真实 `curl.exe` **10
 .\tools\go.cmd run .\cmd\infergate -config .\configs\mock.yaml -check   # 只校验配置
 ```
 
-想要"真进程 + 真 socket"那一侧，是第 3.2 节的两条启动命令加第 3.3 节的一条验收命令（151 条 `curl.exe` 断言）；
+想要"真进程 + 真 socket"那一侧，是第 3.2 节的两条启动命令加第 3.3 节的一条验收命令（152 条 `curl.exe` 断言）；
 不想开三个终端就 `docker compose up -d --build`，见第 3.5 节。
 
 三条路径的细节在[第 3 节](#3-快速开始)，量化结论在第 5 节，**没做到的事**写在第 10 节。
@@ -142,13 +142,13 @@ mock 的常用开关：`-token-delay 0` 关掉每 token 的 15ms 间隔（**压�
 | 里程碑 | Go 门（`.\tools\go.cmd run .\cmd\verify-mN`） | curl 门（`.\scripts\verify-mN.ps1`） |
 | --- | --- | --- |
 | M0 透传与 SSE | `cmd/verify` — 38 条 | 47 条 |
-| M1 路由与熔断 | `cmd/verify-m1` — 64 条 | 56 条 |
+| M1 路由与熔断 | `cmd/verify-m1` — 64 条 | 58 条 |
 | M2 语义缓存 | `cmd/verify-m2` — 103 条 | 158 条 |
 | M3 配额治理 | `cmd/verify-m3` — 470 条 | 323 条 |
 | M4 分层与量化 | `cmd/verify-m4` — 877 条 | 127 条 |
 | M5 可观测与压测 | `cmd/verify-m5` — 420 条 | 211 条 |
-| M6 幂等/账本/能力 | `cmd/verify-m6` — 381 条 | 151 条 |
-| **合计** | **2353 条** | **1073 条** |
+| M6 幂等/账本/能力 | `cmd/verify-m6` — 381 条 | 152 条 |
+| **合计** | **2353 条** | **1076 条** |
 
 `合计` 行不是手抄的：`internal/repofmt` 的 `TestDocumentedGateTotalsAreTheSumOfTheirRows` 会把这张表
 与 [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) 的门禁总表逐行对照、并核对每一句重述总数的句子——M5 那
@@ -421,7 +421,7 @@ access:
   - job 日志（`GET /actions/jobs/{id}/logs`）与 artifact 下载对匿名读者都是 **403**
     （`{"message":"Must have admin rights to Repository.", "status":403}`）。
 - **九个门步骤都带 `continue-on-error: true`，所以它们自己从来不能让 job 变红**：job 里全是允许失败的
-  步骤，等于整条 Windows 验收链（1073 条 curl 断言 + 2353 条进程内 Go 断言）即使全红，job、run、徽章、
+  步骤，等于整条 Windows 验收链（1076 条 curl 断言 + 2353 条进程内 Go 断言）即使全红，job、run、徽章、
   匿名 jobs API 也都会报 `success`。GitHub 的定义就是针对这种情况写的（contexts 参考，
   `steps.<step_id>.conclusion`）：
   *"When a `continue-on-error` step fails, the `outcome` is `failure`, but the final `conclusion` is
