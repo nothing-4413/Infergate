@@ -69,6 +69,10 @@ $baseConfig = Join-Path $repo 'configs\tiered-local.yaml'
 $strictConfig = Join-Path $repo 'configs\tiered.yaml'
 $artifact = Join-Path $baselineDir 'm4-summary.json'
 
+# The price reader is shared with scripts\verify-m4.ps1 so the two scripts cannot
+# disagree about which prices the config under test carries.
+. (Join-Path $PSScriptRoot 'lib\pricing.ps1')
+
 foreach ($d in @($binDir, $tmpDir, $baselineDir)) {
     if (-not (Test-Path -LiteralPath $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
 }
@@ -695,58 +699,10 @@ function New-VariantSummary {
 # therefore (local tokens) x (list price), and the avoided fraction is that
 # spend over what the whole mix would have cost. There is no cost metric to
 # read, so this is derived from configured prices and measured token counts.
+#
+# The reader that pulls those prices out of the loaded config is shared with
+# scripts\verify-m4.ps1: scripts\lib\pricing.ps1, dot-sourced under Layout.
 # ---------------------------------------------------------------------------
-
-function Get-PricingFromConfig {
-    param([string]$Text)
-    $lines = $Text -split "`r?`n"
-    $inPricing = $false
-    $inModels = $false
-    $default = $null
-    $models = [ordered]@{}
-    $pending = ''
-    foreach ($line in $lines) {
-        $clean = ($line -replace '#.*$', '')
-        if ($clean.Trim().Length -eq 0) { continue }
-        $indent = $clean.Length - $clean.TrimStart().Length
-        $t = $clean.Trim()
-        if ($t -match '^pricing:\s*$') { $inPricing = $true; $inModels = $false; continue }
-        if ($inPricing) {
-            if ($indent -eq 0) { $inPricing = $false; $inModels = $false; continue }
-            if ($t -match '^default:\s*\{\s*in:\s*([0-9.]+)\s*,\s*out:\s*([0-9.]+)\s*\}\s*$') {
-                $default = [ordered]@{ in = [double]$Matches[1]; out = [double]$Matches[2] }
-                continue
-            }
-            if ($t -match '^models:\s*$') { $inModels = $true; $pending = ''; continue }
-            # `default:` comes in two shapes: the inline flow form
-            # `default: {in: 1.0, out: 3.0}` and the nested block form
-            # configs\tiered-local.yaml actually uses, i.e. `default:` followed
-            # by indented `in:`/`out:` lines. Both are handled; the nested form
-            # is tracked through $pending exactly like the models entries.
-            if ($t -match '^default:\s*$') { $pending = 'default'; $default = [ordered]@{ in = 0.0; out = 0.0 }; continue }
-            if ($pending -eq 'default' -and $t -match '^in:\s*([0-9.]+)\s*$') { $default['in'] = [double]$Matches[1]; continue }
-            if ($pending -eq 'default' -and $t -match '^out:\s*([0-9.]+)\s*$') { $default['out'] = [double]$Matches[1]; continue }
-            if ($inModels) {
-                if ($t -match '^([A-Za-z0-9._/-]+):\s*\{\s*in:\s*([0-9.]+)\s*,\s*out:\s*([0-9.]+)\s*\}\s*$') {
-                    $models[$Matches[1]] = [ordered]@{ in = [double]$Matches[2]; out = [double]$Matches[3] }
-                    $pending = ''
-                    continue
-                }
-                if ($t -match '^([A-Za-z0-9._/-]+):\s*$') { $pending = $Matches[1]; continue }
-                if ($pending -ne '' -and $t -match '^in:\s*([0-9.]+)\s*$') {
-                    $models[$pending] = [ordered]@{ in = [double]$Matches[1]; out = 0.0 }
-                    continue
-                }
-                if ($pending -ne '' -and $t -match '^out:\s*([0-9.]+)\s*$') {
-                    if ($models.Contains($pending)) { $models[$pending]['out'] = [double]$Matches[1] }
-                    $pending = ''
-                    continue
-                }
-            }
-        }
-    }
-    return [pscustomobject]@{ Default = $default; Models = $models }
-}
 
 # ---------------------------------------------------------------------------
 # Main

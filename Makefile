@@ -137,7 +137,7 @@ verify-m4:
 ## verify-m4-curl: the same claims through the real binary and real curl.exe over
 ## two mock tiers (a "local" one and a "cloud" one), so the gate needs no GPU and
 ## runs anywhere.  The REAL vLLM local tier is measured by measure-m4 instead.
-## 125 assertions.
+## 127 assertions.
 verify-m4-curl:
 	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-m4.ps1
 
@@ -182,7 +182,7 @@ verify-m6:
 ## verify-m6-curl: the same claims through the real binary and real curl.exe over
 ## a real scripted upstream process, with the mock's /calls counter as the
 ## external witness that a replay caused zero extra provider calls.  149
-## assertions; the seven gates' curl rows add up to 1068 assertions.
+## assertions; the seven gates' curl rows add up to 1070 assertions.
 verify-m6-curl:
 	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-m6.ps1
 

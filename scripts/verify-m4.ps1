@@ -71,6 +71,11 @@ $script:cloudProc = $null
 $script:utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $script:variantPaths = @{}
 
+# The price reader is shared with scripts\measure-m4.ps1: section 12 derives money
+# from the prices the config under test carries, and both scripts have to read
+# them the same way.
+. (Join-Path $PSScriptRoot 'lib\pricing.ps1')
+
 # ---------------------------------------------------------------------------
 # Assertions
 # ---------------------------------------------------------------------------
@@ -900,22 +905,45 @@ try {
     Assert-True 'the cloud tier reported prompt tokens for its two requests' ($cloudPrompt -gt 0) "cloud prompt delta=$cloudPrompt"
     Assert-True 'the cloud tier reported completion tokens for its two requests' ($cloudCompletion -gt 0) "cloud completion delta=$cloudCompletion"
 
-    # configs/tiered-local.yaml, USD per 1e6 tokens:
-    #   pricing.models.local-chat = {in: 0.27, out: 1.1}   (the alias every request uses)
-    #   pricing.default          = {in: 1.0,  out: 3.0}
-    # Both mock replicas echo the requested alias, so the gateway prices BOTH
-    # tiers' responses under local-chat: the cloud tier's list price is the
-    # pricing.default entry, which the router's cost weights compare against.
+    # The prices come out of the config the gateway loaded -- $instantiated is the
+    # exact text written to $configPath -- instead of sitting next to the
+    # arithmetic as a second copy: a price edited in configs\tiered-local.yaml
+    # would otherwise leave this gate green while its own arithmetic priced a
+    # config nobody runs.
+    #
+    # configs\tiered-local.yaml prices the alias every request uses
+    # (pricing.models.local-chat) and, for any model it does not name,
+    # pricing.default -- which is also what the router's cost weights compare a
+    # tier against. Both mock replicas echo the requested alias, so the gateway
+    # itself charges every response the local-chat price; the cloud figure below
+    # is therefore the counterfactual list price of the same tokens, not a bill.
     # There is no infergate cost metric, so the money is:
-    #   local spend = (localPrompt * 0.27 + localCompletion * 1.1) / 1e6
-    #   cloud spend = (cloudPrompt * 1.0  + cloudCompletion * 3.0) / 1e6
+    #   local spend = (localPrompt * local-chat.in + localCompletion * local-chat.out) / 1e6
+    #   cloud spend = (cloudPrompt * default.in  + cloudCompletion * default.out)  / 1e6
     # and the split is exactly what the tier policy is supposed to buy.
-    $localCostUSD = (($localPrompt * 0.27) + ($localCompletion * 1.1)) / 1000000.0
-    $cloudCostUSD = (($cloudPrompt * 1.0) + ($cloudCompletion * 3.0)) / 1000000.0
+    $pricing = Get-PricingFromConfig -Text $instantiated
+    Assert-True 'the config under test prices the alias every request uses (pricing.models.local-chat)' `
+        ($pricing.Models.Contains('local-chat')) "read $configPath"
+    Assert-True 'the config under test carries the fallback list price (pricing.default)' `
+        ($null -ne $pricing.Default) "read $configPath"
+
+    $localIn = 0.0; $localOut = 0.0
+    if ($pricing.Models.Contains('local-chat')) {
+        $localIn = [double]$pricing.Models['local-chat']['in']
+        $localOut = [double]$pricing.Models['local-chat']['out']
+    }
+    $cloudIn = 0.0; $cloudOut = 0.0
+    if ($null -ne $pricing.Default) {
+        $cloudIn = [double]$pricing.Default['in']
+        $cloudOut = [double]$pricing.Default['out']
+    }
+
+    $localCostUSD = (($localPrompt * $localIn) + ($localCompletion * $localOut)) / 1000000.0
+    $cloudCostUSD = (($cloudPrompt * $cloudIn) + ($cloudCompletion * $cloudOut)) / 1000000.0
     Write-Host ("        derived spend for the mix: local=`${0:F6} cloud=`${1:F6}" -f $localCostUSD, $cloudCostUSD) -ForegroundColor DarkGray
-    Assert-True 'the derived local-tier spend for the mix is positive (0.27 in / 1.1 out per 1e6)' ($localCostUSD -gt 0) `
+    Assert-True "the derived local-tier spend for the mix is positive (pricing.models.local-chat in $localIn / out $localOut per 1e6)" ($localCostUSD -gt 0) `
         "localCostUSD=$localCostUSD"
-    Assert-True 'the derived cloud-tier spend for the mix is positive (1.0 in / 3.0 out per 1e6)' ($cloudCostUSD -gt 0) `
+    Assert-True "the derived cloud-tier spend for the mix is positive (pricing.default in $cloudIn / out $cloudOut per 1e6)" ($cloudCostUSD -gt 0) `
         "cloudCostUSD=$cloudCostUSD"
     Assert-True 'a locally served request is cheaper than the same request in the cloud' `
         ($localCostUSD -lt $cloudCostUSD) `

@@ -431,7 +431,7 @@ mock 注入延迟 0），每阶段 1500 请求 + 300 预热，**取 3 轮的 QPS
   真的产生账单，成本是**按挂牌价折算**而不是计费；一致率是"文本漂移"不是准确率（12 条 prompt、单并发、
   一轮，给的是差异不是分布）；显存增量含 KV cache 预分配与 Windows 桌面占用；分流只覆盖两种固定形态
   （16 条、单并发、非流式），证明的是这个 mix 下的分类与分流，不是负载下的行为。
-- 验收：Go 端到端 `cmd/verify-m4` **877** 条断言 + 真实进程 curl 门禁 `scripts\verify-m4.ps1` **125** 条
+- 验收：Go 端到端 `cmd/verify-m4` **877** 条断言 + 真实进程 curl 门禁 `scripts\verify-m4.ps1` **127** 条
   断言（两个假 tier，不需要 GPU）+ `scripts/measure-m4.ps1` 实测 **63** 条断言。
   复现命令 `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\measure-m4.ps1 -SkipBench`。
 
@@ -689,4 +689,4 @@ JSONL 59400 行 == `export_stats.jsonl.written` 且每行都能解析出 `trace_
 > `/v1/capabilities` 让 Agent 在压缩历史前知道模型能装多少上下文，活体探测故意绕过缓存/配额/熔断，
 > 因为探测是诊断流量——顺带在门禁里抓出并钉死了"`Idempotency-Key` 会透传给上游"这个会跨租户串答案的
 > 缺陷），
-> 双路端到端验收（Go 2353 条 + 真实进程 curl 1068 条）保证可验证性。
+> 双路端到端验收（Go 2353 条 + 真实进程 curl 1070 条）保证可验证性。
