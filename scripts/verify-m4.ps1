@@ -105,11 +105,6 @@ function Assert-True {
     }
 }
 
-function Assert-That {
-    param([string]$Label, [bool]$Condition, [string]$Detail = '')
-    Assert-True $Label $Condition $Detail
-}
-
 function Assert-Equal {
     param([string]$Label, $Expected, $Actual, [string]$Extra = '')
     Assert-True $Label ($Expected -eq $Actual) "expected '$Expected', got '$Actual'$Extra"

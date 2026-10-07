@@ -100,12 +100,6 @@ function Assert-True {
     }
 }
 
-function Assert-That {
-    <# Same contract as Assert-True, under the name the section text uses. #>
-    param([string]$Label, [bool]$Condition, [string]$Detail = '')
-    Assert-True $Label $Condition $Detail
-}
-
 function Assert-Equal {
     <#
         $Extra is context for the failure line only, and it exists because six

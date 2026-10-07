@@ -108,8 +108,6 @@ function Assert-True {
     }
 }
 
-Set-Alias -Name Assert-That -Value Assert-True
-
 function Assert-Equal {
     param([string]$Label, $Expected, $Actual, [string]$Extra = '')
     $ok = ("$Expected" -ceq "$Actual")

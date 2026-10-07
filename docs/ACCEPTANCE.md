@@ -685,7 +685,9 @@ M2 的取舍与已知边界（同样写在代码注释里）：
    带出 `powershell pid=109776`；还原后的文件 SHA256 与变异前一致。
    `internal/repofmt/asserts_test.go` 的 `TestAssertionCallsDoNotOutrunTheirHelpers` 钉住这一类：它按**每个
    脚本自己**的 `Assert-*` 声明数核对调用点绑定的实参个数（位置实参，加上用 `-命名` 绑定的参数），判定
-   1282 个调用点（其中 14 个绑定了命名参数）、39 个声明；把 `Assert-Equal` 改回 3 参即恰好报出那 6 处。
+   1280 个调用点（其中 14 个绑定了命名参数）、37 个声明；把 `Assert-Equal` 改回 3 参即恰好报出那 6 处。
+   这份清单里没有 `Assert-That`：`verify-m3.ps1` 与 `verify-m4.ps1` 各有一份没人调用的同名包装、
+   `verify-m5.ps1` 里有一个指向它的 `Set-Alias`，三处都没有调用点，已按死代码删除。
 2. **桶名断言本来会跨 UTC 边界误红**：报告里的 `day`/`minute` 是网关读时钟时算出的桶（`internal/quota` 的
    `dayBucket`/`minuteBucket`），而断言是再读一次 `Get-DayBucket`/`Get-MinuteBucket` 比相等——两次读之间
    跨过一次 UTC 分钟（窗口只有几十毫秒）就会红在时钟上、不是红在产品上。现在两次时钟读数夹住报告请求，
