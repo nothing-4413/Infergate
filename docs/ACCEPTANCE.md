@@ -43,11 +43,14 @@ Makefile 里每个 `verify-*` target 上方那段 `##` 注释也被它读：注�
 （围栏代码块是引用而不是主张，所以整块跳过）、引用只点名符号而不写行号、点到的测试名必须真的被树里某个
 `func Test...` 定义（`TestCitedTestNamesExist`：本文 M3 表里三个名字从来没有存在过，其中两个改到真名、
 第三个的名字本次才补上真测试，`acb8cf2`）、每一处 `§N.M` 章节引用都要是某份文档真的用标题拥有的编号
-（`TestCitedSectionsExist`：36 条引用对着 6 份文档的 104 个编号标题；引的是哪份文档看它前面的标签，没写
-标签就只要任何一份文档有那个编号——正文里 `§12.5` 常出现在上一句已点名 DESIGN 的地方；点 RFC 的行跳过，
-那一节属于 RFC 自己。这一条本次才加，加之前 36 条全部可解析，只是没有东西看着它们）、每一句 Markdown
+（`TestCitedSectionsExist`：每一处引用都要落在某份文档真的用标题拥有的编号上；引的是哪份文档看它前面的标签，
+没写标签就只要任何一份文档有那个编号——正文里 `§12.5` 常出现在上一句已点名 DESIGN 的地方；点 RFC 的行跳过，
+那一节属于 RFC 自己。这一条本次才加，加之前每一处引用都可解析，只是没有东西看着它们）、每一句 Markdown
 链接连同它的标题锚点都要能在树里解析。扫描面是 README、`docs` 与 `deploy` 下的 markdown、`configs` 下的
-yaml，外加 Makefile、compose 文件、Dockerfile 与 `.github` 下的 workflow。行号这一条还多走一层：
+yaml，外加 Makefile、compose 文件、Dockerfile 与 `.github` 下的 workflow。还有一类数字说的是树本身的规模：
+`internal/repofmt/inventory_test.go` 的 `TestCitedTreeCountsMatchTheTree` 把散文里的"N 个包"与"N 份…配置"
+对着 `cmd`、`internal` 下含 Go 文件的目录数和 `configs/*.yaml` 的份数；这一条不跳围栏块，因为 README 里
+那份目录树本身就是在主张今天的树。行号这一条还多走一层：
 `TestCommentsCiteSymbolsNotLineNumbers` 读 `cmd`、
 `internal`、`scripts` 下 Go 与 PowerShell 文件的注释行（块注释和 here-string 算引用，跳过），因为
 `cmd/verify-m3/governance.go` 引 `internal/quota/quota.go` 三行、`internal/gateway/cachepath.go` 引
