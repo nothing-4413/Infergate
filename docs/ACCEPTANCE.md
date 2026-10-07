@@ -46,7 +46,8 @@ Makefile 里每个 `verify-*` target 上方那段 `##` 注释也被它读：注�
 （`TestCitedSectionsExist`：每一处引用都要落在某份文档真的用标题拥有的编号上；引的是哪份文档看它前面的标签，
 没写标签就只要任何一份文档有那个编号——正文里 `§12.5` 常出现在上一句已点名 DESIGN 的地方；点 RFC 的行跳过，
 那一节属于 RFC 自己。这一条本次才加，加之前每一处引用都可解析，只是没有东西看着它们）、每一句 Markdown
-链接连同它的标题锚点都要能在树里解析。扫描面是 README、`docs` 与 `deploy` 下的 markdown、`configs` 下的
+链接连同它的标题锚点都要能在树里解析。带包名的符号引用（`pkg.Symbol`、`pkg.Method`、`pkg.Type.Member`）
+另有一份守卫，见符号名那一段。扫描面是 README、`docs` 与 `deploy` 下的 markdown、`configs` 下的
 yaml，外加 Makefile、compose 文件、Dockerfile 与 `.github` 下的 workflow。还有一类数字说的是树本身的规模：
 `internal/repofmt/inventory_test.go` 的 `TestCitedTreeCountsMatchTheTree` 把散文里的"N 个包"与"N 份…配置"
 对着 `cmd`、`internal` 下含 Go 文件的目录数和 `configs/*.yaml` 的份数；这一条不跳围栏块，因为 README 里
@@ -63,11 +64,15 @@ yaml，外加 Makefile、compose 文件、Dockerfile 与 `.github` 下的 workfl
 直到 `f1f26b6` 才改掉；现在"把行号写成词"和 `:NNN` 一样会报，条件是同一行还点了文件——这样 DESIGN 里引
 解析器报错 `line 55: unexpected indentation` 那种引用输出不会被误伤。
 注释里的**路径**仍然不查：脚本可以正当地点名自己马上要写的文件，这是这些检查分工留下的边界。
-符号名与成员名这一层同样不查：配额告警的计数曾被写成 `Stats.Alerts`，按名字读就是 `internal/stats` 的字段，
-而 `stats.Stats` 并没有这个成员，真正的计数在 `internal/quota/quota.go` 的 `quota.Stats`，由 `/admin/quota`
-与 `infergate_quota_alerts_total` 两个面报出；同一个常数也曾在两处漏写 `QuotaConfig` 这一层。这几处加上
-`Router.rand`，都是人读出来的，没有守卫看得见。所以一句话若在描述一个已经删掉的成员，就得用"曾经/当时"把
-时态说出来（`Router.rand` 那句现在就是这么写的），否则读者按名字去搜，只会搜到 `internal/router` 里那句
+符号名这一层只查一半：带包名的 `pkg.Symbol`、`pkg.Method`、`pkg.Type.Member` 由
+`internal/repofmt/citedsymbols_test.go` 的 `TestCitedSymbolsExist` 对着 `internal` 下每个包的导出名读
+（首段不是包名的整条跳过；`cache.threshold` 这种配置键形状因为成员名小写而不匹配），剩下没有包名的
+`Stats.Alerts`、成员名小写的 `Router.rand`、不在反引号里的名字仍然靠人读。配额告警的计数曾被写成 `Stats.Alerts`，
+按名字读就是 `internal/stats` 的字段，而 `stats.Stats` 并没有这个成员，真正的计数在
+`internal/quota/quota.go` 的 `quota.Stats`，由 `/admin/quota` 与 `infergate_quota_alerts_total`
+两个面报出；同一个常数也曾在 `docs/DESIGN.md` 与 `docs/RESUME.md` 两处漏写 `QuotaConfig` 这一层
+（`cf44b814` 补上）。所以一句话若在描述一个已经删掉的成员，就得用"曾经/当时"把时态说出来
+（`Router.rand` 那句现在就是这么写的），否则读者按名字去搜，只会搜到 `internal/router` 里那句
 "这里故意没有 rand 字段"。
 
 README 第一屏那几条量化结论（以及 RESUME 里同一批数字）也有对着记录的一层：
