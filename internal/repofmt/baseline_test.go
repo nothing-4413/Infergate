@@ -498,7 +498,8 @@ func TestHeadlineClaimsMatchTheBaseline(t *testing.T) {
 			path:  []string{"*", "errors"}, digits: 0,
 		},
 	}
-	if len(claims) < 80 {
+	claims = append(claims, m0Claims()...)
+	if len(claims) < 130 {
 		t.Fatalf("only %d claims; this check has been hollowed out", len(claims))
 	}
 
@@ -684,9 +685,17 @@ func marker(find map[string]any) string {
 	return " where " + strings.Join(parts, " ") + ":"
 }
 
+// toString renders a marker value for an error message. Numbers and booleans
+// are worth rendering: the M0 rows are selected by concurrency, and a message
+// that says concurrency="" tells the reader nothing about which row matched.
 func toString(value any) string {
-	if s, ok := value.(string); ok {
-		return s
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case float64:
+		return strconv.FormatFloat(typed, 'f', -1, 64)
+	case bool:
+		return strconv.FormatBool(typed)
 	}
 	return ""
 }
@@ -796,4 +805,146 @@ func singleNumber(t *testing.T, doc any, find map[string]any, path []string) flo
 		t.Fatalf("expected exactly one value at %s, found %d", strings.Join(path, "."), len(values))
 	}
 	return values[0]
+}
+
+// m0Claims pins the M0 comparison table in the RESUME: one row per phase in
+// docs/baseline/m0-baseline.json, every cell of a row read from that phase, and
+// the row's wording checked as one string, so a row that changes shape fails
+// even when the cell that moved is not the cell this entry reads. The phases
+// the README quotes by name are checked there as well as in the RESUME.
+func m0Claims() []baselineClaim {
+	type cell struct {
+		claim  baselineClaim
+		readme string // the README's wording, when it carries this one too
+	}
+	rows := []struct {
+		label       string
+		concurrency float64
+		stream      bool
+		phrase      string
+		cells       []cell
+	}{
+		{
+			label: "direct non-stream", concurrency: 8, stream: false,
+			phrase: "8393 [6678..10531] | 510us | 2.00ms | 3.00ms",
+			cells: []cell{
+				{claim: baselineClaim{quote: "8393", path: []string{"qps"}, digits: 0}, readme: "直连 c=8 8393 QPS"},
+				{claim: baselineClaim{quote: "6678", path: []string{"qps_min"}, digits: 0}},
+				{claim: baselineClaim{quote: "10531", path: []string{"qps_max"}, digits: 0}},
+				{claim: baselineClaim{quote: "510", path: []string{"p50"}, digits: 0, scale: 1e-3}},
+				{claim: baselineClaim{quote: "2.00", path: []string{"p95"}, digits: 2, scale: 1e-6}},
+				{claim: baselineClaim{quote: "3.00", path: []string{"p99"}, digits: 2, scale: 1e-6}},
+			},
+		},
+		{
+			label: "direct non-stream", concurrency: 32, stream: false,
+			phrase: "7831 [5666..12109] | 3.50ms | 8.02ms | 12.01ms",
+			cells: []cell{
+				{claim: baselineClaim{quote: "7831", path: []string{"qps"}, digits: 0}},
+				{claim: baselineClaim{quote: "5666", path: []string{"qps_min"}, digits: 0}},
+				{claim: baselineClaim{quote: "12109", path: []string{"qps_max"}, digits: 0}},
+				{claim: baselineClaim{quote: "3.50", path: []string{"p50"}, digits: 2, scale: 1e-6}},
+				{claim: baselineClaim{quote: "8.02", path: []string{"p95"}, digits: 2, scale: 1e-6}},
+				{claim: baselineClaim{quote: "12.01", path: []string{"p99"}, digits: 2, scale: 1e-6}},
+			},
+		},
+		{
+			label: "gateway non-stream", concurrency: 8, stream: false,
+			phrase: "5026 [2837..7359] | 1.00ms | 3.50ms | 4.50ms",
+			cells: []cell{
+				{claim: baselineClaim{quote: "5026", path: []string{"qps"}, digits: 0}, readme: "经网关 5026 QPS"},
+				{claim: baselineClaim{quote: "2837", path: []string{"qps_min"}, digits: 0}},
+				{claim: baselineClaim{quote: "7359", path: []string{"qps_max"}, digits: 0}},
+				{claim: baselineClaim{quote: "1.00", path: []string{"p50"}, digits: 2, scale: 1e-6}},
+				{claim: baselineClaim{quote: "3.50", path: []string{"p95"}, digits: 2, scale: 1e-6}},
+				{claim: baselineClaim{quote: "4.50", path: []string{"p99"}, digits: 2, scale: 1e-6}},
+			},
+		},
+		{
+			label: "gateway non-stream", concurrency: 32, stream: false,
+			phrase: "5496 [5140..7477] | 5.02ms | 11.00ms | 15.76ms",
+			cells: []cell{
+				{claim: baselineClaim{quote: "5496", path: []string{"qps"}, digits: 0}},
+				{claim: baselineClaim{quote: "5140", path: []string{"qps_min"}, digits: 0}},
+				{claim: baselineClaim{quote: "7477", path: []string{"qps_max"}, digits: 0}},
+				{claim: baselineClaim{quote: "5.02", path: []string{"p50"}, digits: 2, scale: 1e-6}},
+				{claim: baselineClaim{quote: "11.00", path: []string{"p95"}, digits: 2, scale: 1e-6}},
+				{claim: baselineClaim{quote: "15.76", path: []string{"p99"}, digits: 2, scale: 1e-6}},
+			},
+		},
+		{
+			label: "direct stream", concurrency: 8, stream: true,
+			phrase: "1728 [1655..2297] | 4.50ms | 7.00ms | 8.03ms | 502us | 2.00ms",
+			cells: []cell{
+				{claim: baselineClaim{quote: "1728", path: []string{"qps"}, digits: 0}},
+				{claim: baselineClaim{quote: "1655", path: []string{"qps_min"}, digits: 0}},
+				{claim: baselineClaim{quote: "2297", path: []string{"qps_max"}, digits: 0}},
+				{claim: baselineClaim{quote: "4.50", path: []string{"p50"}, digits: 2, scale: 1e-6}},
+				{claim: baselineClaim{quote: "7.00", path: []string{"p95"}, digits: 2, scale: 1e-6}},
+				{claim: baselineClaim{quote: "8.03", path: []string{"p99"}, digits: 2, scale: 1e-6}},
+				{claim: baselineClaim{quote: "502", path: []string{"ttft_p50"}, digits: 0, scale: 1e-3}},
+				{claim: baselineClaim{quote: "2.00", path: []string{"ttft_p95"}, digits: 2, scale: 1e-6}},
+			},
+		},
+		{
+			label: "direct stream", concurrency: 32, stream: true,
+			phrase: "1771 [1311..1771] | 20.02ms | 27.45ms | 34.91ms | 1.00ms | 3.50ms",
+			cells: []cell{
+				{claim: baselineClaim{quote: "1771", path: []string{"qps"}, digits: 0}},
+				{claim: baselineClaim{quote: "1311", path: []string{"qps_min"}, digits: 0}},
+				{claim: baselineClaim{quote: "1771", path: []string{"qps_max"}, digits: 0}},
+				{claim: baselineClaim{quote: "20.02", path: []string{"p50"}, digits: 2, scale: 1e-6}},
+				{claim: baselineClaim{quote: "27.45", path: []string{"p95"}, digits: 2, scale: 1e-6}},
+				{claim: baselineClaim{quote: "34.91", path: []string{"p99"}, digits: 2, scale: 1e-6}},
+				{claim: baselineClaim{quote: "1.00", path: []string{"ttft_p50"}, digits: 2, scale: 1e-6}},
+				{claim: baselineClaim{quote: "3.50", path: []string{"ttft_p95"}, digits: 2, scale: 1e-6}},
+			},
+		},
+		{
+			label: "gateway stream", concurrency: 8, stream: true,
+			phrase: "1088 [820..1144] | 7.00ms | 11.09ms | 13.25ms | 999us | 2.74ms",
+			cells: []cell{
+				{claim: baselineClaim{quote: "1088", path: []string{"qps"}, digits: 0}},
+				{claim: baselineClaim{quote: "820", path: []string{"qps_min"}, digits: 0}},
+				{claim: baselineClaim{quote: "1144", path: []string{"qps_max"}, digits: 0}},
+				{claim: baselineClaim{quote: "7.00", path: []string{"p50"}, digits: 2, scale: 1e-6}},
+				{claim: baselineClaim{quote: "11.09", path: []string{"p95"}, digits: 2, scale: 1e-6}},
+				{claim: baselineClaim{quote: "13.25", path: []string{"p99"}, digits: 2, scale: 1e-6}},
+				{claim: baselineClaim{quote: "999", path: []string{"ttft_p50"}, digits: 0, scale: 1e-3}},
+				{claim: baselineClaim{quote: "2.74", path: []string{"ttft_p95"}, digits: 2, scale: 1e-6}},
+			},
+		},
+		{
+			label: "gateway stream", concurrency: 32, stream: true,
+			phrase: "1324 [1095..2125] | 22.86ms | 41.55ms | 51.55ms | 2.00ms | 10.81ms",
+			cells: []cell{
+				{claim: baselineClaim{quote: "1324", path: []string{"qps"}, digits: 0}},
+				{claim: baselineClaim{quote: "1095", path: []string{"qps_min"}, digits: 0}},
+				{claim: baselineClaim{quote: "2125", path: []string{"qps_max"}, digits: 0}},
+				{claim: baselineClaim{quote: "22.86", path: []string{"p50"}, digits: 2, scale: 1e-6}},
+				{claim: baselineClaim{quote: "41.55", path: []string{"p95"}, digits: 2, scale: 1e-6}},
+				{claim: baselineClaim{quote: "51.55", path: []string{"p99"}, digits: 2, scale: 1e-6}},
+				{claim: baselineClaim{quote: "2.00", path: []string{"ttft_p50"}, digits: 2, scale: 1e-6}},
+				{claim: baselineClaim{quote: "10.81", path: []string{"ttft_p95"}, digits: 2, scale: 1e-6}},
+			},
+		},
+	}
+
+	resumeOnly := []claimPrint{{file: "docs/RESUME.md"}}
+	var claims []baselineClaim
+	for _, row := range rows {
+		for _, c := range row.cells {
+			claim := c.claim
+			claim.file = "m0-baseline.json"
+			claim.find = map[string]any{"label": row.label, "concurrency": row.concurrency, "stream": row.stream}
+			claim.phrase = row.phrase
+			if c.readme != "" {
+				claim.docs = []claimPrint{{file: "README.md", phrase: c.readme}, {file: "docs/RESUME.md"}}
+			} else {
+				claim.docs = resumeOnly
+			}
+			claims = append(claims, claim)
+		}
+	}
+	return claims
 }
