@@ -369,7 +369,7 @@ mock 注入延迟 0），每阶段 1500 请求 + 300 预热，**取 3 轮的 QPS
   （`strategy=tiered tier=local reason=simple request prefers this tier`），没有新增指标标签。
 - 分类口径选**长度**不选模型名，理由写进了设计文档：本地上游配的是 catch-all（`models: ["/"]`），
   它能答任何模型名，所以模型名不携带难度信息，按模型名分层等于把"这条难不难"交给调用方；长度估算
-  零 I/O、且和 M3 的配额预扣共用 `config.EstimateCharsPerToken`，于是"长 prompt"对路由和配额是同一个
+  零 I/O、且和 M3 的配额预扣共用 `config.QuotaConfig.EstimateCharsPerToken`，于是"长 prompt"对路由和配额是同一个
   意思（边界是确定性的：1600 字节 = 估算 400 token，正好压在阈值上）。
 - 真机推理的三次依赖事故（都写进 DESIGN §11.4）：vLLM 0.31 只有 CUDA 13 轮子而本机驱动 560.94 只到
   12.6，torch 直接看不到卡（钉到 `vllm==0.11.0` + torch 2.8.0+cu128）；vLLM 对 transformers 只有下界，

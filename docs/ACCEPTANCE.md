@@ -61,6 +61,12 @@ yaml，外加 Makefile、compose 文件、Dockerfile 与 `.github` 下的 workfl
 直到 `f1f26b6` 才改掉；现在"把行号写成词"和 `:NNN` 一样会报，条件是同一行还点了文件——这样 DESIGN 里引
 解析器报错 `line 55: unexpected indentation` 那种引用输出不会被误伤。
 注释里的**路径**仍然不查：脚本可以正当地点名自己马上要写的文件，这是这些检查分工留下的边界。
+符号名与成员名这一层同样不查：配额告警的计数曾被写成 `Stats.Alerts`，按名字读就是 `internal/stats` 的字段，
+而 `stats.Stats` 并没有这个成员，真正的计数在 `internal/quota/quota.go` 的 `quota.Stats`，由 `/admin/quota`
+与 `infergate_quota_alerts_total` 两个面报出；同一个常数也曾在两处漏写 `QuotaConfig` 这一层。这几处加上
+`Router.rand`，都是人读出来的，没有守卫看得见。所以一句话若在描述一个已经删掉的成员，就得用"曾经/当时"把
+时态说出来（`Router.rand` 那句现在就是这么写的），否则读者按名字去搜，只会搜到 `internal/router` 里那句
+"这里故意没有 rand 字段"。
 
 README 第一屏那几条量化结论（以及 RESUME 里同一批数字）也有对着记录的一层：
 `internal/repofmt/baseline_test.go` 的
@@ -361,7 +367,7 @@ run: bash scripts/ci-publish-failure-check.sh "$CHECK_TITLE" /tmp/ci-summary-tes
 无 `-race` 时永远是绿的、在有 `-race` 的机器上必红。修法是 `atomic.Int64` 与一把 mutex
 （`internal/gateway/failover_test.go` 的 `TestBreakerStopsRoutingToADeadBackend` 里
 `primaryHits`/`backupHits` 用的就是 `atomic.Int64`）。同一次还修掉一个真实的生产竞态：
-`internal/router/router.go` 的 `Router.rand` 是 `*math/rand.Rand`（文档明示不可并发使用），而每个
+`internal/router/router.go` 曾经有一个 `Router.rand` 字段：`*math/rand.Rand`（文档明示不可并发使用），而每个
 请求 goroutine 都会经 `Plan` 走到 `orderWeighted`；现在改用包级 `rand.Float64`/`rand.Intn`。
 
 **但那还不是全部，而当时没有任何办法知道。** 2026-10-19 在这台机器上找到了一个一直存在的 C 编译器
