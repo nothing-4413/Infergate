@@ -499,7 +499,8 @@ func TestHeadlineClaimsMatchTheBaseline(t *testing.T) {
 		},
 	}
 	claims = append(claims, m0Claims()...)
-	if len(claims) < 140 {
+	claims = append(claims, m4SecondCopies()...)
+	if len(claims) < 145 {
 		t.Fatalf("only %d claims; this check has been hollowed out", len(claims))
 	}
 
@@ -966,6 +967,66 @@ func m0Claims() []baselineClaim {
 				}
 			}
 		}
+	}
+	return claims
+}
+
+// m4SecondCopies pins the two other copies of the M4 quantization readings. The
+// RESUME's copy is checked cell by cell above; docs/USAGE.md prints the same
+// three rows with fewer columns and docs/DESIGN.md prints the same readings as
+// prose, and a number that moves in one of those two places is exactly the drift
+// nothing was watching. Each entry names the whole USAGE row, or the DESIGN
+// sentence it sits in, as its wording, so a wrong column or a rewritten sentence
+// fails even when the field that entry reads is a different one.
+func m4SecondCopies() []baselineClaim {
+	type copyClaim struct {
+		variant string
+		path    []string
+		quote   string
+		digits  int
+		doc     string
+		phrase  string
+	}
+	copies := []copyClaim{
+		{
+			variant: "fp16", path: []string{"ttft_ms", "p50"}, quote: "35.2", digits: 1,
+			doc:    "docs/USAGE.md",
+			phrase: "| FP16（参照） | 3.09 GB | 58s | 35.2ms | 1758.5ms | 41.5 | 6169 MiB | — | — |",
+		},
+		{
+			variant: "awq", path: []string{"ttft_ms", "p50"}, quote: "28.1", digits: 1,
+			doc:    "docs/USAGE.md",
+			phrase: "| AWQ（4bit, group 128） | 1.61 GB | 60s | 28.1ms | 699.5ms | **100.7** | 6921 MiB | 0/12 | 0.444 |",
+		},
+		{
+			variant: "gptq", path: []string{"ttft_ms", "p50"}, quote: "28.7", digits: 1,
+			doc:    "docs/USAGE.md",
+			phrase: "| GPTQ-Int4 | 1.15 GB | 55s | 28.7ms | 723.6ms | 95.3 | 7353 MiB | 1/12 | 0.460 |",
+		},
+		{
+			variant: "fp16", path: []string{"total_ms", "p50"}, quote: "1758.5", digits: 1,
+			doc:    "docs/DESIGN.md",
+			phrase: "fp16 首字 P50 35.2ms / 端到端 P50 1758.5ms / 41.5 tok·s⁻¹ / 权重 3.09 GB",
+		},
+		{
+			variant: "awq", path: []string{"throughput", "output_tokens_per_s_request_wall"}, quote: "100.7", digits: 1,
+			doc:    "docs/DESIGN.md",
+			phrase: "100.7 tok·s⁻¹ / 1.61 GB",
+		},
+		{
+			variant: "gptq", path: []string{"total_ms", "p50"}, quote: "723.6", digits: 1,
+			doc:    "docs/DESIGN.md",
+			phrase: "GPTQ-Int4 28.7ms / 723.6ms / 95.3 tok·s⁻¹ / 1.15 GB",
+		},
+	}
+
+	claims := make([]baselineClaim, 0, len(copies))
+	for _, c := range copies {
+		claims = append(claims, baselineClaim{
+			quote: c.quote, file: "m4-summary.json", find: map[string]any{"variant": c.variant},
+			path: c.path, digits: c.digits,
+			docs: []claimPrint{{file: c.doc, phrase: c.phrase}},
+		})
 	}
 	return claims
 }
