@@ -111,6 +111,41 @@ function Read-Text {
     try { return $reader.ReadToEnd() } finally { $reader.Dispose() }
 }
 
+function Get-ConfigScalar {
+    param([string]$Text, [string]$Block, [string]$Key)
+    # A top-level block is named at column zero and owns everything indented
+    # under it, up to the next column-zero line. Scoping the lookup that way is
+    # what lets `ttl` come from the replay store rather than from whichever
+    # `ttl` happens to appear first in the file.
+    $b = [regex]::Match($Text, "(?ms)^$([regex]::Escape($Block)):[^\r\n]*\r?\n(.*?)(?=^\S|\z)")
+    if (-not $b.Success) { return $null }
+    $k = [regex]::Match($b.Groups[1].Value, "(?m)^\s*$([regex]::Escape($Key)):\s*([^\s#]+)")
+    if (-not $k.Success) { return $null }
+    return $k.Groups[1].Value.Trim('"')
+}
+
+function Get-DurationSeconds {
+    param([string]$Text)
+    # Go renders a ten-minute TTL as "10m0s" and the config writes "10m": the
+    # same value in two spellings. Both sides are folded to seconds before they
+    # are compared, so the gate is testing the value and not the spelling.
+    # `ms` leads the alternation because a bare `m` would eat its first letter.
+    $total = 0.0
+    $seen = $false
+    foreach ($m in [regex]::Matches("$Text", '([0-9]+(?:\.[0-9]+)?)(ms|h|m|s)')) {
+        $v = [double]$m.Groups[1].Value
+        switch ($m.Groups[2].Value) {
+            'ms' { $total += $v / 1000.0 }
+            's' { $total += $v }
+            'm' { $total += $v * 60.0 }
+            'h' { $total += $v * 3600.0 }
+        }
+        $seen = $true
+    }
+    if (-not $seen) { return $null }
+    return $total
+}
+
 function New-BodyFile {
     <#
         Writes a JSON request body to a temp file and returns the '@path' form for
@@ -432,6 +467,20 @@ try {
     Assert-Contains 'the rendered config listens where the script expects' $cfg "127.0.0.1:$GatewayPort"
     Assert-Contains 'the rendered config points at the mock' $cfg "127.0.0.1:$MockPort"
 
+    # Sections 3 and 7 assert what the RUNNING gateway reports about the model
+    # table and the replay store. Those numbers belong to the config this script
+    # hands it, so they are read back out of that text: retuning the sample has
+    # to move the expectation with it, instead of turning a gateway that did
+    # exactly what it was configured to do red.
+    $policyContextWindow = Get-ConfigScalar -Text $cfg -Block 'models' -Key 'context_window'
+    $policyReplayCapacity = Get-ConfigScalar -Text $cfg -Block 'idempotency' -Key 'capacity'
+    $policyReplayTTL = Get-ConfigScalar -Text $cfg -Block 'idempotency' -Key 'ttl'
+    $policyReplayMaxBytes = Get-ConfigScalar -Text $cfg -Block 'idempotency' -Key 'max_response_bytes'
+    Assert-True 'the rendered config declares the model context window' `
+        ($null -ne $policyContextWindow) "read $cfgPath"
+    Assert-True 'the rendered config declares the replay store settings' `
+        ($null -ne $policyReplayCapacity -and $null -ne $policyReplayTTL -and $null -ne $policyReplayMaxBytes) "read $cfgPath"
+
     & (Join-Path $binDir 'infergate.exe') -config $cfgPath -check | Out-Null
     Assert-Equal 'the rendered config validates' 0 $LASTEXITCODE
 
@@ -464,7 +513,7 @@ try {
     $caps = Get-Json "$gwURL/v1/capabilities" 'capabilities'
     if ($caps) {
         Assert-Equal 'the gateway declares one model' 1 $caps.model_count
-        Assert-Equal 'the declared context window is reported' 128000 $caps.models[0].context_window
+        Assert-Equal "the declared context window is the config's $policyContextWindow" ([int]$policyContextWindow) $caps.models[0].context_window
         Assert-True 'the model is served by the scripted backend' ($caps.models[0].upstreams -contains 'scripted-mock')
         Assert-True 'the model is available while the breaker is closed' ([bool]$caps.models[0].available)
         Assert-True 'the supported capabilities are reported' ($caps.models[0].capabilities -contains 'chat')
@@ -602,9 +651,9 @@ try {
     $idem = Get-Json "$gwURL/admin/idempotency" 'idempotency'
     if ($idem) {
         Assert-True 'the store is enabled' ([bool]$idem.enabled)
-        Assert-Equal 'with the configured capacity' 256 $idem.capacity
-        Assert-Equal 'the configured TTL is reported' '10m0s' $idem.ttl
-        Assert-Equal 'the response size ceiling is reported' 1048576 $idem.max_response_bytes
+        Assert-Equal "the capacity is the config's $policyReplayCapacity" ([int]$policyReplayCapacity) $idem.capacity
+        Assert-Close "the TTL is the config's $policyReplayTTL" (Get-DurationSeconds $policyReplayTTL) (Get-DurationSeconds $idem.ttl) 0.001
+        Assert-Equal "the response size ceiling is the config's $policyReplayMaxBytes" ([int]$policyReplayMaxBytes) $idem.max_response_bytes
         Assert-Equal 'two keys are stored' 2 $idem.stored
         Assert-True 'the caller scopes entries' ($idem.scopes -ge 1)
         Assert-True 'a lookup was recorded' ($idem.stats.lookups -ge 3)
