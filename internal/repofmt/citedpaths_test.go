@@ -211,6 +211,77 @@ func withoutFencedCodeBlocks(text string) string {
 	return out.String()
 }
 
+// withoutHereStrings blanks the body of PowerShell here-strings while keeping
+// every line break, so offsets and line numbers still line up.
+//
+// WHY. A here-string holds output that was quoted -- a test transcript, a
+// generated config, a shell script written out for a container -- and the same
+// exemption a fenced markdown block gets applies: a `go test` FAIL line inside it
+// names the source line it came from, which is the quote, not a claim about the
+// tree. A double-quoted string does not get that exemption: it is text the script
+// author wrote, and in a gate that text is printed for the reader.
+//
+// Only `@"` or `@'` at the end of a line opens one, and the @ has to start a
+// word, so bash's `"$@"` inside a body does not.
+func withoutHereStrings(text string) string {
+	lines := strings.Split(text, "\n")
+	out := make([]string, len(lines))
+	var terminator string
+	for i, line := range lines {
+		if terminator != "" {
+			if strings.HasPrefix(strings.TrimSpace(line), terminator) {
+				terminator = ""
+			}
+			continue
+		}
+		trimmed := strings.TrimRight(line, " \t")
+		if strings.HasSuffix(trimmed, `@"`) || strings.HasSuffix(trimmed, `@'`) {
+			at := len(trimmed) - 2
+			if at == 0 || strings.ContainsAny(trimmed[at-1:at], " \t=") {
+				if trimmed[at+1] == '"' {
+					terminator = `"@`
+				} else {
+					terminator = `'@`
+				}
+				continue
+			}
+		}
+		out[i] = line
+	}
+	return strings.Join(out, "\n")
+}
+
+// fileMention matches any repository file name, cited by line or not. It is the
+// denominator in the checks below and the file half of a spelled-out citation.
+var fileMention = regexp.MustCompile(`[\w.\\/-]+\.(?:go|md|ps1|sh|yaml|yml|json)`)
+
+// fileLineCitation matches the `path/file.go:NNN` form of a citation, the shape
+// this file has always read. The leading character is part of the match because
+// RE2 has no lookbehind; it is what stops a URL path from being read as one.
+var fileLineCitation = regexp.MustCompile(`(?:^|[^\w./\\-])([\w.\\/-]*[\w-]\.(?:go|md|ps1|sh|yaml|yml|json)):\d+`)
+
+// spelledOutLineNumber matches a line number written in words, the shape the
+// `file.go:NNN` pattern cannot see.
+var spelledOutLineNumber = regexp.MustCompile(`\bat lines? \d+`)
+
+// linePinPhrase returns the spelled-out line number on a line that also names a
+// repository file, or "".
+//
+// WHY THE FILE HAS TO BE NAMED. "line 55: unexpected indentation 4 in sequence"
+// is quoted parser output, and a fenced block or a here-string already exempts
+// it. A line that names a file *and* a line number is a citation of that file,
+// and saying it in words rather than as `file.go:NNN` is the one shape the
+// patterns above and below cannot see -- which is how
+// scripts/verify-m4.ps1's note about X-InferGate-Capabilities kept naming
+// `internal/gateway/proxy.go` "at line N" while the read moved to
+// (*Proxy).plan, in front of both checks, until `f1f26b6`.
+func linePinPhrase(line string) string {
+	if !fileMention.MatchString(line) {
+		return ""
+	}
+	return spelledOutLineNumber.FindString(line)
+}
+
 // TestProseCitesSymbolsNotLineNumbers forbids a line number in a citation the
 // prose makes about this repository.
 //
@@ -233,18 +304,21 @@ func withoutFencedCodeBlocks(text string) string {
 // catches almost nothing: a file grows, so an off-by-fifty citation still lands
 // inside it, and the failure above (356 -> a Threshold field) is exactly the
 // case an existence check calls fine.
+//
+// WHY IT ALSO READS THE SPELLED-OUT FORM. The pattern above only understands
+// `file.go:NNN`. scripts/verify-m4.ps1's note about X-InferGate-Capabilities said
+// `internal/gateway/proxy.go` "reads it at line N" instead, and prose that
+// spells a line number out is the same claim in a shape nothing here matched
+// (`f1f26b6`). A line number in words is now reported the same way, on the one
+// condition that the line also names a file -- see linePinPhrase.
 func TestProseCitesSymbolsNotLineNumbers(t *testing.T) {
 	root := repoRoot(t)
 	surfaces := proseSurfaces(t, root)
 
-	// The leading character is part of the match because RE2 has no lookbehind;
-	// it is what stops a URL path from being read as a citation.
-	lineNumber := regexp.MustCompile(`(?:^|[^\w./\\-])([\w.\\/-]*[\w-]\.(?:go|md|ps1|sh|yaml|yml|json)):\d+`)
-	// Every file the prose names at all, cited by line or not. This is the
-	// denominator: if it collapses, the pattern above broke and the check is
-	// passing because it is looking at nothing.
-	mentions := regexp.MustCompile(`[\w.\\/-]+\.(?:go|md|ps1|sh|yaml|yml|json)`)
-
+	// Both shapes live above: fileLineCitation is the `file.go:NNN` form, and
+	// fileMention is every file the prose names at all -- the denominator, so a
+	// pattern this test stops understanding cannot turn it into a no-op that
+	// passes.
 	total := 0
 	var offenders []string
 	for _, file := range surfaces {
@@ -262,13 +336,21 @@ func TestProseCitesSymbolsNotLineNumbers(t *testing.T) {
 		}
 		rel = filepath.ToSlash(rel)
 
-		total += len(mentions.FindAllString(body, -1))
-		for _, m := range lineNumber.FindAllStringSubmatchIndex(body, -1) {
+		total += len(fileMention.FindAllString(body, -1))
+		for _, m := range fileLineCitation.FindAllStringSubmatchIndex(body, -1) {
 			// m[2]..m[1] is the citation itself: the boundary character sits
 			// before m[2] and is not part of the claim being reported.
 			citation := body[m[2]:m[1]]
 			line := 1 + strings.Count(body[:m[2]], "\n")
 			offenders = append(offenders, rel+":"+strconv.Itoa(line)+": cites "+citation+
+				"; name the symbol or the section instead, or put the quoted output in a fenced block")
+		}
+		for i, bodyLine := range strings.Split(body, "\n") {
+			phrase := linePinPhrase(bodyLine)
+			if phrase == "" {
+				continue
+			}
+			offenders = append(offenders, rel+":"+strconv.Itoa(i+1)+": cites the line number spelled out as "+strconv.Quote(phrase)+
 				"; name the symbol or the section instead, or put the quoted output in a fenced block")
 		}
 	}
@@ -298,11 +380,18 @@ func TestProseCitesSymbolsNotLineNumbers(t *testing.T) {
 // was invisible to every other check in this file, because comments are not a
 // surface any of those checks reads.
 //
-// WHAT IT LOOKS AT. Lines whose first non-space characters are the Go comment
-// marker or the PowerShell one, in the Go and PowerShell files under cmd/,
-// internal/ and scripts/ -- where the comments that cite code live. Block
-// comments and here-string bodies stay out of scope: a here-string is quoted
-// output, the same exemption a fenced markdown block gets.
+// WHAT IT LOOKS AT. Every line of the PowerShell files under cmd/, internal/ and
+// scripts/ -- outside here-string bodies, which hold quoted output -- and the
+// lines of the Go files there whose first non-space characters are `//`. Block
+// comments stay out of scope, as they were.
+//
+// WHY WHOLE POWERSHELL LINES AND NOT JUST ITS COMMENTS. A gate's notes are
+// strings it prints, and a stale one is read exactly like a stale comment:
+// scripts/verify-m4.ps1's note about X-InferGate-Capabilities named
+// `internal/gateway/proxy.go` "at line N" from inside an Add-Note string. That
+// line was not a comment this check read, and the spelled-out shape was not one
+// the pattern below could match either, so the note stayed wrong in front of both
+// checks until `f1f26b6`. Strings count now; linePinPhrase reads the words.
 func TestCommentsCiteSymbolsNotLineNumbers(t *testing.T) {
 	root := repoRoot(t)
 	files := commentSurfaces(t, root)
@@ -310,14 +399,9 @@ func TestCommentsCiteSymbolsNotLineNumbers(t *testing.T) {
 		t.Fatalf("walked %d Go/PowerShell files under cmd/, internal/ and scripts/, want at least 100: the walk is not reaching the tree", len(files))
 	}
 
-	// The leading character is part of the match because RE2 has no lookbehind;
-	// it is what stops a URL path from being read as a citation.
-	lineNumber := regexp.MustCompile(`(?:^|[^\w./\\-])([\w.\\/-]*[\w-]\.(?:go|md|ps1|sh|yaml|yml|json)):\d+`)
-	// Every file named in a comment at all, cited by line or not. This is the
-	// denominator, so a comment style this parser stops understanding cannot
-	// turn the check into a no-op that passes.
-	mentions := regexp.MustCompile(`[\w.\\/-]+\.(?:go|md|ps1|sh|yaml|yml|json)`)
-
+	// fileLineCitation and fileMention are the two patterns the prose check
+	// above uses: one shape, one denominator, so the two checks cannot drift
+	// apart and leave a citation only one of them can see.
 	total := 0
 	var offenders []string
 	for _, file := range files {
@@ -330,26 +414,31 @@ func TestCommentsCiteSymbolsNotLineNumbers(t *testing.T) {
 			t.Fatalf("relativising %s: %v", file, err)
 		}
 		rel = filepath.ToSlash(rel)
-		marker := "//"
-		if strings.EqualFold(filepath.Ext(file), ".ps1") {
-			marker = "#"
+		script := strings.EqualFold(filepath.Ext(file), ".ps1")
+		body := string(text)
+		if script {
+			body = withoutHereStrings(body)
 		}
 
-		for i, line := range strings.Split(string(text), "\n") {
-			if !strings.HasPrefix(strings.TrimSpace(line), marker) {
+		for i, line := range strings.Split(body, "\n") {
+			if !script && !strings.HasPrefix(strings.TrimSpace(line), "//") {
 				continue
 			}
-			total += len(mentions.FindAllString(line, -1))
-			for _, m := range lineNumber.FindAllStringSubmatch(line, -1) {
+			total += len(fileMention.FindAllString(line, -1))
+			for _, m := range fileLineCitation.FindAllStringSubmatch(line, -1) {
 				offenders = append(offenders, rel+":"+strconv.Itoa(i+1)+": cites "+m[1]+
 					" by line; name the symbol instead, or say which lines moved and why")
+			}
+			if phrase := linePinPhrase(line); phrase != "" {
+				offenders = append(offenders, rel+":"+strconv.Itoa(i+1)+": cites the line number spelled out as "+strconv.Quote(phrase)+
+					"; name the symbol instead, or say which lines moved and why")
 			}
 		}
 	}
 
-	t.Logf("read %d files; their comments name %d files", len(files), total)
+	t.Logf("read %d files; their comments and script text name %d files", len(files), total)
 	if total < 100 {
-		t.Fatalf("only %d file mentions found in comments; the pattern is not matching and this check cannot fail", total)
+		t.Fatalf("only %d file mentions found in comments and script text; the pattern is not matching and this check cannot fail", total)
 	}
 	for _, offender := range offenders {
 		t.Errorf("%s", offender)
@@ -357,7 +446,8 @@ func TestCommentsCiteSymbolsNotLineNumbers(t *testing.T) {
 }
 
 // commentSurfaces returns every Go and PowerShell file under the three trees that
-// hold the comments citing code, sorted so a failure reads the same every run.
+// hold the comments and script text citing code, sorted so a failure reads the
+// same every run.
 func commentSurfaces(t *testing.T, root string) []string {
 	t.Helper()
 	var files []string

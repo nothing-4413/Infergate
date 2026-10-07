@@ -52,9 +52,14 @@ yaml，外加 Makefile、compose 文件、Dockerfile 与 `.github` 下的 workfl
 对着 `cmd`、`internal` 下含 Go 文件的目录数和 `configs/*.yaml` 的份数；这一条不跳围栏块，因为 README 里
 那份目录树本身就是在主张今天的树。行号这一条还多走一层：
 `TestCommentsCiteSymbolsNotLineNumbers` 读 `cmd`、
-`internal`、`scripts` 下 Go 与 PowerShell 文件的注释行（块注释和 here-string 算引用，跳过），因为
+`internal`、`scripts` 下 Go 文件的注释行，外加 PowerShell 文件的**每一行**（只跳过 here-string 体：那是引用
+输出，和围栏块同一个豁免；双引号字符串不跳，它是脚本作者写的话，而且会被门禁打印给读者），因为
 `cmd/verify-m3/governance.go` 引 `internal/quota/quota.go` 三行、`internal/gateway/cachepath.go` 引
 `internal/gateway/proxy.go` 一行的那两处注释全漂了，而当时没有任何检查看得见它们（`741e985`、`96e5e0f`）。
+两个守卫原先只认 `file.go:NNN` 这一种形状，所以 `scripts/verify-m4.ps1` 那条会被打印出来的观测文本把
+`internal/gateway/proxy.go` 说成 "reads it at line N"、又落在 `Add-Note` 的双引号字符串里时，两条都没看见，
+直到 `f1f26b6` 才改掉；现在"把行号写成词"和 `:NNN` 一样会报，条件是同一行还点了文件——这样 DESIGN 里引
+解析器报错 `line 55: unexpected indentation` 那种引用输出不会被误伤。
 注释里的**路径**仍然不查：脚本可以正当地点名自己马上要写的文件，这是这些检查分工留下的边界。
 
 README 第一屏那几条量化结论（以及 RESUME 里同一批数字）也有对着记录的一层：
