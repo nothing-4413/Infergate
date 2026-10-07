@@ -21,6 +21,14 @@
 # comma. summarize-gates.ps1 learned this the same way: a fail-closed check
 # reported the bogus gate name "a,b" instead of quietly checking nothing.
 #
+# WHY IT READS THE TABLE. This script already parsed the number each gate
+# printed, and never compared it to anything. cmd/verify-m4 grew by two
+# assertions in 9a51ca4, the gate printed 879, README's gate table still said
+# 877, and nothing noticed: the guard that reads those tables reads documents.
+# So each package's row is read out of README.md here, and a printed total that
+# disagrees with its row is a failure, not a transcript line. A package with no
+# row is a failure too -- renaming one must not quietly switch the check off.
+#
 # Usage:  scripts/lib/run-go-verify.ps1 -Name go-verify -Package ./cmd/verify,./cmd/verify-m1
 param(
     [Parameter(Mandatory = $true)][string]$Name,
@@ -36,13 +44,25 @@ $markerPath = Join-Path $tmp "gate-$Name.exit"
 
 $packages = @($Package -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
 
+# The gate table in README.md, read once. Every package below has to have a row.
+$readmePath = Join-Path $repo 'README.md'
+$readme = ''
+if (Test-Path $readmePath) {
+    $readme = [System.IO.File]::ReadAllText($readmePath, [System.Text.Encoding]::UTF8)
+}
+
 $code = 0
 $passed = 0
+$mismatches = 0
 $report = New-Object System.Text.StringBuilder
 
 # Fail closed: a gate that was told to run nothing must not report success.
 if ($packages.Count -eq 0) {
     [void]$report.AppendLine("no package was named, so this gate verified nothing")
+    $code = 1
+}
+if ($readme -eq '') {
+    [void]$report.AppendLine("README.md could not be read, so no printed total can be checked against its row")
     $code = 1
 }
 
@@ -73,20 +93,50 @@ foreach ($pkg in $packages) {
         }
     }
 
+    # The number the gate printed and the number its row in README gives. Both
+    # have to exist and agree; anything else is a failure, and the transcript
+    # records which row was read so a mismatch can be diagnosed from the log.
+    # The denominator is the total the gate ran, which is what the table states.
+    $printed = -1
+    if ($verdict -match 'RESULT:\s*\d+/(\d+) assertions passed') { $printed = [int]$Matches[1] }
+    $name = ($pkg -replace '^[.\\/]+', '') -replace '\\', '/'
+    $rowNumber = -1
+    $row = [regex]::Match($readme, '(?m)^\|\s*M\d[^\r\n|]*\|\s*`' + [regex]::Escape($name) + '`\s*\u2014\s*(\d+)\s*\u6761')
+    if ($row.Success) { $rowNumber = [int]$row.Groups[1].Value }
+
+    $problem = ''
+    if ($printed -lt 0) {
+        $problem = 'the gate printed no RESULT line, so how much it checked is unknown'
+    } elseif ($readme -eq '') {
+        $problem = 'README.md could not be read, so its row cannot be checked'
+    } elseif ($rowNumber -lt 0) {
+        $problem = "README's gate table has no row for $name"
+    } elseif ($printed -ne $rowNumber) {
+        $problem = "the gate ran $printed assertions, but README's row for $name says $rowNumber"
+    }
+    $tableNote = "README's row for $name says $rowNumber"
+    if ($rowNumber -lt 0) { $tableNote = "README's gate table has no row for $name" }
+
     [void]$report.AppendLine(('=' * 78))
     [void]$report.AppendLine(("{0}  exit={1}  {2:N1}s" -f $pkg, $rc, $sw.Elapsed.TotalSeconds))
     [void]$report.AppendLine(("  {0}" -f $verdict))
+    [void]$report.AppendLine(("  {0}" -f $tableNote))
     [void]$report.AppendLine(('=' * 78))
     [void]$report.AppendLine($out.TrimEnd())
     [void]$report.AppendLine('')
 
-    if ($rc -ne 0) {
+    if ($problem -ne '') {
+        $mismatches++
+        if ($code -eq 0) { $code = 1 }
+        Write-Host "::error title=go gate $pkg::$problem"
+        Write-Host "$pkg exit=$rc  $verdict  ($problem)"
+    } elseif ($rc -ne 0) {
         if ($code -eq 0) { $code = $rc }
         Write-Host "::error title=go gate $pkg::$verdict"
         Write-Host "$pkg exit=$rc  $verdict"
     } else {
         $passed++
-        Write-Host "$pkg exit=0  $verdict"
+        Write-Host "$pkg exit=0  $verdict  ($tableNote)"
     }
 }
 
@@ -98,8 +148,8 @@ $text = $report.ToString()
 [System.IO.File]::WriteAllText($markerPath, "$code", [System.Text.UTF8Encoding]::new($false))
 
 if ($code -ne 0) {
-    Write-Host "go gates failed: $passed of $($packages.Count) milestone(s) passed, marker says $code"
+    Write-Host "go gates failed: $passed of $($packages.Count) milestone(s) passed, $mismatches failed the README row check, marker says $code"
 } else {
-    Write-Host "go gates passed: all $($packages.Count) milestone(s) reported exit 0"
+    Write-Host "go gates passed: all $($packages.Count) milestone(s) reported exit 0 and matched their README row"
 }
 exit $code
