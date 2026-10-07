@@ -80,8 +80,9 @@ M4 那张量化表在 USAGE 与 DESIGN 里的两处复述，
 
 README 里另外三处量化结论不在这条链上，边界各不相同：Warden 端到端的通过数来自拿另一个 Agent 项目 Warden
 对着网关跑的那次运行，它的原始输出不在这个仓库里；注入停顿后的首帧延迟由 `scripts/verify-m0.ps1` 每次现场
-量、现场打印（`first data frame at ...`），但那个读数不落盘；幂等重放期间的上游调用次数在 `m6-summary.json`
-里记成了一条检查的 `ok`，不是一个数字。
+量、现场打印（`first data frame at ...`），那个读数不落盘，落盘的是断言本身：首帧不早于停顿，且数据帧分
+成多个到达时刻（至少两个 mock 帧间隔）陆续到达——所以文档里那个毫秒数允许随机器浮动，被盯住的是"帧是
+陆续到的"这个形状；幂等重放期间的上游调用次数在 `m6-summary.json` 里记成了一条检查的 `ok`，不是一个数字。
 
 这条链不止对着 README：大多数数字在 `docs/RESUME.md` 里也要出现，两份文档是不同时候、不同人被催着改的，
 一侧漂了另一侧还在就没人看得见。同一批读数还会以别的形状复述：M4 那张量化表在 `docs/USAGE.md` 里是少了
@@ -437,9 +438,10 @@ There is not enough space on the disk.` 与 `compile: writing output: write .\.g
 | 单元 / 集成测试 | 全绿 | `go test ./...` exit 0（gateway / sse / miniyaml） |
 | 静态检查 | 全绿 | `go vet ./...` exit 0 |
 | Go 端到端 | 38/38 断言通过 | `go run ./cmd/verify` |
-| curl 端到端 | 47/47 断言通过 | `scripts/verify-m0.ps1` |
+| curl 端到端 | 48/48 断言通过 | `scripts/verify-m0.ps1` |
 | 字节透明 | 响应体与上游逐字节一致 | `TestPassthroughNonStreaming`、verify 断言 |
-| 首字延迟可测 | 注入 250ms 停顿，实测首帧 268.0ms | curl `--trace-time` |
+| 首字延迟可测 | 注入 250ms 停顿，首帧实测 255–268ms，且现场断言首帧不早于停顿 | curl `--trace-time` |
+| 帧增量到达 | 数据帧分成多个到达时刻陆续到达（实测 7 个时刻跨 93ms）；把 mock 的帧节奏压成 0ms 后该断言失败 | curl `--trace-time` |
 | `[DONE]` 补齐 | 上游省略时网关补齐 | `X-Mock-Omit-Done: 1` 断言通过 |
 | 成本计量 | 采信 provider usage 并按单价折算 | 日志 `cost_usd=`、`infergate_tokens_total`；上游声明但未标价的模型在启动时被点名（`reportUnpricedModels`，default 为 0 时 WARN、非 0 时 INFO、全标价时不打），测试 `TestNewServerReportsModelsItCannotPrice`、`TestPriceBookUnpriced` |
 | 字节账目一致 | 日志 `resp_bytes=1718` 等于 curl 落盘 1718 字节 | `tmp\stream.out` 交叉核对 |

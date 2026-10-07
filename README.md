@@ -11,7 +11,7 @@ Go 进程内端到端 **2353** 条断言、真实进程 + 真实 `curl.exe` **10
 `go test ./...` 与 `go vet ./...` 均 exit 0。原始数据见 `docs/baseline/`。
 
 - **透传正确性**：OpenAI 兼容协议 + SSE 逐帧透传，`tool_call` 增量按 `index` 拼回合法 JSON；
-  注入 250ms 停顿后实测首帧 **268.0ms**，证明中间没有缓冲（M0）
+  注入 250ms 停顿后首帧 **≈255–268ms**（单次实测；脚本现场断言首帧不早于停顿、且数据帧分成多个到达时刻陆续到达），证明中间没有整段缓冲（M0）
 - **路由与自愈**：五种策略 + 滑动窗口熔断；压测中途杀掉 priority=1 的副本，**18000 个请求 0 错误**，
   熔断生效后 **P50 420.42ms → 17.81ms（23.6×）**（M1）
 - **省钱**：语义缓存真同义命中 **58.97%**（23/39），13 对近似语料 **0 误命中**，
@@ -239,7 +239,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run-race.ps1 -Packag
 
 | 里程碑 | 关键数字 | 原始数据 |
 | --- | --- | --- |
-| M0 | 直连 c=8 8393 QPS → 经网关 5026 QPS；注入 250ms 停顿实测首帧 268.0ms；`resp_bytes=1718` 与 curl 落盘逐字节一致 | `baseline/m0-baseline.json` |
+| M0 | 直连 c=8 8393 QPS → 经网关 5026 QPS；注入 250ms 停顿实测首帧 255–268ms（脚本现场断言逐帧到达）；`resp_bytes=1718` 与 curl 落盘逐字节一致 | `baseline/m0-baseline.json` |
 | M1 | 杀副本期间 18000 请求 0 错误；熔断生效后 P50 420.42 → 17.81ms（23.6×）；路由开销落在 40% 轮间抖动内 | `baseline/m1-summary.json` |
 | M2 | 真同义命中 58.97%（23/39）、0 误命中；命中 P95 5.50ms vs 未命中 47.31ms；每 1000 请求 $0.036692 → $0.016（−56.39%） | `baseline/m2-summary.json` |
 | M3 | 预扣 2872 / 结算 320 / 释放 2608 / 超发 56，恒等式成立；fail-closed 20/20 503 且上游 0 调用 | `baseline/m3-summary.json` |

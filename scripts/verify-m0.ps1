@@ -24,6 +24,10 @@ param(
     [int]$GatewayPort = 18080,
     [int]$MockPort = 19000,
     [int]$TtfbMillis = 250,
+    # Pacing between streamed content frames, handed to the mock explicitly
+    # rather than left to its default: section 6 derives its "the response is
+    # streamed, not sent in one batch" threshold from this number.
+    [int]$TokenDelayMillis = 15,
     [switch]$KeepRunning
 )
 
@@ -183,10 +187,10 @@ try {
     $mockLogBase = (Get-Item $mockLog).Length
     $gwLogBase = (Get-Item $gwLog).Length
     $mockProc = Start-Process -FilePath (Join-Path $binDir 'mockupstream.exe') `
-        -ArgumentList @('-listen', ":$MockPort", '-ttfb', "${TtfbMillis}ms") `
+        -ArgumentList @('-listen', ":$MockPort", '-ttfb', "${TtfbMillis}ms", '-token-delay', "${TokenDelayMillis}ms") `
         -RedirectStandardOutput $mockLog -RedirectStandardError (Join-Path $tmpDir 'mockupstream.err.log') `
         -PassThru -WindowStyle Hidden
-    Write-Host "  mockupstream.exe pid=$($mockProc.Id) listening :$MockPort (ttfb=${TtfbMillis}ms)"
+    Write-Host "  mockupstream.exe pid=$($mockProc.Id) listening :$MockPort (ttfb=${TtfbMillis}ms, one frame per ${TokenDelayMillis}ms)"
 
     # Wait for the mock before starting the gateway, so the gateway's /readyz
     # check is meaningful from the first request.
@@ -313,11 +317,20 @@ try {
     }
 
     $firstFrameMs = $null
+    $lastFrameMs = $null
+    $frameStamps = @{}
     # --trace-time stamps every EVENT line, but the hex-dump continuation lines
     # that carry the payload ("0004: data: ...") have no stamp of their own.
-    # Walk the trace forward and remember the most recent timestamp seen; the
-    # first data-bearing line inherits it. That is still curl's own clock, not
-    # one we invented.
+    # Walk the trace forward and remember the most recent timestamp seen; every
+    # data-bearing line inherits it. That is still curl's own clock, not one we
+    # invented.
+    #
+    # The walk now reads the whole stream instead of stopping at the first data
+    # line. That first line is the opening role frame, which the mock flushes
+    # together with the headers, so on its own it only re-reads the stall
+    # (measured: headers 264.3ms, first frame 265.0ms). What separates a
+    # gateway that streams from one that buffers the response is the frames
+    # AFTER it, so record their arrival times as well.
     $stampRe = '^(\d{2}:\d{2}:\d{2}\.\d{6})'
     $traceLines = @(Get-Content $trace)
     $started = $null
@@ -333,15 +346,30 @@ try {
         }
         if ($s -match '^[0-9a-f]{4}: data:' -and $null -ne $started -and $null -ne $lastStamp) {
             $at = [datetime]::ParseExact($lastStamp, 'HH:mm:ss.ffffff', [cultureinfo]::InvariantCulture)
-            $firstFrameMs = ($at - $started).TotalMilliseconds
-            break
+            $atMs = ($at - $started).TotalMilliseconds
+            if ($null -eq $firstFrameMs) { $firstFrameMs = $atMs }
+            $lastFrameMs = $atMs
+            $frameStamps[$lastStamp] = $true
         }
     }
-    Assert-True "first token frame arrives no earlier than the injected stall (${TtfbMillis}ms)" `
+    $spreadMs = if ($null -eq $lastFrameMs) { $null } else { $lastFrameMs - $firstFrameMs }
+    $firstAt = if ($null -eq $firstFrameMs) { 'n/a' } else { [Math]::Round($firstFrameMs, 1).ToString() + 'ms' }
+    $lastAt = if ($null -eq $lastFrameMs) { 'n/a' } else { [Math]::Round($lastFrameMs, 1).ToString() + 'ms' }
+    $spreadAt = if ($null -eq $spreadMs) { 'n/a' } else { [Math]::Round($spreadMs, 1).ToString() + 'ms' }
+    Assert-True "the first data frame does not arrive before the injected stall (${TtfbMillis}ms)" `
         ($null -ne $firstFrameMs -and $firstFrameMs -ge ($TtfbMillis * 0.8)) `
-        "first data frame at $(if ($null -eq $firstFrameMs) { 'n/a' } else { [Math]::Round($firstFrameMs,1).ToString() + 'ms' })"
+        "first data frame at $firstAt"
+    # A gateway that read the upstream response to the end before answering would
+    # still satisfy the bound above - the mock holds its headers back through the
+    # whole stall either way - but then every data frame would land at the same
+    # instant. A stream shows several distinct arrival times spread across the
+    # response. The mock paces one content frame per ${TokenDelayMillis}ms, so
+    # require at least two of those gaps: batching collapses the spread to ~0.
+    Assert-True 'frames keep arriving after the first one (streamed, not one batch)' `
+        ($null -ne $spreadMs -and $frameStamps.Count -ge 3 -and $spreadMs -ge ($TokenDelayMillis * 2)) `
+        "$($frameStamps.Count) arrival times, first $firstAt, last $lastAt, spread $spreadAt"
     if ($null -ne $firstFrameMs) {
-        Write-Host ("        first data frame at {0:N1}ms (headers at {1:N1}ms)" -f $firstFrameMs, ($t.ttfb * 1000)) -ForegroundColor DarkGray
+        Write-Host ("        first data frame at {0:N1}ms (headers at {1:N1}ms), last at {2:N1}ms, spread {3:N1}ms over {4} arrival times" -f $firstFrameMs, ($t.ttfb * 1000), $lastFrameMs, $spreadMs, $frameStamps.Count) -ForegroundColor DarkGray
     }
 
     # -----------------------------------------------------------------------
