@@ -79,7 +79,19 @@ func TestSummarizeKeepsWhyATestFailed(t *testing.T) {
 	fragment := filepath.Join(dir, "ci-summary-test.md")
 
 	cmd := exec.Command(bash, script, logPath, fragment, "go test")
-	if out, err := cmd.CombinedOutput(); err != nil {
+	out, err := cmd.CombinedOutput()
+	if err != nil && msysStartupFailure(out) {
+		// Git Bash here is MSYS2, and MSYS2 occasionally fails to start at all
+		// when the machine is running several test binaries at once: its own
+		// directory object under \BaseNamedObjects is refused with 0xC0000022,
+		// and the shell exits 0xc0000142 before it reads a line of the script.
+		// That is the shell's startup, not the summarizer's behaviour, which is
+		// what this test is about, so such a run is retried once. Any other
+		// failure is reported as it came.
+		cmd = exec.Command(bash, script, logPath, fragment, "go test")
+		out, err = cmd.CombinedOutput()
+	}
+	if err != nil {
 		t.Fatalf("running the summarizer: %v\n%s", err, out)
 	}
 	body, err := os.ReadFile(fragment)
@@ -106,5 +118,47 @@ func TestSummarizeKeepsWhyATestFailed(t *testing.T) {
 	// And the filter still filters: a summary that keeps everything is a log.
 	if strings.Contains(got, "chatter from the harness") {
 		t.Errorf("the fragment carried a line with no result in it:\n%s", got)
+	}
+}
+
+// msysStartupFailure reports whether a bash run died in MSYS2's own startup
+// rather than while running the script. Seen once in four full-suite runs here:
+//
+//	0 [main] bash (4028) ...\usr\bin\bash.exe: *** fatal error -
+//	NtCreateDirectoryObject(\BaseNamedObjects\msys-2.0S5-...): 0xC0000022
+//
+// The directory-object name is MSYS2's, and the status is the one Go reports as
+// exit status 0xc0000142, so both spellings are accepted.
+func msysStartupFailure(out []byte) bool {
+	text := string(out)
+	return strings.Contains(text, "NtCreateDirectoryObject") ||
+		strings.Contains(text, "0xc0000142")
+}
+
+// The retry is only honest if it fires on the shell's own startup and on nothing
+// the summarizer does, so the decision is pinned to the two spellings the
+// interrupted runs printed, and to two failures it must not absorb.
+func TestMSYSStartupFailureMatchesOnlyTheShellsStartup(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		out  string
+		want bool
+	}{
+		{
+			"the observed MSYS2 startup error",
+			`0 [main] bash (4028) C:\Program Files\Git\bin\..\usr\bin\bash.exe: *** fatal error - NtCreateDirectoryObject(\BaseNamedObjects\msys-2.0S5-1888ae32e00d56aa): 0xC0000022`,
+			true,
+		},
+		{"the exit status Go reports for it", "exit status 0xc0000142", true},
+		{"a missing script", "exit status 127", false},
+		{
+			"the summarizer saying what it wanted",
+			"usage: ci-summarize-go-test.sh <log> <fragment> <label>",
+			false,
+		},
+	} {
+		if got := msysStartupFailure([]byte(tc.out)); got != tc.want {
+			t.Errorf("%s: msysStartupFailure = %v, want %v (for %q)", tc.name, got, tc.want, tc.out)
+		}
 	}
 }
