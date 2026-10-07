@@ -191,6 +191,25 @@ func TestHeadlineClaimsMatchTheBaseline(t *testing.T) {
 			path: []string{"vram_delta_mb"}, digits: 0,
 		},
 		{
+			// The first column of the RESUME's quantization table is not a field
+			// of the per-variant run: it is the checkpoint size the environment
+			// sweep stat(1)ed before vLLM started. The docs print it as decimal
+			// GB (1e9 bytes), not GiB, which is what the 1e-9 scale says.
+			quote: "3.09", phrase: "3.09 GB", file: "m4-summary.json", docs: resumeOnly,
+			find: map[string]any{"dir": "/opt/models/fp16"},
+			path: []string{"safetensors_bytes"}, digits: 2, scale: 1e-9,
+		},
+		{
+			quote: "1.61", phrase: "1.61 GB", file: "m4-summary.json", docs: resumeOnly,
+			find: map[string]any{"dir": "/opt/models/awq"},
+			path: []string{"safetensors_bytes"}, digits: 2, scale: 1e-9,
+		},
+		{
+			quote: "1.15", phrase: "1.15 GB", file: "m4-summary.json", docs: resumeOnly,
+			find: map[string]any{"dir": "/opt/models/gptq"},
+			path: []string{"safetensors_bytes"}, digits: 2, scale: 1e-9,
+		},
+		{
 			quote: "58", phrase: "58s", file: "m4-summary.json", docs: resumeOnly,
 			find: map[string]any{"variant": "fp16"},
 			path: []string{"load_seconds"}, digits: 0,
@@ -527,7 +546,7 @@ func TestHeadlineClaimsMatchTheBaseline(t *testing.T) {
 	}
 	claims = append(claims, m0Claims()...)
 	claims = append(claims, m4SecondCopies()...)
-	if len(claims) < 147 {
+	if len(claims) < 150 {
 		t.Fatalf("only %d claims; this check has been hollowed out", len(claims))
 	}
 
