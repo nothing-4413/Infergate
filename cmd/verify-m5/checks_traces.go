@@ -68,16 +68,6 @@ func getTrace(c *checker, st *stack, id, label string) (tracing.Trace, bool) {
 	return tr, true
 }
 
-func spansNamed(tr tracing.Trace, name string) []tracing.Span {
-	var out []tracing.Span
-	for _, s := range tr.Spans {
-		if s.Name == name {
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
 func isHex(s string, n int) bool {
 	if len(s) != n {
 		return false
