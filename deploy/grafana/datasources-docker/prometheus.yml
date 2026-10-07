@@ -5,7 +5,7 @@
 #   http://prometheus:9090     ← compose 网络里的服务名
 #
 # 容器里写 127.0.0.1 会指向 Grafana 自己，数据源健康检查失败、所有 panel 空白，
-# 而 Grafana 本身的日志不会因此报错——这是这套配置最容易踩的一脚（deploy/README §4.3）。
+# 而 Grafana 本身的日志不会因此报错——这是这套配置最容易踩的一脚（deploy/README.md §4.3）。
 #
 # uid 必须保持 PROMETHEUS 不变：看板 JSON 里的每一处 datasource.uid 都引用它。
 apiVersion: 1

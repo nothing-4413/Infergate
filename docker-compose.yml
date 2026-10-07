@@ -172,7 +172,7 @@ services:
     volumes:
       - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
       # The dashboard JSONs land exactly where the file provider scans, which is
-      # why no path editing is needed for the container route (deploy/README §4.2).
+      # why no path editing is needed for the container route (deploy/README.md §4.2).
       - ./deploy/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
       # Container-specific datasource: url http://prometheus:9090 instead of the
       # host-local http://127.0.0.1:9090. Mounted over the repository copy so the
