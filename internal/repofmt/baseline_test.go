@@ -20,9 +20,12 @@ import (
 // record is the only reason to believe the sentence.
 //
 // WHAT IT CHECKS. Each entry reads one number out of a named baseline file and
-// requires the string README.md prints to be that number formatted the way the
-// README formats it (the scale and the number of decimals are part of the entry,
-// because "58.97%" is stored as 0.5897 and "2.42x" as 2.423). A path may start
+// requires the string a document prints to be that number formatted the way that
+// document formats it (the scale and the number of decimals are part of the entry,
+// because "58.97%" is stored as 0.5897 and "2.42x" as 2.423). An entry names the
+// documents that have to print it -- README.md when it names none -- because the
+// same numbers carry the first screen of the README and the one-page RESUME, and
+// the two are edited at different times by whoever is in a hurry. A path may start
 // with "*", which searches the whole file for that key: it succeeds only when the
 // key carries the same value everywhere it appears, so a second copy with a
 // different number is a failure rather than a coin flip. When a key is not unique
@@ -35,50 +38,79 @@ import (
 // WHAT IT DOES NOT CHECK. Whether the run was any good, or whether the baseline
 // still describes today's code: a baseline is one afternoon's measurement on one
 // machine, and the prose says so. This only settles that the sentence and the
-// record are about the same number.
+// record are about the same number. Nor does it follow a number nobody quotes: a
+// reading that only lives in the JSON is the JSON's business.
 func TestHeadlineClaimsMatchTheBaseline(t *testing.T) {
 	root := repoRoot(t)
 	readme := readFile(t, filepath.Join(root, "README.md"))
 
+	// The numbers below lead the README and the RESUME alike; the ones the RESUME
+	// does not carry are the README's alone, and the measurements of the local
+	// inference story are the RESUME's alone.
+	readmeAndResume := []claimPrint{{}, {file: "docs/RESUME.md"}}
+	resumeOnly := []claimPrint{{file: "docs/RESUME.md"}}
+
 	claims := []baselineClaim{
 		{
-			quote: "420.42", file: "m1-summary.json",
+			quote: "420.42", file: "m1-summary.json", docs: readmeAndResume,
 			find: map[string]any{"scenario": "stalled-primary behind a per-attempt timeout"},
 			path: []string{"median_ms_while_breaker_closed"}, digits: 2,
 		},
 		{
-			quote: "17.81", file: "m1-summary.json",
+			quote: "17.81", file: "m1-summary.json", docs: readmeAndResume,
 			find: map[string]any{"scenario": "stalled-primary behind a per-attempt timeout"},
 			path: []string{"median_ms_once_breaker_open"}, digits: 2,
 		},
 		{
-			quote: "58.97", file: "m2-summary.json",
+			quote: "58.97", file: "m2-summary.json", docs: readmeAndResume,
 			path: []string{"hit_rate", "hit_rate"}, scale: 100, digits: 2,
 		},
 		{
-			quote: "56.39", file: "m2-summary.json",
+			quote: "56.39", file: "m2-summary.json", docs: readmeAndResume,
 			path: []string{"*", "reduction_percent"}, digits: 2,
 		},
 		{
-			quote: "100.7", file: "m4-summary.json",
+			// The cached path and the uncached one, as the M2 row of the README
+			// table and the cache paragraph of the RESUME both quote them.
+			quote: "5.50", file: "m2-summary.json", docs: readmeAndResume,
+			path: []string{"latency", "gateway_stats", "cache_on_pure_hit", "stats", "p95_ms"}, digits: 2,
+		},
+		{
+			quote: "47.31", file: "m2-summary.json", docs: readmeAndResume,
+			path: []string{"latency", "gateway_stats", "cache_off_pure_miss", "stats", "p95_ms"}, digits: 2,
+		},
+		{
+			quote: "100.7", file: "m4-summary.json", docs: readmeAndResume,
 			find: map[string]any{"variant": "awq"},
 			path: []string{"output_tokens_per_s", "variant"}, digits: 1,
 		},
 		{
-			quote: "2.42", file: "m4-summary.json",
+			quote: "2.42", file: "m4-summary.json", docs: readmeAndResume,
 			find: map[string]any{"variant": "awq"},
 			path: []string{"output_tokens_per_s", "ratio"}, digits: 2,
 		},
 		{
-			quote: "34.52", file: "m4-summary.json",
+			quote: "34.52", file: "m4-summary.json", docs: readmeAndResume,
 			path: []string{"*", "avoided_percent"}, digits: 2,
 		},
 		{
-			quote: "59400", file: "m5-summary.json",
+			// The RESUME tells the local-inference story as an end-to-end P50 that
+			// fell from the fp16 run to the quantized one; the README does not.
+			quote: "1758", phrase: "1758ms", file: "m4-summary.json", docs: resumeOnly,
+			find: map[string]any{"variant": "fp16"},
+			path: []string{"total_ms", "p50"}, digits: 0,
+		},
+		{
+			quote: "700", phrase: "700ms", file: "m4-summary.json", docs: resumeOnly,
+			find: map[string]any{"variant": "awq"},
+			path: []string{"total_ms", "p50"}, digits: 0,
+		},
+		{
+			quote: "59400", file: "m5-summary.json", docs: readmeAndResume,
 			path: []string{"*", "otlp_exported"}, digits: 0,
 		},
 		{
-			quote: "22.07", file: "m5-summary.json",
+			quote: "22.07", file: "m5-summary.json", docs: readmeAndResume,
 			find: map[string]any{"workload": "non-stream", "concurrency": 128.0},
 			path: []string{"direct_minus_gateway_pct"}, digits: 2,
 		},
@@ -108,7 +140,13 @@ func TestHeadlineClaimsMatchTheBaseline(t *testing.T) {
 			path: []string{"fail_closed", "upstream_calls_during_outage"}, digits: 0,
 		},
 		{
-			quote: "18000", phrase: "18000 个请求", sum: true,
+			// The two documents word this one differently: the README counts
+			// requests, the RESUME just says how many there were.
+			quote: "18000", file: "m1-summary.json", sum: true,
+			docs: []claimPrint{
+				{phrase: "18000 个请求"},
+				{file: "docs/RESUME.md", phrase: "18000 请求"},
+			},
 			files: []string{"m1-load-faulted-r1.json", "m1-load-faulted-r2.json", "m1-load-faulted-r3.json"},
 			path:  []string{"*", "requests"}, digits: 0,
 		},
@@ -118,7 +156,7 @@ func TestHeadlineClaimsMatchTheBaseline(t *testing.T) {
 			path:  []string{"*", "errors"}, digits: 0,
 		},
 	}
-	if len(claims) < 8 {
+	if len(claims) < 18 {
 		t.Fatalf("only %d claims; this check has been hollowed out", len(claims))
 	}
 
@@ -130,6 +168,16 @@ func TestHeadlineClaimsMatchTheBaseline(t *testing.T) {
 			parsed[name] = doc
 		}
 		return doc
+	}
+
+	texts := map[string]string{"README.md": readme}
+	textOf := func(name string) string {
+		text, ok := texts[name]
+		if !ok {
+			text = readFile(t, filepath.Join(root, name))
+			texts[name] = text
+		}
+		return text
 	}
 
 	for _, claim := range claims {
@@ -181,15 +229,15 @@ func TestHeadlineClaimsMatchTheBaseline(t *testing.T) {
 		}
 		got := strconv.FormatFloat(total*factor, 'f', claim.digits, 64)
 		if got != claim.quote {
-			t.Errorf("docs/baseline/%s%s reads %s, but README.md prints %s",
-				strings.Join(names, ", "), marker(claim.find), got, claim.quote)
+			t.Errorf("docs/baseline/%s%s reads %s, but %s prints %s",
+				strings.Join(names, ", "), marker(claim.find), got,
+				strings.Join(claimDocs(claim), " and "), claim.quote)
 		}
-		phrase := claim.phrase
-		if phrase == "" {
-			phrase = claim.quote
-		}
-		if !strings.Contains(readme, phrase) {
-			t.Errorf("README.md no longer prints %s anywhere; if the claim moved, move this entry too", phrase)
+		for _, want := range claim.prints() {
+			doc, phrase := want.document(), want.wording(claim)
+			if !strings.Contains(textOf(doc), phrase) {
+				t.Errorf("%s no longer prints %s anywhere; if the claim moved, move this entry too", doc, phrase)
+			}
 		}
 	}
 
@@ -201,10 +249,12 @@ func TestHeadlineClaimsMatchTheBaseline(t *testing.T) {
 		map[string]any{"scenario": "stalled-primary behind a per-attempt timeout"}, []string{"median_ms_once_breaker_open"})
 	factor := strconv.FormatFloat(closed/open, 'f', 1, 64)
 	if factor != "23.6" {
-		t.Errorf("m1-summary.json's two medians give %s, but README.md prints 23.6", factor)
+		t.Errorf("m1-summary.json's two medians give %s, but the prose prints 23.6", factor)
 	}
-	if !strings.Contains(readme, factor+"×") {
-		t.Errorf("README.md does not print %s next to the two medians", factor+"×")
+	for _, doc := range readmeAndResume {
+		if !strings.Contains(textOf(doc.document()), factor+"×") {
+			t.Errorf("%s does not print %s next to the two medians", doc.document(), factor+"×")
+		}
 	}
 
 	// "16 requests split 8:8" is a total plus how it divides, so the split is
@@ -223,17 +273,62 @@ func TestHeadlineClaimsMatchTheBaseline(t *testing.T) {
 	t.Logf("checked %d headline claims against docs/baseline", len(claims)+2)
 }
 
-// baselineClaim is one number the README prints, and where its record keeps it.
+// baselineClaim is one number the prose prints, and where its record keeps it.
 type baselineClaim struct {
-	quote  string         // exactly what README.md prints, already scaled and rounded
+	quote  string         // exactly what the document prints, already scaled and rounded
 	file   string         // file under docs/baseline/
 	files  []string       // several records, when the claim is their total
 	sum    bool           // add the values instead of requiring them to agree
-	phrase string         // what to look for in README.md; the quote itself when empty
+	phrase string         // wording that carries the number; the quote itself when empty
+	docs   []claimPrint   // documents that must print it; README.md when it names none
 	find   map[string]any // key/value pairs naming the object to read, when the path alone is ambiguous
 	path   []string       // keys from that object down to the number; a leading "*" searches the file
-	scale  float64        // 100 to turn a stored ratio into the percent the README prints; 0 means none
-	digits int            // decimals the README prints
+	scale  float64        // 100 to turn a stored ratio into the percent the prose prints; 0 means none
+	digits int            // decimals the document prints
+}
+
+// claimPrint is one document that has to carry a claim, and the wording it uses:
+// the same measurement is "18000 个请求" in the README and "18000 请求" in the
+// RESUME, and what matters is that both still say the number at all.
+type claimPrint struct {
+	file   string // document; README.md when empty
+	phrase string // the claim's phrase, then the quote itself, when empty
+}
+
+// prints is where a claim has to appear: the documents it names, or the README,
+// which is what an entry means when it names none.
+func (claim baselineClaim) prints() []claimPrint {
+	if len(claim.docs) > 0 {
+		return claim.docs
+	}
+	return []claimPrint{{}}
+}
+
+func (want claimPrint) document() string {
+	if want.file != "" {
+		return want.file
+	}
+	return "README.md"
+}
+
+func (want claimPrint) wording(claim baselineClaim) string {
+	if want.phrase != "" {
+		return want.phrase
+	}
+	if claim.phrase != "" {
+		return claim.phrase
+	}
+	return claim.quote
+}
+
+// claimDocs names the documents a claim has to appear in, for error messages.
+func claimDocs(claim baselineClaim) []string {
+	prints := claim.prints()
+	names := make([]string, 0, len(prints))
+	for _, want := range prints {
+		names = append(names, want.document())
+	}
+	return names
 }
 
 func marker(find map[string]any) string {
