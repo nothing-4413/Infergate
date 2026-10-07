@@ -261,6 +261,25 @@ Assert-True 'the rendered fleet config declares its routing strategy' `
 Assert-True 'the rendered fleet config declares its failover cap' `
     ($null -ne $policyMaxFailures) "read $gatewayCfg"
 
+# The three replicas are named by the config as well, and the gate never sees
+# those names except through what the gateway reports back (the
+# X-InferGate-Upstream-Name header, the breaker document, metrics labels, the
+# request log). The entry is picked by the port this run substituted into it,
+# which is the one handle on a replica the gate owns; a rename in the sample is
+# then a config edit and nothing else.
+$policyPrimary = Get-ConfigListScalar -Text $rewritten -Block 'upstreams' -Key 'name' `
+    -WhereKey 'base_url' -WhereValue "http://127.0.0.1:$PrimaryPort"
+$policySecondary = Get-ConfigListScalar -Text $rewritten -Block 'upstreams' -Key 'name' `
+    -WhereKey 'base_url' -WhereValue "http://127.0.0.1:$SecondaryPort"
+$policyTools = Get-ConfigListScalar -Text $rewritten -Block 'upstreams' -Key 'name' `
+    -WhereKey 'base_url' -WhereValue "http://127.0.0.1:$ToolsPort"
+Assert-True 'the rendered fleet config declares the backend on the primary port' `
+    ($null -ne $policyPrimary) "read $gatewayCfg"
+Assert-True 'the rendered fleet config declares the backend on the secondary port' `
+    ($null -ne $policySecondary) "read $gatewayCfg"
+Assert-True 'the rendered fleet config declares the backend on the tools port' `
+    ($null -ne $policyTools) "read $gatewayCfg"
+
 function Start-Replica {
     param([int]$Port, [string]$Name, [string]$LogName)
     $log = Join-Path $tmpDir $LogName
@@ -333,7 +352,7 @@ try {
     Write-Section '3. Priority routing picks the best backend'
     $r = Send-Chat "$base/v1/chat/completions" $chatBody
     Assert-Equal 'a healthy request answers 200' 200 $r.Status
-    Assert-Equal 'priority 1 wins' 'primary' $r.Name
+    Assert-Equal "priority 1 wins ('$policyPrimary')" $policyPrimary $r.Name
     Assert-Equal 'no failover happened' '' $r.Tried
     Assert-Contains 'the response is the provider answer, not a re-encoding' $r.Body '"mock answer to'
 
@@ -351,8 +370,8 @@ try {
     # always absorb.
     $r = Send-Chat "$base/v1/chat/completions" $chatBody
     Assert-Equal 'the request still succeeds' 200 $r.Status
-    Assert-Equal 'the answer came from the next backend' 'secondary' $r.Name
-    Assert-Equal 'every backend tried is named in order' 'primary, secondary' $r.Tried
+    Assert-Equal "the answer came from the next backend ('$policySecondary')" $policySecondary $r.Name
+    Assert-Equal "every backend tried is named in order ('$policyPrimary, $policySecondary')" "$policyPrimary, $policySecondary" $r.Tried
     Assert-Equal 'the attempt counter reports the second attempt' '2' $r.Attempt
     # The body cannot say which replica answered it: cmd/mockupstream answers
     # `mock answer to "<prompt>"` on every replica, and the per-replica identity
@@ -367,8 +386,8 @@ try {
     # terminated SSE body with a [DONE] sentinel rather than a truncated one.
     $s = Send-Chat "$base/v1/chat/completions" $streamBody @() 'm1-stream'
     Assert-Equal 'a stream fails over too' 200 $s.Status
-    Assert-Equal 'the stream came from the surviving backend' 'secondary' $s.Name
-    Assert-Equal 'the stream names both attempts' 'primary, secondary' $s.Tried
+    Assert-Equal "the stream came from the surviving backend ('$policySecondary')" $policySecondary $s.Name
+    Assert-Equal "the stream names both attempts ('$policyPrimary, $policySecondary')" "$policyPrimary, $policySecondary" $s.Tried
     Assert-Contains 'the stream is a real SSE body' $s.Headers 'text/event-stream'
     Assert-True 'the streamed failover ends with the [DONE] sentinel' `
         ($s.Body.TrimEnd("`r", "`n").EndsWith('data: [DONE]')) `
@@ -387,19 +406,20 @@ try {
     # stronger and less brittle than asserting on the count that produced it.
     #
     # The transition has TWO halves and both matter: while the breaker is closed
-    # primary is still tried (Tried "primary, secondary", because the router ranks
-    # an open backend last but does not remove it), and once it opens primary is
-    # not reached at all. That second state is invisible in X-InferGate-Tried --
-    # the header is only written when more than one attempt happened, and exactly
-    # one does -- so the signature is Name=secondary WITH NO Tried header.
+    # the dead backend is still tried (Tried names it and then the next one,
+    # because the router ranks an open backend last but does not remove it), and
+    # once it opens that backend is not reached at all. That second state is
+    # invisible in X-InferGate-Tried -- the header is only written when more than
+    # one attempt happened, and exactly one does -- so the signature is the next
+    # backend's name in X-InferGate-Upstream-Name WITH NO Tried header.
     $skipped = $false
     $sawFailover = $false
     $attempts = 0
     for ($i = 1; $i -le 8; $i++) {
         $attempts = $i
         $r = Send-Chat "$base/v1/chat/completions" $chatBody @() 'm1-trip'
-        if ($r.Tried -eq 'primary, secondary') { $sawFailover = $true }
-        if ($r.Status -eq 200 -and $r.Name -eq 'secondary' -and $r.Tried -eq '') {
+        if ($r.Tried -eq "$policyPrimary, $policySecondary") { $sawFailover = $true }
+        if ($r.Status -eq 200 -and $r.Name -eq $policySecondary -and $r.Tried -eq '') {
             $skipped = $true
             break
         }
@@ -410,7 +430,7 @@ try {
         "after $attempts requests, tried='$($r.Tried)' name='$($r.Name)' status=$($r.Status)"
 
     $breakerDoc = (Invoke-Curl @('-s', "$base/admin/breakers")) | ConvertFrom-Json
-    $primaryBreaker = @($breakerDoc.upstreams | Where-Object { $_.name -eq 'primary' })[0]
+    $primaryBreaker = @($breakerDoc.upstreams | Where-Object { $_.name -eq $policyPrimary })[0]
     Assert-Equal 'the breaker reports the dead backend as open' 'open' $primaryBreaker.state
     Assert-True 'the breaker tripped at least once' ($primaryBreaker.trips -ge 1) "trips=$($primaryBreaker.trips)"
     # Asserted against the values the gateway itself publishes in health{}, not
@@ -428,10 +448,10 @@ try {
     # distinguish "not tried" from "tried and failed instantly", so compare the
     # cumulative failover counter across one request as a DELTA.
     $metricsBefore = Invoke-Curl @('-s', "$base/metrics")
-    $failoversBefore = Get-SeriesValue -Text $metricsBefore -Series 'infergate_failovers_total' -Labels 'upstream="primary"'
+    $failoversBefore = Get-SeriesValue -Text $metricsBefore -Series 'infergate_failovers_total' -Labels "upstream=`"$policyPrimary`""
     $r = Send-Chat "$base/v1/chat/completions" $chatBody @() 'm1-open'
     $metricsAfter = Invoke-Curl @('-s', "$base/metrics")
-    $failoversAfter = Get-SeriesValue -Text $metricsAfter -Series 'infergate_failovers_total' -Labels 'upstream="primary"'
+    $failoversAfter = Get-SeriesValue -Text $metricsAfter -Series 'infergate_failovers_total' -Labels "upstream=`"$policyPrimary`""
     Assert-Equal 'a request served while the breaker is open adds no attempt on the dead backend' `
         $failoversBefore $failoversAfter
     Assert-Equal 'the request still succeeded' 200 $r.Status
@@ -444,7 +464,7 @@ try {
     # past two higher-priority backends.
     $r = Send-Chat "$base/v1/chat/completions" $chatBody @('-H', 'X-InferGate-Capabilities: tools') 'm1-caps'
     Assert-Equal 'a required capability reaches the backend that has it' 200 $r.Status
-    Assert-Equal 'the capability backend served it' 'tools' $r.Name
+    Assert-Equal "the capability backend served it ('$policyTools')" $policyTools $r.Name
     Assert-Equal 'no capability-incapable backend was tried' '' $r.Tried
 
     # A capability nobody has is a 400, NOT a silent downgrade. Downgrading a
@@ -459,9 +479,9 @@ try {
     # 7. Explicit pinning
     # -----------------------------------------------------------------------
     Write-Section '7. Explicit pinning bypasses routing'
-    $r = Send-Chat "$base/v1/chat/completions" $chatBody @('-H', 'X-InferGate-Upstream: tools') 'm1-pin'
+    $r = Send-Chat "$base/v1/chat/completions" $chatBody @('-H', "X-InferGate-Upstream: $policyTools") 'm1-pin'
     Assert-Equal 'a pinned backend serves the request' 200 $r.Status
-    Assert-Equal 'the pin overrides priority and breaker state' 'tools' $r.Name
+    Assert-Equal "the pin overrides priority and breaker state ('$policyTools')" $policyTools $r.Name
     Assert-Equal 'nothing else was tried' '' $r.Tried
 
     $r = Send-Chat "$base/v1/chat/completions" $chatBody @('-H', 'X-InferGate-Upstream: does-not-exist') 'm1-badpin'
@@ -476,18 +496,18 @@ try {
     Assert-Contains '/metrics exports breaker state as a gauge' $metrics 'infergate_breaker_state'
     Assert-Contains '/metrics exports breaker trips' $metrics 'infergate_breaker_trips_total'
     Assert-True 'the failover counter recorded the dead backend' `
-        ((Get-SeriesValue -Text $metrics -Series 'infergate_failovers_total' -Labels 'upstream="primary"') -ge 1) `
+        ((Get-SeriesValue -Text $metrics -Series 'infergate_failovers_total' -Labels "upstream=`"$policyPrimary`"") -ge 1) `
         'no failover was recorded against primary'
     Assert-Equal 'the breaker state gauge is one-hot for the dead backend' 1 `
-        (Get-SeriesValue -Text $metrics -Series 'infergate_breaker_state' -Labels 'upstream="primary"')
+        (Get-SeriesValue -Text $metrics -Series 'infergate_breaker_state' -Labels "upstream=`"$policyPrimary`"")
     Assert-Equal 'the gauge says the dead backend is open' 1 `
-        (Get-SeriesValue -Text $metrics -Series 'infergate_breaker_state' -Labels 'upstream="primary",state="open"')
+        (Get-SeriesValue -Text $metrics -Series 'infergate_breaker_state' -Labels "upstream=`"$policyPrimary`",state=`"open`"")
     Assert-True 'requests are attributed to the backend that actually answered' `
-        ((Get-SeriesValue -Text $metrics -Series 'infergate_requests_total' -Labels 'upstream="secondary"') -ge 1) `
+        ((Get-SeriesValue -Text $metrics -Series 'infergate_requests_total' -Labels "upstream=`"$policySecondary`"") -ge 1) `
         'no request was attributed to secondary'
 
     $stats = (Invoke-Curl @('-s', "$base/stats")) | ConvertFrom-Json
-    $secondarySeries = @($stats.series | Where-Object { $_.upstream -eq 'secondary' })
+    $secondarySeries = @($stats.series | Where-Object { $_.upstream -eq $policySecondary })
     Assert-True '/stats carries a per-upstream series for the surviving backend' `
         ($secondarySeries.Count -ge 1) "series: $(@($stats.series | ForEach-Object { "$($_.upstream)/$($_.outcome)" }) -join ',')"
     Assert-True '/stats carries a p95 latency' `
@@ -508,11 +528,11 @@ try {
     Assert-Equal 'the breaker reset applies to the whole fleet' 'all' $reset.reset
 
     $r = Send-Chat "$base/v1/chat/completions" $chatBody @() 'm1-recover'
-    Assert-Equal 'traffic returns to the recovered backend' 'primary' $r.Name
+    Assert-Equal "traffic returns to the recovered backend ('$policyPrimary')" $policyPrimary $r.Name
     Assert-Equal 'recovery did not cost a failover' '' $r.Tried
 
     $breakerDoc = (Invoke-Curl @('-s', "$base/admin/breakers")) | ConvertFrom-Json
-    $primaryBreaker = @($breakerDoc.upstreams | Where-Object { $_.name -eq 'primary' })[0]
+    $primaryBreaker = @($breakerDoc.upstreams | Where-Object { $_.name -eq $policyPrimary })[0]
     Assert-Equal 'the recovered backend is trusted again' 'closed' $primaryBreaker.state
 
     # -----------------------------------------------------------------------
@@ -525,23 +545,27 @@ try {
     # A failover is folded into the ONE request line rather than logged as a
     # second line: the record carries `attempts` and `tried`, so grepping for a
     # request id shows both the backend that failed and the one that answered.
-    # This asserts on the LINE and not on a substring, because `upstream=secondary`
-    # on its own is also exactly what an ordinary healthy request logs -- the
+    # This asserts on the LINE and not on a substring, because the answering
+    # upstream's name on its own is also exactly what an ordinary healthy request logs -- the
     # claim is that this particular line admits two attempts.
     #
     # (slog quotes a value containing a space, so the attribute in the file is
-    # tried="primary -> secondary"; the regex tolerates the quotes.)
+    # tried="<first> -> <second>"; the regex tolerates the quotes.)
+    # The two attribute regexes are built from the names the config gave these
+    # replicas: the gateway logs the name it was configured with.
+    $answeringAttr = "\supstream=" + [regex]::Escape($policySecondary) + "\b"
+    $triedAttr = 'tried="?' + [regex]::Escape($policyPrimary) + ' -> ' + [regex]::Escape($policySecondary) + '"?'
     $failoverLines = @($logText -split "`n" | Where-Object {
         $_ -match 'msg=request' -and
-        $_ -match '\supstream=secondary\b' -and
+        $_ -match $answeringAttr -and
         $_ -match '\sstatus=200\b' -and
         $_ -match '\sattempts=2\b' -and
-        $_ -match 'tried="?primary -> secondary"?'
+        $_ -match $triedAttr
     })
     Assert-True 'the failed-over request is logged as one line naming both attempts' `
         ($failoverLines.Count -ge 1) `
-        "no such line; lines naming secondary: $(@($logText -split "`n" | Where-Object { $_ -match 'upstream=secondary' }).Count)"
-    Assert-Contains 'logs carry the upstream that answered' $logText 'upstream=secondary'
+        "no such line; lines naming secondary: $(@($logText -split "`n" | Where-Object { $_ -match $answeringAttr }).Count)"
+    Assert-Contains "logs carry the upstream that answered ('$policySecondary')" $logText "upstream=$policySecondary"
     Write-Host "        gateway log: $gwLog" -ForegroundColor DarkGray
 }
 finally {

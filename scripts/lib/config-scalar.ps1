@@ -28,16 +28,54 @@ function Get-ConfigScalar {
 }
 
 function Get-ConfigListScalar {
-    param([string]$Text, [string]$Block, [string]$Key)
+    param([string]$Text, [string]$Block, [string]$Key, [string]$WhereKey, [string]$WhereValue)
     # The entries of a list under a block are written "- key: value". Scoping the
     # lookup to the block is what keeps `name` from coming out of `models` or
     # `tenants`; scoping it to a list entry (the leading dash) is what keeps it
-    # from coming out of one of the entry's own nested lists. The value returned
-    # is the FIRST entry's, which is the one a gate compares an index like
-    # upstreams[0] against.
+    # from coming out of one of the entry's own nested lists.
+    #
+    # With -WhereKey/-WhereValue the entry is picked by one of its own scalars
+    # (an M1 gate knows a replica by the port it listens on, because that is the
+    # one thing the gate itself substituted). Without it the FIRST entry is used,
+    # which is the one a gate compares an index like upstreams[0] against.
     $b = [regex]::Match($Text, "(?ms)^$([regex]::Escape($Block)):[^\r\n]*\r?\n(.*?)(?=^\S|\z)")
     if (-not $b.Success) { return $null }
-    $k = [regex]::Match($b.Groups[1].Value, "(?m)^\s*-\s*$([regex]::Escape($Key)):\s*([^\s#]+)")
+
+    # An entry starts at a dash line and owns the lines under it until the next
+    # dash at the same or shallower indentation, so a nested list (models:,
+    # capabilities:) stays inside the entry that declares it.
+    $lines = $b.Groups[1].Value -split "\r?\n"
+    $starts = @()
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $dash = [regex]::Match($lines[$i], '^(?<indent>\s*)-\s')
+        if ($dash.Success) { $starts += [pscustomobject]@{ Line = $i; Indent = $dash.Groups['indent'].Value.Length } }
+    }
+    if ($starts.Count -eq 0) { return $null }
+
+    $entries = @()
+    for ($n = 0; $n -lt $starts.Count; $n++) {
+        $end = $lines.Count
+        for ($j = $n + 1; $j -lt $starts.Count; $j++) {
+            if ($starts[$j].Indent -le $starts[$n].Indent) { $end = $starts[$j].Line; break }
+        }
+        $entries += ($lines[$starts[$n].Line..($end - 1)] -join "`n")
+    }
+
+    $entry = $entries[0]
+    if ($WhereKey) {
+        $entry = $null
+        foreach ($candidate in $entries) {
+            $w = [regex]::Match($candidate, "(?m)^\s*-?\s*$([regex]::Escape($WhereKey)):\s*([^\r\n#]+)")
+            if ($w.Success -and $w.Groups[1].Value.Trim().Trim('"') -eq $WhereValue) { $entry = $candidate; break }
+        }
+        if ($null -eq $entry) { return $null }
+    }
+
+    # The first key of an entry sits after "- ", so accept both spellings but
+    # prefer the dashed one: that is the entry's own scalar, not a `name:` that
+    # a nested list happens to carry.
+    $k = [regex]::Match($entry, "(?m)^\s*-\s*$([regex]::Escape($Key)):\s*([^\s#]+)")
+    if (-not $k.Success) { $k = [regex]::Match($entry, "(?m)^\s*$([regex]::Escape($Key)):\s*([^\s#]+)") }
     if (-not $k.Success) { return $null }
     return $k.Groups[1].Value.Trim('"')
 }

@@ -99,7 +99,7 @@ curl.exe -s "$base/metrics"   # Prometheus 文本
 .\tools\go.cmd run .\cmd\verify                                        # M0，38 条断言
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m0.ps1   # M0 curl，47 条
 .\tools\go.cmd run .\cmd\verify-m1                                     # M1，64 条断言
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m1.ps1   # M1 curl，58 条
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m1.ps1   # M1 curl，61 条
 .\tools\go.cmd run .\cmd\verify-m2                                     # M2，103 条断言
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m2.ps1   # M2 curl，158 条（内存 + Redis）
 .\tools\go.cmd run .\cmd\verify-m3                                     # M3，470 条断言
@@ -342,7 +342,7 @@ pricing:                        # USD / 1M tokens；cost 策略与日志里的 c
 
 ```powershell
 .\tools\go.cmd run .\cmd\verify-m1                                            # 64/64 断言
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m1.ps1    # 58/58 断言
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m1.ps1    # 61/61 断言
 ```
 
 `scripts/verify-m1.ps1` 自己编译二进制、拉起三个副本和一个网关，依次验证：优先级路由 → 杀掉一个
