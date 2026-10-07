@@ -45,7 +45,7 @@ test:
 verify:
 	$(GO) run ./cmd/verify
 
-## verify-curl: real processes + real curl.exe (47 assertions).
+## verify-curl: real processes + real curl.exe (48 assertions).
 ## Requires Windows PowerShell; `pwsh` does not exist on this host.
 verify-curl:
 	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-m0.ps1
@@ -182,7 +182,7 @@ verify-m6:
 ## verify-m6-curl: the same claims through the real binary and real curl.exe over
 ## a real scripted upstream process, with the mock's /calls counter as the
 ## external witness that a replay caused zero extra provider calls.  153
-## assertions; the seven gates' curl rows add up to 1081 assertions.
+## assertions; the seven gates' curl rows add up to 1082 assertions.
 verify-m6-curl:
 	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-m6.ps1
 

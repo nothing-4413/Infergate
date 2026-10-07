@@ -97,7 +97,7 @@ curl.exe -s "$base/metrics"   # Prometheus 文本
 ```powershell
 # 每个里程碑两条路径：Go 端到端 + 真实进程 curl
 .\tools\go.cmd run .\cmd\verify                                        # M0，38 条断言
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m0.ps1   # M0 curl，47 条
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m0.ps1   # M0 curl，48 条
 .\tools\go.cmd run .\cmd\verify-m1                                     # M1，64 条断言
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m1.ps1   # M1 curl，61 条
 .\tools\go.cmd run .\cmd\verify-m2                                     # M2，103 条断言
@@ -112,7 +112,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m5.ps1   # 
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m6.ps1   # M6 curl，153 条（幂等 / 账本 / 能力发现）
 ```
 
-`scripts/verify-m0.ps1` 会自行编译两个二进制、拉起两个真实进程、跑完 47 条断言，并在 `finally` 中
+`scripts/verify-m0.ps1` 会自行编译两个二进制、拉起两个真实进程、跑完 48 条断言，并在 `finally` 中
 必定回收进程；参数为 `-GatewayPort 18080 -MockPort 19000 -TtfbMillis 250`。
 注意本机没有 `pwsh`，必须用 `powershell -NoProfile -ExecutionPolicy Bypass`（脚本未签名）。
 

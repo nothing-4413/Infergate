@@ -22,13 +22,18 @@ import (
 // describes ("M5 的 curl 门从 203 条变成 211 条"): the row was updated, the total
 // was not. A number printed next to its addends has to equal their sum.
 //
-// WHAT IT DOES NOT CHECK. Whether 47 is really how many assertions
-// scripts/verify-m0.ps1 runs. Establishing that needs the script, real processes
-// and real ports, so it is a measurement rather than a unit test; the
-// measurements are the run ids recorded in docs/ACCEPTANCE.md. What is checked
-// here is the part arithmetic can settle: the two documents agree row by row,
-// each 合计 is the sum of the rows above it, and the sentences that restate a
-// total restate the same one.
+// WHAT IT DOES NOT CHECK. Whether the number in a row is really how many
+// assertions that gate runs: establishing that needs the script, real processes
+// and real ports, so it is a measurement rather than a unit test, and the
+// measurements are the run ids recorded in docs/ACCEPTANCE.md. It is checked
+// where it can be, while a gate runs: scripts/lib/run-go-verify.ps1 compares each
+// Go gate's printed total with its row in README.md, and scripts/lib/run-gate.ps1
+// does the same for the curl gates against docs/ACCEPTANCE.md. M0's curl gate
+// grew from 47 assertions to 48 in af4209f, the gate printed 48, and that table
+// kept saying 47 until the wrapper read it. What is checked here is the part
+// arithmetic can settle: the two documents agree row by row, each 合计 is the sum
+// of the rows above it, and the sentences that restate a total restate the same
+// one.
 func TestDocumentedGateTotalsAreTheSumOfTheirRows(t *testing.T) {
 	root := repoRoot(t)
 
@@ -251,7 +256,7 @@ func TestEveryQuotedGateCountMatchesTheTable(t *testing.T) {
 			what:         "a sentence pointing at a Go gate's count",
 			rx:           regexp.MustCompile("`cmd/verify(?:-m(\\d))?`\\s*的\\s*(\\d+)\\s*条断言"),
 			milestoneGrp: 1, countGrp: 2},
-		{ // "`scripts/verify-m0.ps1` 会…跑完 47 条断言"
+		{ // "`scripts/verify-m0.ps1` 会…跑完 48 条断言"
 			what:         "a sentence about what a curl gate runs",
 			rx:           regexp.MustCompile("`scripts/verify-m(\\d)\\.ps1`[^。\\n]{0,40}?跑完\\s*(\\d+)\\s*条断言"),
 			milestoneGrp: 1, countGrp: 2, curl: true},
