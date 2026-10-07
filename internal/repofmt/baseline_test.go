@@ -499,7 +499,7 @@ func TestHeadlineClaimsMatchTheBaseline(t *testing.T) {
 		},
 	}
 	claims = append(claims, m0Claims()...)
-	if len(claims) < 130 {
+	if len(claims) < 140 {
 		t.Fatalf("only %d claims; this check has been hollowed out", len(claims))
 	}
 
@@ -822,11 +822,13 @@ func m0Claims() []baselineClaim {
 		concurrency float64
 		stream      bool
 		phrase      string
+		usage       string // docs/USAGE.md prints this phase too, with fewer columns
 		cells       []cell
 	}{
 		{
 			label: "direct non-stream", concurrency: 8, stream: false,
 			phrase: "8393 [6678..10531] | 510us | 2.00ms | 3.00ms",
+			usage:  "| 直连上游（非流式） | 8 | 8393 [6678..10531] | 2.00ms | - |",
 			cells: []cell{
 				{claim: baselineClaim{quote: "8393", path: []string{"qps"}, digits: 0}, readme: "直连 c=8 8393 QPS"},
 				{claim: baselineClaim{quote: "6678", path: []string{"qps_min"}, digits: 0}},
@@ -851,6 +853,7 @@ func m0Claims() []baselineClaim {
 		{
 			label: "gateway non-stream", concurrency: 8, stream: false,
 			phrase: "5026 [2837..7359] | 1.00ms | 3.50ms | 4.50ms",
+			usage:  "| 经网关（非流式） | 8 | 5026 [2837..7359] | 3.50ms | - |",
 			cells: []cell{
 				{claim: baselineClaim{quote: "5026", path: []string{"qps"}, digits: 0}, readme: "经网关 5026 QPS"},
 				{claim: baselineClaim{quote: "2837", path: []string{"qps_min"}, digits: 0}},
@@ -863,6 +866,7 @@ func m0Claims() []baselineClaim {
 		{
 			label: "gateway non-stream", concurrency: 32, stream: false,
 			phrase: "5496 [5140..7477] | 5.02ms | 11.00ms | 15.76ms",
+			usage:  "| 经网关（非流式） | 32 | 5496 [5140..7477] | 11.00ms | - |",
 			cells: []cell{
 				{claim: baselineClaim{quote: "5496", path: []string{"qps"}, digits: 0}},
 				{claim: baselineClaim{quote: "5140", path: []string{"qps_min"}, digits: 0}},
@@ -875,6 +879,7 @@ func m0Claims() []baselineClaim {
 		{
 			label: "direct stream", concurrency: 8, stream: true,
 			phrase: "1728 [1655..2297] | 4.50ms | 7.00ms | 8.03ms | 502us | 2.00ms",
+			usage:  "| 直连上游（流式） | 8 | 1728 [1655..2297] | 7.00ms | 2.00ms |",
 			cells: []cell{
 				{claim: baselineClaim{quote: "1728", path: []string{"qps"}, digits: 0}},
 				{claim: baselineClaim{quote: "1655", path: []string{"qps_min"}, digits: 0}},
@@ -903,6 +908,7 @@ func m0Claims() []baselineClaim {
 		{
 			label: "gateway stream", concurrency: 8, stream: true,
 			phrase: "1088 [820..1144] | 7.00ms | 11.09ms | 13.25ms | 999us | 2.74ms",
+			usage:  "| 经网关（流式） | 8 | 1088 [820..1144] | 11.09ms | 2.74ms |",
 			cells: []cell{
 				{claim: baselineClaim{quote: "1088", path: []string{"qps"}, digits: 0}},
 				{claim: baselineClaim{quote: "820", path: []string{"qps_min"}, digits: 0}},
@@ -917,6 +923,7 @@ func m0Claims() []baselineClaim {
 		{
 			label: "gateway stream", concurrency: 32, stream: true,
 			phrase: "1324 [1095..2125] | 22.86ms | 41.55ms | 51.55ms | 2.00ms | 10.81ms",
+			usage:  "| 经网关（流式） | 32 | 1324 [1095..2125] | 41.55ms | 10.81ms |",
 			cells: []cell{
 				{claim: baselineClaim{quote: "1324", path: []string{"qps"}, digits: 0}},
 				{claim: baselineClaim{quote: "1095", path: []string{"qps_min"}, digits: 0}},
@@ -944,6 +951,20 @@ func m0Claims() []baselineClaim {
 				claim.docs = resumeOnly
 			}
 			claims = append(claims, claim)
+		}
+		// docs/USAGE.md carries six of these phases in a narrower table, so each
+		// of those rows needs its own wording checked; the cell it shows is the
+		// median.
+		if row.usage != "" {
+			for _, c := range row.cells {
+				if len(c.claim.path) == 1 && c.claim.path[0] == "qps" {
+					claim := c.claim
+					claim.file = "m0-baseline.json"
+					claim.find = map[string]any{"label": row.label, "concurrency": row.concurrency, "stream": row.stream}
+					claim.docs = []claimPrint{{file: "docs/USAGE.md", phrase: row.usage}}
+					claims = append(claims, claim)
+				}
+			}
 		}
 	}
 	return claims
