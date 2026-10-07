@@ -34,6 +34,10 @@ Windows PowerShell 5.1 读无 BOM 的 `.ps1` 时用机器代码页解码，那�
 重述都停在 1060（203 那一版的正确和），差的正是那 8 条自检。
 每一句只引用一个门的地方——`docs/DESIGN.md` 的里程碑条目、`docs/USAGE.md` 的命令块、`docs/RESUME.md`
 的小结——由同一个文件里的 `TestEveryQuotedGateCountMatchesTheTable` 逐个对表核，数错哪一行就报哪一行。
+Makefile 里每个 `verify-*` target 上方那段 `##` 注释也被它读：注释要正好报出该 target 那一行的数字
+（`verify-m6-curl` 的那段还多报一个 curl 列合计），所以 `verify-m5-curl` 停在 203、`verify-m6-curl` 写着
+"over 5,000" 那两处才被看见（`35612ff`）；`measure-*` 与 `run-*` 的注释不在其中，它们报的是自己那次
+运行打印的合计，是测量结果而不是表里的一行。
 
 文档里的**指路**也有一层检查，都在 `internal/repofmt/citedpaths_test.go`：散文里点到的仓库路径必须真实存在
 （围栏代码块是引用而不是主张，所以整块跳过）、引用只点名符号而不写行号、每一句 Markdown 链接连同它的
