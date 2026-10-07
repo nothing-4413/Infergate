@@ -10,7 +10,7 @@
 //	-- contexts reference, steps.<step_id>.outcome / .conclusion
 //
 // With the flag on every gate step and no step that is allowed to fail, all 1081
-// curl assertions and all 2353 in-process ones could be red while the job, the run,
+// curl assertions and all 2355 in-process ones could be red while the job, the run,
 // the badge and the anonymous jobs API all reported success -- and those step
 // conclusions are the only surface a reader outside the repository can see.
 //

@@ -7,7 +7,7 @@
 稳定性治理、本地推理服务化与全链路可观测。它同时是另一个 Agent 项目 Warden 的底层模型接入层。
 
 **M0–M6 七个里程碑全部完成**，每个里程碑都有两条互相独立的验收路径和一份可复现的实测数据：
-Go 进程内端到端 **2353** 条断言、真实进程 + 真实 `curl.exe` **1081** 条断言，两条都绿；
+Go 进程内端到端 **2355** 条断言、真实进程 + 真实 `curl.exe` **1081** 条断言，两条都绿；
 `go test ./...` 与 `go vet ./...` 均 exit 0。原始数据见 `docs/baseline/`。
 
 - **透传正确性**：OpenAI 兼容协议 + SSE 逐帧透传，`tool_call` 增量按 `index` 拼回合法 JSON；
@@ -145,10 +145,10 @@ mock 的常用开关：`-token-delay 0` 关掉每 token 的 15ms 间隔（**压�
 | M1 路由与熔断 | `cmd/verify-m1` — 64 条 | 61 条 |
 | M2 语义缓存 | `cmd/verify-m2` — 103 条 | 158 条 |
 | M3 配额治理 | `cmd/verify-m3` — 470 条 | 323 条 |
-| M4 分层与量化 | `cmd/verify-m4` — 877 条 | 128 条 |
+| M4 分层与量化 | `cmd/verify-m4` — 879 条 | 128 条 |
 | M5 可观测与压测 | `cmd/verify-m5` — 420 条 | 211 条 |
 | M6 幂等/账本/能力 | `cmd/verify-m6` — 381 条 | 153 条 |
-| **合计** | **2353 条** | **1081 条** |
+| **合计** | **2355 条** | **1081 条** |
 
 `合计` 行不是手抄的：`internal/repofmt` 的 `TestDocumentedGateTotalsAreTheSumOfTheirRows` 会把这张表
 与 [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) 的门禁总表逐行对照、并核对每一句重述总数的句子——M5 那
@@ -280,7 +280,7 @@ infergate/
 │   ├── miniredis/          # 进程内 RESP2 服务（默认 :6399），共享缓存/配额的本机后端
 │   ├── mockcollector/      # 假 OTLP collector（M5 验证导出路径）
 │   ├── measure-m2/         # 缓存阈值扫描：26 对语料 → 各阈值下的真/误命中率
-│   └── verify, verify-m1..m6/   # 7 个 Go 端到端验收程序（38 ~ 877 条断言）
+│   └── verify, verify-m1..m6/   # 7 个 Go 端到端验收程序（38 ~ 879 条断言）
 ├── configs/                # 14 份逐行注释的示例配置（mock / routing / cache / quota / tiered / agent / docker …）
 ├── internal/
 │   ├── config/ miniyaml/ logging/     # 配置加载（YAML→JSON→struct）、手写 YAML 子集、slog
@@ -422,7 +422,7 @@ access:
   - job 日志（`GET /actions/jobs/{id}/logs`）与 artifact 下载对匿名读者都是 **403**
     （`{"message":"Must have admin rights to Repository.", "status":403}`）。
 - **九个门步骤都带 `continue-on-error: true`，所以它们自己从来不能让 job 变红**：job 里全是允许失败的
-  步骤，等于整条 Windows 验收链（1081 条 curl 断言 + 2353 条进程内 Go 断言）即使全红，job、run、徽章、
+  步骤，等于整条 Windows 验收链（1081 条 curl 断言 + 2355 条进程内 Go 断言）即使全红，job、run、徽章、
   匿名 jobs API 也都会报 `success`。GitHub 的定义就是针对这种情况写的（contexts 参考，
   `steps.<step_id>.conclusion`）：
   *"When a `continue-on-error` step fails, the `outcome` is `failure`, but the final `conclusion` is
@@ -437,7 +437,7 @@ access:
   绿路径已在 runner 上走过两次：run 37410701867（head `e248c7a`，当时还是八个门）第 12 步
   `every gate must have passed` = success；run 37413713212（head `6ec3554`）第 13 步同样的结论，
   而它前面**九个**门步骤全部 success——那是第九个门
-  （`go verify gates (M0-M6)`，把 `.\tools\go.cmd run .\cmd\verify*` 的 2353 条断言接进同一条链）
+  （`go verify gates (M0-M6)`，把 `.\tools\go.cmd run .\cmd\verify*` 的 2355 条断言接进同一条链）
   第一次在 runner 上跑，所以它现在**有** runner 证据，而且是它把 marker 凑齐到九个的那一次。
   红路径只有本机证据——在 runner 上制造一次红门会让那次 run 的其余结论一起作废（本机：七包 21.3 秒全过、
   marker 写 0，两个失败路径"包不存在 / 包名为空"都验过是红）。这一批同时修掉了这个门里长期未解释的 M5

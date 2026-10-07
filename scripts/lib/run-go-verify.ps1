@@ -2,7 +2,7 @@
 # tmp\gate-<name>.exit marker the curl gates leave, so the one step in ci.yml that
 # is allowed to fail can fail on these too.
 #
-# WHY THIS FILE EXISTS. cmd/verify* is 2353 assertions -- the larger of the two
+# WHY THIS FILE EXISTS. cmd/verify* is 2355 assertions -- the larger of the two
 # acceptance chains -- and it was the only one with no CI step at all. It needs no
 # curl, no PowerShell and no spawned binary: it is a Go program that talks to the
 # gateway in-process. Nothing about it is platform-specific; it simply had never

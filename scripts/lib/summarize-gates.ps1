@@ -8,7 +8,7 @@
 #    conclusion is success."
 #   -- contexts reference, steps.<step_id>.outcome / .conclusion
 #
-# Those gates are 1068 curl assertions, 44 operator-token ones and the 2353
+# Those gates are 1081 curl assertions, 44 operator-token ones and the 2355
 # in-process Go ones, and they are the only Windows coverage this repository has.
 # With the flag on every gate step and no step that is allowed to fail, all nine
 # could be red while the job, the run, the badge and the anonymous jobs API

@@ -127,7 +127,7 @@ verify-m3-curl:
 measure-m3:
 	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/measure-m3.ps1
 
-## verify-m4: tiered local/cloud routing acceptance (877 assertions, the M4 CI
+## verify-m4: tiered local/cloud routing acceptance (879 assertions, the M4 CI
 ## gate).  Classification is asserted against the router's own decisions and then
 ## end to end through the assembled server, because a tier policy that is right in
 ## the router but lost on the way to the proxy saves nothing.

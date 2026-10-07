@@ -12,10 +12,10 @@ M4–M6 的验收与实测段落与各自的启动方式写在一起，见 [USAG
 | M1 路由与熔断 | 64 | 61 | `baseline/m1-summary.json`（+ 9 条压测逐轮文件） |
 | M2 语义缓存 | 103 | 158 | `baseline/m2-summary.json`（+ 语料、阈值扫描、6 条压测逐轮文件） |
 | M3 配额治理 | 470 | 323 | `baseline/m3-summary.json` |
-| M4 分层与量化 | 877 | 128 | `baseline/m4-summary.json` |
+| M4 分层与量化 | 879 | 128 | `baseline/m4-summary.json` |
 | M5 可观测与压测 | 420 | 211 | `baseline/m5-summary.json`（+ 24 条逐轮文件） |
 | M6 幂等/账本/能力 | 381 | 153 | `baseline/m6-summary.json` |
-| **合计** | **2353** | **1081** | |
+| **合计** | **2355** | **1081** | |
 | 管理面鉴权（`access`，不属任何里程碑） | 50 | 44 | 无（证据是 `scripts/verify-hardening.ps1` 的输出） |
 
 M5 的 curl 门从 203 条变成 211 条，加的是 8 条解析器自检（`10.0a`–`10.0h`）：
@@ -39,9 +39,14 @@ Makefile 里每个 `verify-*` target 上方那段 `##` 注释也被它读：注�
 "over 5,000" 那两处才被看见（`35612ff`）；`measure-*` 与 `run-*` 的注释不在其中，它们报的是自己那次
 运行打印的合计，是测量结果而不是表里的一行。
 
-同一个总数还以英文写在两处注释里：`.github/workflows/ci.yml` 里解释 `continue-on-error` 代价的那段，和
-`internal/repofmt/curl_gates_test.go` 的文件头。这两份互相不一致——一份停在 1060（上面那句里读者已经被告知
-不可信的旧合计），另一份是 1068——而表里 curl 列的和已经是 1081；现在这两处也在扫描面上。
+同一个总数还以英文写在几处注释里：`.github/workflows/ci.yml` 里解释 `continue-on-error` 代价的那段、
+`internal/repofmt/curl_gates_test.go` 的文件头，和 `scripts/lib/summarize-gates.ps1` 的文件头。三份
+里前两份曾互相不一致——一份停在 1060（上面那句里读者已经被告知不可信的旧合计），另一份是 1068——而表里
+curl 列的和已经是 1081；第三份两半都停在旧值（1068 与 2353），且它**不在**当时的扫描面上，所以一直没人读。
+现在三处都在扫描面上：成对出现的那个句子按原样核，另外两处不成对的写法由两条英文半句模式（`N curl
+assertions`、`N in-process (Go) ones`）各自核到表里的和。还有一句把整条进程内链子一起称重——`cmd/verify* is
+N assertions`，写在 `scripts/lib/run-go-verify.ps1` 的文件头和 ci.yml 里起同一个作用的注释里——由第三条半句
+模式核；M4 补上两条断言之后，ci.yml 里那一份还停在 2353，也是这次才被读到的。
 
 文档里的**指路**也有一层检查，都在 `internal/repofmt/citedpaths_test.go`：散文里点到的仓库路径必须真实存在
 （围栏代码块是引用而不是主张，所以整块跳过）、引用只点名符号而不写行号、点到的测试名必须真的被树里某个
@@ -212,7 +217,7 @@ curl 门编译真二进制、拉真进程、用真 `curl.exe` 打真 socket，�
 | `gofmt -l ./cmd ./internal` | 格式门 | 绿（加入这一步时仓库里有 7 个文件不干净，已一并修好） |
 | `go test ./... -count=1 -timeout 20m` | 全部单元/集成测试（Linux，无 `-race`） | 绿（同 run step 7） |
 | `go test -race` **逐个包**（`go list ./...` 循环，失败继续跑下一个） | 竞态检测（本机配方见下） | **runner 绿**：run 37408647484 step 9 `go test -race` success（整个 job 2 分 28 秒）；本机同样 36 个包全绿（218 秒，0 条 `DATA RACE`） |
-| `.\tools\go.cmd run .\cmd\verify*` | 2353 条 Go 端到端断言 | **runner 绿**：run 37413713212（head `6ec3554`）的 `curl gates` job step 12 `go verify gates (M0-M6)` success —— 这是它第一次在 runner 上跑；本机 31 秒跑完七包、2353/2353、写 marker 0 |
+| `.\tools\go.cmd run .\cmd\verify*` | 2355 条 Go 端到端断言 | **runner 绿**：run 37413713212（head `6ec3554`）的 `curl gates` job step 12 `go verify gates (M0-M6)` success —— 这是它第一次在 runner 上跑；本机 31 秒跑完七包、2355/2355、写 marker 0 |
 | `.\scripts\verify-m*.ps1` + `verify-hardening.ps1` | 1081 条 curl 端到端断言 + 44 条管理面令牌断言 | **绿**：`curl gates (M0-M6, operator token)` job 在 run 37408647484 上 1 分 55 秒跑完，八个门（M0–M6 + operator token）全部 success——那次还没有 `go verify gates (M0-M6)`，也还没有反制步骤；run 37413713212 上是九个门全 success（head `6ec3554`，多了那个 Go 门，该 job 2 分 15 秒） |
 | `scripts/lib/summarize-gates.ps1`（job 内**唯一**不允许失败的一步） | 9 个门（八个 curl + 一个 Go）的 marker 文件都在且都写着 0 | **绿**：run 37413713212（head `6ec3554`）step 13 `every gate must have passed` success，它前面**九个门步骤全部 success**——第一次读齐九个 marker；更早的 run 37410701867（head `e248c7a`）step 12 是只有八个门时的同一结论；本机 5 个用例全过（见下） |
 | `scripts/verify-docker-profile.ps1` | 20 条容器画像断言（真二进制、真端口、真 miniredis） | 绿（本机 25 秒，见下「容器的证据边界」） |

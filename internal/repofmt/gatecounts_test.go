@@ -106,20 +106,42 @@ func TestDocumentedGateTotalsAreTheSumOfTheirRows(t *testing.T) {
 			regexp.MustCompile(`(\d+)\s*条进程内 Go 断言`), 1, 0, 0},
 		{"docs/RESUME.md's résumé bullet",
 			regexp.MustCompile(`Go (\d+) 条 \+ 真实进程 curl (\d+) 条`), 1, 2, 0},
-		// The same sentence is written out in two comments -- the ci.yml block
-		// that explains the flag and this package's own header -- and the two
-		// copies disagreed: one said 1060 (the stale 合计 a reader had already
-		// been told not to believe) and the other 1068, while the table added up
-		// to 1081. Both halves are checked because the sentence pairs the two
-		// totals, so a table that moves has to move both comments with it.
+		// The same sentence is written out in three comments -- the ci.yml block
+		// that explains the flag, this package's own header, and the header of
+		// scripts/lib/summarize-gates.ps1 -- and the copies disagreed: one said
+		// 1060 (the stale 合计 a reader had already been told not to believe),
+		// another 1068, and the third sentence had drifted the same way. Both
+		// halves are checked because the sentence pairs the two totals, so a
+		// table that moves has to move every comment with it.
 		{"the counterweight comment in .github/workflows/ci.yml and in this package",
 			regexp.MustCompile(`(\d+)[\s\S]{0,40}?curl assertions and all (\d+) in-process ones`), 2, 1, 0},
+		// The English halves on their own, because the three copies do not word
+		// the sentence the same way and the pattern above only matches one
+		// spelling. The phrasing is the claim: on these surfaces a number
+		// written as "N curl assertions" or "N in-process ones" is the total,
+		// never one gate's row.
+		{"the English sentences that quote the curl total",
+			regexp.MustCompile(`(\d+) curl assertions`), 0, 1, 0},
+		{"the English sentences that quote the in-process Go total",
+			regexp.MustCompile(`(\d+)[\s\S]{0,12}?in-process (?:Go )?ones`), 1, 0, 0},
+		// The one sentence that sizes the whole chain instead of naming a gate:
+		// "cmd/verify* is N assertions". It is the header of
+		// scripts/lib/run-go-verify.ps1 and a comment in ci.yml, and it kept
+		// saying the old total while every other surface had moved on.
+		{"the English sentences that size the whole cmd/verify* chain",
+			regexp.MustCompile(`cmd/verify\* is (\d+) assertions`), 1, 0, 0},
 	}
 
+	// The two scripts that write the sentence in English are part of the
+	// surface: summarize-gates.ps1's header carried the stale pair (1068 and
+	// 2353) for as long as it existed, and nothing read it, because only
+	// documents were scanned.
 	surfaces := []string{
 		filepath.Join(root, "README.md"),
 		filepath.Join(root, ".github", "workflows", "ci.yml"),
 		filepath.Join(root, "internal", "repofmt", "curl_gates_test.go"),
+		filepath.Join(root, "scripts", "lib", "summarize-gates.ps1"),
+		filepath.Join(root, "scripts", "lib", "run-go-verify.ps1"),
 	}
 	globbed, err := filepath.Glob(filepath.Join(root, "docs", "*.md"))
 	if err != nil {
@@ -197,7 +219,7 @@ func TestDocumentedGateTotalsAreTheSumOfTheirRows(t *testing.T) {
 // two of its comments had drifted. verify-m5-curl still said 203 where the row
 // says 211 (the number M5's curl row had before its eight parser self-checks),
 // and verify-m6-curl claimed "over 5,000 curl-level assertions across the seven
-// gates" where the seven curl rows add up to 1068.
+// gates" where the seven curl rows then added up to 1068.
 func TestEveryQuotedGateCountMatchesTheTable(t *testing.T) {
 	root := repoRoot(t)
 	readme := readFile(t, filepath.Join(root, "README.md"))

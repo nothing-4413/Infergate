@@ -215,7 +215,7 @@ jobs:
 
 
   # The curl gates: real binaries, real processes, real sockets, real curl.exe.
-  # 1060 assertions that the Linux job above cannot run at all, because all seven
+  # 1081 curl assertions that the Linux job above cannot run at all, because all seven
   # of them are Windows PowerShell scripts that compile the binaries themselves,
   # start a gateway plus a mock upstream, drive them over TCP and tear both down
   # in a finally block. scripts/verify-hardening.ps1 rode in the same way.
@@ -256,7 +256,7 @@ jobs:
   #    conclusion is success."   -- contexts reference, steps.<step_id>.outcome
   #
   # So with the flag on every gate step and no other step that can fail, all 1081
-  # curl assertions and all 2353 in-process ones could be red while the job, the
+  # curl assertions and all 2355 in-process ones could be red while the job, the
   # run, the badge and the anonymous jobs API all said success. The flag stays,
   # because all of them running is worth more than the first one failing loudly --
   # and the counterweight is the `every gate must have passed` step below, which is
@@ -332,7 +332,7 @@ jobs:
         continue-on-error: true
 
       # The other acceptance chain, and until this step the only one with no CI
-      # coverage at all: cmd/verify* is 2353 assertions that talk to the gateway
+      # coverage at all: cmd/verify* is 2355 assertions that talk to the gateway
       # in-process, needing no curl, no PowerShell and no spawned binary, so
       # nothing about it was ever platform-specific -- it was just never wired up.
       # All seven run even if the first is red, for the same reason the eight gates

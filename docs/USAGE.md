@@ -104,7 +104,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m1.ps1   # 
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m2.ps1   # M2 curl，158 条（内存 + Redis）
 .\tools\go.cmd run .\cmd\verify-m3                                     # M3，470 条断言
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m3.ps1   # M3 curl，323 条（内存 + 真 Redis 协议）
-.\tools\go.cmd run .\cmd\verify-m4                                     # M4，877 条断言
+.\tools\go.cmd run .\cmd\verify-m4                                     # M4，879 条断言
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m4.ps1   # M4 curl，128 条（两层假上游，不需要 GPU）
 .\tools\go.cmd run .\cmd\verify-m5                                     # M5，420 条断言
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m5.ps1   # M5 curl，211 条
@@ -700,7 +700,7 @@ curl.exe -s -D headers.txt -o body.txt -H "Content-Type: application/json" `
 三个可复现的门（前两条不需要显卡，第三条需要）：
 
 ```powershell
-.\tools\go.cmd run .\cmd\verify-m4                                          # Go 门禁，877/877 断言（16 组）
+.\tools\go.cmd run .\cmd\verify-m4                                          # Go 门禁，879/879 断言（16 组）
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m4.ps1   # curl 门禁，128/128（两层假上游，不需要 GPU）
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\measure-m4.ps1  # 实测：三变体量化对比 + 分层分流 → docs\baseline\m4-summary.json
 ```
