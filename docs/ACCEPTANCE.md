@@ -50,7 +50,9 @@ Makefile 里每个 `verify-*` target 上方那段 `##` 注释也被它读：注�
 yaml，外加 Makefile、compose 文件、Dockerfile 与 `.github` 下的 workflow。还有一类数字说的是树本身的规模：
 `internal/repofmt/inventory_test.go` 的 `TestCitedTreeCountsMatchTheTree` 把散文里的"N 个包"与"N 份…配置"
 对着 `cmd`、`internal` 下含 Go 文件的目录数和 `configs/*.yaml` 的份数；这一条不跳围栏块，因为 README 里
-那份目录树本身就是在主张今天的树。行号这一条还多走一层：
+那份目录树本身就是在主张今天的树。同一份文件里的 `TestReadmeTreeNamesEveryPackage` 把这份目录树对着树本身读
+一遍：块里点到的每个包名（`verify-m1..m6` 这种区间要展开）都必须对应一个真在 `cmd`、`internal` 下含 Go 文件的
+目录——`internal/repofmt` 缺席这份清单很久，这一条是本次补上的。行号这一条还多走一层：
 `TestCommentsCiteSymbolsNotLineNumbers` 读 `cmd`、
 `internal`、`scripts` 下 Go 文件的注释行，外加 PowerShell 文件的**每一行**（只跳过 here-string 体：那是引用
 输出，和围栏块同一个豁免；双引号字符串不跳，它是脚本作者写的话，而且会被门禁打印给读者），因为

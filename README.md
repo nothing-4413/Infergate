@@ -293,6 +293,7 @@ infergate/
 │   ├── idempotency/ sessions/          # 幂等存储（LRU + claim）与会话成本账本
 │   ├── tracing/ traceexport/           # 有界 trace store + OTLP / JSONL 两个 exporter
 │   ├── metrics/ mockbackend/           # 内存指标聚合、进程内假上游（验收用）
+│   ├── repofmt/                        # 仓库自检：文档与代码一致性守卫（路径 / 符号 / 行号 / 计数 / 引文）
 │   └── server/                         # HTTP 服务与运维端点（/healthz /readyz /stats /metrics /admin）
 ├── scripts/                # 7 个 curl 端到端验收（verify-m0..m6.ps1）+ 6 个实测脚本 + vLLM 量化对比
 ├── docs/                   # DESIGN / USAGE / ACCEPTANCE / RESUME + baseline/（原始测量数据）
