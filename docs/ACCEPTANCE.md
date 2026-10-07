@@ -57,6 +57,15 @@ yaml，外加 Makefile、compose 文件、Dockerfile 与 `.github` 下的 workfl
 `internal/gateway/proxy.go` 一行的那两处注释全漂了，而当时没有任何检查看得见它们（`741e985`、`96e5e0f`）。
 注释里的**路径**仍然不查：脚本可以正当地点名自己马上要写的文件，这是这些检查分工留下的边界。
 
+README 第一屏那几条量化结论也有对着记录的一层：`internal/repofmt/baseline_test.go` 的
+`TestHeadlineClaimsMatchTheBaseline` 把那些数字（超时场景的两个中位数、缓存命中率与成本降幅、AWQ 的吞吐与
+倍数、分层省下的比例、导出的 span 条数、与直连相比的 QPS 差，以及由两个中位数算出来的倍数）从
+`docs/baseline/` 下那次运行的 JSON 里读回来，按 README 打印的精度重新格式化一遍，两边任一侧漂了都会报。
+同一个键在一个文件里出现多次而值不同时（`m5-summary.json` 的 `direct_minus_gateway_pct` 每个并发一档），
+这一条要求用同一个对象上的标记键（`workload`、`concurrency`、`variant`）指名读的是哪一个，而不是靠数组
+下标——数组里插一行不该换掉读的是谁。README 里另外两句量化结论——Warden 端到端的通过数、注入停顿后的
+首帧延迟——在这批 JSON 里没有对应字段，没有被这一条覆盖；它们是手工记录，不在这条链上。
+
 管理面鉴权默认关闭，所以 M0–M6 的两条证据链一行都没有覆盖它。它有自己的第三条链：
 `scripts/verify-hardening.ps1`，**真进程 + 真 curl + 44 条断言**，见下方「管理面鉴权的证据边界」。
 它的数字单独列成一行而不是并进合计——把一条 2026 年才加的安全门混进里程碑总数，
