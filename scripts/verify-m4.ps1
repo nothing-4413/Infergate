@@ -692,15 +692,18 @@ try {
         'local-vllm' (Get-Header $toolsBare.Headers 'X-InferGate-Upstream-Name')
 
     # The capability header is the only difference between those two requests,
-    # so the routing decision is what proves it was honoured. The gateway does
-    # not echo the header back (nothing in internal/gateway writes
-    # X-InferGate-Capabilities onto a response), which is recorded as an
-    # observation rather than asserted either way.
+    # so the routing decision is what proves it was honoured. The header is a
+    # request-only constraint -- internal/gateway/proxy.go reads it in
+    # (*Proxy).plan, and internal/gateway/cachereq.go reads it in
+    # capabilitiesFor so the tags are part of the cache scope -- and no response
+    # path writes it back, so the consequence a caller can see is the upstream
+    # name. That is recorded as an observation rather than asserted either way,
+    # and it is cited by symbol rather than by line: line numbers drift.
     Assert-True 'the capability header is what moved the request to the cloud tier' `
         ((Get-Header $tools.Headers 'X-InferGate-Upstream-Name') -ne (Get-Header $toolsBare.Headers 'X-InferGate-Upstream-Name')) `
         "with header='$((Get-Header $tools.Headers 'X-InferGate-Upstream-Name'))' without='$((Get-Header $toolsBare.Headers 'X-InferGate-Upstream-Name'))'"
     if ((Get-Header $tools.Headers 'X-InferGate-Capabilities').Length -eq 0) {
-        Add-Note "OBSERVATION: the gateway does not echo X-InferGate-Capabilities on the response (it is a request-only header; internal/gateway/proxy.go reads it at line 916 and no response path sets it), so a caller cannot see the capability tags the decision used from the response alone."
+        Add-Note "OBSERVATION: the response carries no X-InferGate-Capabilities echo. The header is a request-only constraint: internal/gateway/proxy.go reads it in (*Proxy).plan to resolve the routing chain, and internal/gateway/cachereq.go reads the same header in capabilitiesFor so two requests with different tags cannot share a cache entry. No response path writes it back, so what a caller can see is the consequence (X-InferGate-Upstream-Name, asserted above); the tags that produced the decision are the caller's own request header plus /admin/upstreams."
     }
 
     # -----------------------------------------------------------------------

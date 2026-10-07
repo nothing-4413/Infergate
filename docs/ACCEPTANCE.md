@@ -133,6 +133,9 @@ M4 那一节里还有一种陈旧写法：`scripts/verify-m4.ps1` 的 `/admin/up
 `routing` 块里取，键名匹配会穿过嵌套的 `tier_policy:`），再与 admin echo 比对。证伪：把发布的 `tier_policy`
 去掉、把 `tier` 的 json 标签改名，门禁立刻报 122 passed, 6 FAILED（四条与两条）；把读到的上限临时钉成读不到，
 两条存在性断言先红——它们挡在前面就是为了不让"两边都读不到"退化成 0 比 0 的假通过。
+同一类陈旧写法在门禁的观测文本里也有一处：M4 的注说能力头是 `internal/gateway/proxy.go` 第 916 行读的，
+实际上读它的是 `(*Proxy).plan`，而 `internal/gateway/cachereq.go` 的 `capabilitiesFor` 也读同一个头（能力
+标签要进缓存 scope）。行号会漂，所以这类引用现在一律按符号写。
 
 README 里另外两处量化结论不在这条链上，边界各不相同：Warden 端到端的通过数来自拿另一个 Agent 项目 Warden
 对着网关跑的那次运行，它的原始输出不在这个仓库里；注入停顿后的首帧延迟由 `scripts/verify-m0.ps1` 每次现场
