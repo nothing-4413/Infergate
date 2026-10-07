@@ -94,6 +94,20 @@ func TestHeadlineClaimsMatchTheBaseline(t *testing.T) {
 			path: []string{"*", "avoided_percent"}, digits: 2,
 		},
 		{
+			// The cost paragraph in the DESIGN names the list price it priced
+			// the mix with, so the sentence carries a number that lives in the
+			// record only because scripts/measure-m4.ps1 parsed it out of
+			// configs/tiered-local.yaml at measure time.
+			quote: "0.27", file: "m4-summary.json",
+			docs: []claimPrint{{file: "docs/DESIGN.md", phrase: "in 0.27 / out 1.1"}},
+			path: []string{"tiering", "cost", "prices_usd_per_1e6_tokens", "local-chat", "in"}, digits: 2,
+		},
+		{
+			quote: "1.1", file: "m4-summary.json",
+			docs: []claimPrint{{file: "docs/DESIGN.md", phrase: "in 0.27 / out 1.1"}},
+			path: []string{"tiering", "cost", "prices_usd_per_1e6_tokens", "local-chat", "out"}, digits: 1,
+		},
+		{
 			// The RESUME tells the local-inference story as an end-to-end P50 that
 			// fell from the fp16 run to the quantized one; the README does not.
 			quote: "1758", phrase: "1758ms", file: "m4-summary.json", docs: resumeOnly,
@@ -546,7 +560,7 @@ func TestHeadlineClaimsMatchTheBaseline(t *testing.T) {
 	}
 	claims = append(claims, m0Claims()...)
 	claims = append(claims, m4SecondCopies()...)
-	if len(claims) < 150 {
+	if len(claims) < 152 {
 		t.Fatalf("only %d claims; this check has been hollowed out", len(claims))
 	}
 
