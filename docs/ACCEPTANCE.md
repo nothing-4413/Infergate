@@ -47,7 +47,8 @@ Makefile 里每个 `verify-*` target 上方那段 `##` 注释也被它读：注�
 标签就只要任何一份文档有那个编号——正文里 `§12.5` 常出现在上一句已点名 DESIGN 的地方；点 RFC 的行跳过，
 那一节属于 RFC 自己。这一条本次才加，加之前 36 条全部可解析，只是没有东西看着它们）、每一句 Markdown
 链接连同它的标题锚点都要能在树里解析。扫描面是 README、`docs` 与 `deploy` 下的 markdown、`configs` 下的
-yaml，外加 Makefile、compose 文件与 Dockerfile。行号这一条还多走一层：`TestCommentsCiteSymbolsNotLineNumbers` 读 `cmd`、
+yaml，外加 Makefile、compose 文件、Dockerfile 与 `.github` 下的 workflow。行号这一条还多走一层：
+`TestCommentsCiteSymbolsNotLineNumbers` 读 `cmd`、
 `internal`、`scripts` 下 Go 与 PowerShell 文件的注释行（块注释和 here-string 算引用，跳过），因为
 `cmd/verify-m3/governance.go` 引 `internal/quota/quota.go` 三行、`internal/gateway/cachepath.go` 引
 `internal/gateway/proxy.go` 一行的那两处注释全漂了，而当时没有任何检查看得见它们（`741e985`、`96e5e0f`）。
