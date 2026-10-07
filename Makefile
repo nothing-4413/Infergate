@@ -158,7 +158,7 @@ verify-m5:
 
 ## verify-m5-curl: the same claims through the real binary and real curl.exe --
 ## /metrics, /stats, /admin/traces, /admin/tracing, the JSONL sink, and OTLP read
-## back from a real HTTP collector across a process boundary.  203 assertions.
+## back from a real HTTP collector across a process boundary.  211 assertions.
 verify-m5-curl:
 	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-m5.ps1
 
@@ -182,7 +182,7 @@ verify-m6:
 ## verify-m6-curl: the same claims through the real binary and real curl.exe over
 ## a real scripted upstream process, with the mock's /calls counter as the
 ## external witness that a replay caused zero extra provider calls.  149
-## assertions (over 5,000 curl-level assertions across the seven gates).
+## assertions (the seven gates' curl columns sum to 1068).
 verify-m6-curl:
 	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-m6.ps1
 

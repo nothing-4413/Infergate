@@ -31,7 +31,7 @@ Go 进程内端到端 **2353** 条断言、真实进程 + 真实 `curl.exe` **10
 下面的命令可以原样粘贴（Windows PowerShell；`go` 走仓库里的 shim，原因见第 4 节）：
 
 ```powershell
-.\tools\go.cmd test ./...                       # 全绿：约 90 个 Go 文件、无第三方依赖
+.\tools\go.cmd test ./...                       # 全绿：全树测试、无第三方依赖（规模见 3.3 的断言表）
 .\tools\go.cmd run .\cmd\verify-m6              # 381 条进程内端到端断言，退出码 0 就是过
 .\tools\go.cmd run .\cmd\infergate -config .\configs\mock.yaml -check   # 只校验配置
 ```
