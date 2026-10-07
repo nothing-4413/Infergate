@@ -131,6 +131,44 @@ function Read-Text {
     try { return $reader.ReadToEnd() } finally { $reader.Dispose() }
 }
 
+function Get-CachePolicy {
+    <#
+        Reads the cache policy out of the config TEXT this run hands the gateway,
+        so section 3 can assert "the running process reports what this file says"
+        instead of comparing the live admin surface against numbers copied into
+        this script.  The file is the input under test: retuning
+        configs/cache-local.yaml -- a threshold is an operator decision, and the
+        comment next to it in that file says why 0.86 -- then moves the
+        expectation with it rather than turning the gate red on a gateway that did
+        exactly what it was told.
+
+        Returns $null when the text carries no cache block at all, which is what
+        the first assertion of section 3 is about.
+    #>
+    param([string]$Text)
+    $block = [regex]::Match($Text, '(?ms)^cache:\s*\r?\n(.*?)(?=^\S|\z)')
+    if (-not $block.Success) { return $null }
+    $body = $block.Groups[1].Value
+    function Read-Key([string]$Key) {
+        $m = [regex]::Match($body, "(?m)^\s*$([regex]::Escape($Key)):\s*([^\s#]+)")
+        if ($m.Success) { return $m.Groups[1].Value.Trim('"') }
+        return $null
+    }
+    $enabled = Read-Key 'enabled'
+    $threshold = Read-Key 'threshold'
+    $floor = Read-Key 'min_prompt_chars'
+    $nondeterministic = Read-Key 'allow_nondeterministic'
+    $tools = Read-Key 'allow_tools'
+    return [pscustomobject]@{
+        Enabled               = $(if ($null -ne $enabled) { [bool]::Parse($enabled) } else { $null })
+        Store                 = (Read-Key 'store')
+        Threshold             = $(if ($null -ne $threshold) { [double]$threshold } else { $null })
+        MinPromptChars        = $(if ($null -ne $floor) { [int]$floor } else { $null })
+        AllowNondeterministic = $(if ($null -ne $nondeterministic) { [bool]::Parse($nondeterministic) } else { $null })
+        AllowTools            = $(if ($null -ne $tools) { [bool]::Parse($tools) } else { $null })
+    }
+}
+
 function New-BodyFile {
     <#
         Writes a JSON request body to a temp file and returns the '@path' form for
@@ -462,8 +500,13 @@ try {
     Write-Section '3. GET /admin/cache reports the configured policy'
     # The point of this section is that the cache the tests are about to exercise
     # is the one the operator configured: a semantic threshold of 0.86 is what
-    # makes the section 5 paraphrase a hit, so it is read back from the running
-    # process rather than assumed from the file on disk.
+    # makes the section 5 paraphrase a hit, so the running process has to report
+    # the policy the config file declares. Both sides are read: the expectation
+    # comes out of the config text this run wrote for the gateway ($cfg above),
+    # the actual out of /admin/cache. Neither is a literal in this script.
+    $policy = Get-CachePolicy -Text $cfg
+    Assert-True 'the config under test carries a cache block' ($null -ne $policy) 'read configs\cache-local.yaml'
+
     $adminResp = Invoke-Http -Url "$base/admin/cache" -Tag 'm2-admin'
     Assert-Equal 'GET /admin/cache answers 200' 200 $adminResp.Status
 
@@ -471,16 +514,16 @@ try {
     try { $admin = $adminResp.Body | ConvertFrom-Json } catch { }
     Assert-True '/admin/cache returns parseable JSON' ($null -ne $admin) "body: $($adminResp.Body.Substring(0, [Math]::Min(200, $adminResp.Body.Length)))"
 
-    if ($null -ne $admin) {
-        Assert-Equal 'the cache is enabled' $true $admin.enabled
-        Assert-Equal 'the configured store is the in-process memory store' 'memory' $admin.store
+    if ($null -ne $admin -and $null -ne $policy) {
+        Assert-Equal 'the cache is enabled as the config says' $policy.Enabled $admin.enabled
+        Assert-Equal 'the configured store is the in-process memory store' $policy.Store $admin.store
         Assert-True '/admin/cache carries a config block' ($null -ne $admin.config)
         Assert-True '/admin/cache carries a stats block' ($null -ne $admin.stats)
         if ($null -ne $admin.config) {
-            Assert-Equal 'the semantic threshold is the measured 0.86' 0.86 ([double]$admin.config.threshold)
-            Assert-Equal 'the prompt floor matches the sample config' 12 ([int]$admin.config.min_prompt_chars)
-            Assert-Equal 'sampling requests are exact-match only' $false $admin.config.allow_nondeterministic
-            Assert-Equal 'tool requests are exact-match only' $false $admin.config.allow_tools
+            Assert-Equal "the running semantic threshold is the config's $($policy.Threshold)" $policy.Threshold ([double]$admin.config.threshold)
+            Assert-Equal "the running prompt floor is the config's $($policy.MinPromptChars)" $policy.MinPromptChars ([int]$admin.config.min_prompt_chars)
+            Assert-Equal 'sampling requests are exact-match only, as the config says' $policy.AllowNondeterministic $admin.config.allow_nondeterministic
+            Assert-Equal 'tool requests are exact-match only, as the config says' $policy.AllowTools $admin.config.allow_tools
         }
         if ($null -ne $admin.stats) {
             # A brand-new gateway reports every counter at zero; asserting that
@@ -878,8 +921,11 @@ try {
         if ($matches.Count -ge 1) {
             # The threshold is read back from the running gateway, so this asserts
             # "the reported similarity is above the configured bar" rather than
-            # against a number copied into the script.
-            $threshold = 0.86
+            # against a number copied into the script. The config text this run
+            # handed the gateway is the fallback for the case the admin surface
+            # omits the block -- section 3 has already failed by then.
+            $threshold = 0.0
+            if ($null -ne $policy) { $threshold = [double]$policy.Threshold }
             if ($null -ne $admin.config) { $threshold = [double]$admin.config.threshold }
             $best = [double]$matches[0].similarity
             Assert-True 'the match reaches the configured similarity threshold' ($best -ge $threshold) `

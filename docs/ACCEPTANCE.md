@@ -10,12 +10,12 @@ M4–M6 的验收与实测段落与各自的启动方式写在一起，见 [USAG
 | --- | --- | --- | --- |
 | M0 透传与 SSE | 38 | 47 | `baseline/m0-baseline.json` |
 | M1 路由与熔断 | 64 | 56 | `baseline/m1-summary.json`（+ 9 条压测逐轮文件） |
-| M2 语义缓存 | 103 | 157 | `baseline/m2-summary.json`（+ 语料、阈值扫描、6 条压测逐轮文件） |
+| M2 语义缓存 | 103 | 158 | `baseline/m2-summary.json`（+ 语料、阈值扫描、6 条压测逐轮文件） |
 | M3 配额治理 | 470 | 323 | `baseline/m3-summary.json` |
 | M4 分层与量化 | 877 | 127 | `baseline/m4-summary.json` |
 | M5 可观测与压测 | 420 | 211 | `baseline/m5-summary.json`（+ 24 条逐轮文件） |
 | M6 幂等/账本/能力 | 381 | 149 | `baseline/m6-summary.json` |
-| **合计** | **2353** | **1070** | |
+| **合计** | **2353** | **1071** | |
 | 管理面鉴权（`access`，不属任何里程碑） | 50 | 44 | 无（证据是 `scripts/verify-hardening.ps1` 的输出） |
 
 M5 的 curl 门从 203 条变成 211 条，加的是 8 条解析器自检（`10.0a`–`10.0h`）：
@@ -83,6 +83,10 @@ M4 那张量化表在 USAGE 与 DESIGN 里的两处复述、DESIGN 成本段里�
 （`scripts/lib/pricing.ps1`），价从网关实际加载的那份配置文本里读，所以把 `configs/tiered-local.yaml` 里
 `local-chat` 的价改到高于 `pricing.default`，"本地比云端便宜"那条断言就会红——改动前它按脚本里写死的
 0.27/1.1 算，配置怎么改都绿。
+M2 的 `/admin/cache` 那一节走的是同一条路，方向相反：它不再拿脚本里写死的 0.86 / 12 / false / false 去比运行中的
+管理面，而是先从这次运行交给网关的那份配置文本里解出这几个值（`scripts/verify-m2.ps1` 的 `Get-CachePolicy`），
+再断言运行中的进程报的就是它们——把 `configs/cache-local.yaml` 的阈值改成 0.80，这条断言就报 0.8 并通过；
+改动前它按写死的 0.86 比，一处有意的阈值调整会让门禁变红，而网关做的是它被要求做的事。
 这条链抓到的第一类是四舍五入：`m0-baseline.json` 里 5496.49 与 1095.45 在 RESUME 与 USAGE 里被印成
 5497 与 1096，记录本身没错，是那三处字符串错了。
 
@@ -116,7 +120,7 @@ M4 那次运行用的单价表是个例外里的一例：它不是写死在记�
 管理面鉴权默认关闭，所以 M0–M6 的两条证据链一行都没有覆盖它。它有自己的第三条链：
 `scripts/verify-hardening.ps1`，**真进程 + 真 curl + 44 条断言**，见下方「管理面鉴权的证据边界」。
 它的数字单独列成一行而不是并进合计——把一条 2026 年才加的安全门混进里程碑总数，
-会让"1070"这个从 M0 起就写在 README 里的数字变得不可对账。
+会让"1071"这个从 M0 起就写在 README 里的数字变得不可对账。
 
 那一行的 Go 列数的是**检查点**（源码里 `t.Error*`/`t.Fatal*` 的调用点），不是执行到的断言：
 `cmd/verify*` 那套会打印自己跑了多少的计数器不覆盖它，而这张表里其余各行的 Go 数字都是它打印出来的。
@@ -140,7 +144,7 @@ curl 门编译真二进制、拉真进程、用真 `curl.exe` 打真 socket，�
 | `go test ./... -count=1 -timeout 20m` | 全部单元/集成测试（Linux，无 `-race`） | 绿（同 run step 7） |
 | `go test -race` **逐个包**（`go list ./...` 循环，失败继续跑下一个） | 竞态检测（本机配方见下） | **runner 绿**：run 37408647484 step 9 `go test -race` success（整个 job 2 分 28 秒）；本机同样 36 个包全绿（218 秒，0 条 `DATA RACE`） |
 | `.\tools\go.cmd run .\cmd\verify*` | 2353 条 Go 端到端断言 | **runner 绿**：run 37413713212（head `6ec3554`）的 `curl gates` job step 12 `go verify gates (M0-M6)` success —— 这是它第一次在 runner 上跑；本机 31 秒跑完七包、2353/2353、写 marker 0 |
-| `.\scripts\verify-m*.ps1` + `verify-hardening.ps1` | 1070 条 curl 端到端断言 + 44 条管理面令牌断言 | **绿**：`curl gates (M0-M6, operator token)` job 在 run 37408647484 上 1 分 55 秒跑完，八个门（M0–M6 + operator token）全部 success——那次还没有 `go verify gates (M0-M6)`，也还没有反制步骤；run 37413713212 上是九个门全 success（head `6ec3554`，多了那个 Go 门，该 job 2 分 15 秒） |
+| `.\scripts\verify-m*.ps1` + `verify-hardening.ps1` | 1071 条 curl 端到端断言 + 44 条管理面令牌断言 | **绿**：`curl gates (M0-M6, operator token)` job 在 run 37408647484 上 1 分 55 秒跑完，八个门（M0–M6 + operator token）全部 success——那次还没有 `go verify gates (M0-M6)`，也还没有反制步骤；run 37413713212 上是九个门全 success（head `6ec3554`，多了那个 Go 门，该 job 2 分 15 秒） |
 | `scripts/lib/summarize-gates.ps1`（job 内**唯一**不允许失败的一步） | 9 个门（八个 curl + 一个 Go）的 marker 文件都在且都写着 0 | **绿**：run 37413713212（head `6ec3554`）step 13 `every gate must have passed` success，它前面**九个门步骤全部 success**——第一次读齐九个 marker；更早的 run 37410701867（head `e248c7a`）step 12 是只有八个门时的同一结论；本机 5 个用例全过（见下） |
 | `scripts/verify-docker-profile.ps1` | 20 条容器画像断言（真二进制、真端口、真 miniredis） | 绿（本机 25 秒，见下「容器的证据边界」） |
 

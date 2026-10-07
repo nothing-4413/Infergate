@@ -201,7 +201,7 @@ func TestEveryQuotedGateCountMatchesTheTable(t *testing.T) {
 		fromComment  bool // the side is decided by a capture: group 2 says "curl"
 	}
 	quotes := []quote{
-		{ // "…verify-m2      # M2，103 条断言" / "…# M2 curl，157 条"
+		{ // "…verify-m2      # M2，103 条断言" / "…# M2 curl，158 条"
 			what:         "an acceptance command's trailing comment",
 			rx:           regexp.MustCompile(`(?m)#\s*M(\d)\s*(curl)?，(\d+)\s*条`),
 			milestoneGrp: 1, countGrp: 3, fromComment: true},

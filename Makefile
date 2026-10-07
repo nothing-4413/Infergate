@@ -80,7 +80,7 @@ verify-m2:
 
 ## verify-m2-curl: the same claims through the real binary and real curl.exe,
 ## against both the memory store (the default) and a real Redis protocol server
-## (cmd/miniredis), on :18280/:18281 with mocks on :19500/:19501.  157 assertions.
+## (cmd/miniredis), on :18280/:18281 with mocks on :19500/:19501.  158 assertions.
 verify-m2-curl:
 	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-m2.ps1
 
@@ -182,7 +182,7 @@ verify-m6:
 ## verify-m6-curl: the same claims through the real binary and real curl.exe over
 ## a real scripted upstream process, with the mock's /calls counter as the
 ## external witness that a replay caused zero extra provider calls.  149
-## assertions; the seven gates' curl rows add up to 1070 assertions.
+## assertions; the seven gates' curl rows add up to 1071 assertions.
 verify-m6-curl:
 	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-m6.ps1
 

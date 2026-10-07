@@ -101,7 +101,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m0.ps1   # 
 .\tools\go.cmd run .\cmd\verify-m1                                     # M1，64 条断言
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m1.ps1   # M1 curl，56 条
 .\tools\go.cmd run .\cmd\verify-m2                                     # M2，103 条断言
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m2.ps1   # M2 curl，157 条（内存 + Redis）
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m2.ps1   # M2 curl，158 条（内存 + Redis）
 .\tools\go.cmd run .\cmd\verify-m3                                     # M3，470 条断言
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m3.ps1   # M3 curl，323 条（内存 + 真 Redis 协议）
 .\tools\go.cmd run .\cmd\verify-m4                                     # M4，877 条断言
@@ -471,7 +471,7 @@ curl.exe -s -X POST http://127.0.0.1:8082/admin/cache/flush          # 清空（
 
 ```powershell
 .\tools\go.cmd run .\cmd\verify-m2                                   # Go 门禁，103 条断言
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m2.ps1     # curl 门禁，157 条（内存 + 真 Redis 协议，约 20s）
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-m2.ps1     # curl 门禁，158 条（内存 + 真 Redis 协议，约 20s）
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\measure-m2.ps1    # 命中率 / 延迟 / 成本实测
 .\tools\go.cmd run .\cmd\measure-m2                                  # 阈值扫描（语料 26 对）
 ```
