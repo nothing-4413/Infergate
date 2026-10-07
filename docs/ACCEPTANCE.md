@@ -111,7 +111,15 @@ weighted` 并通过（改动前它按写死的 `priority` 比，网关照配置�
 M2 的 redis 那一半也收口了：`scripts/verify-m2.ps1` 不再拿写死的 `'redis'` 比运行中的 `/admin/cache`，而是比同一次
 运行里从 `configs/cache-redis.yaml` 文本解析出的 `(Get-CachePolicy -Text $cfgR).Store`——内存那一侧早就这么做；
 把解析结果钉成别的值，那条断言立刻红，条数不变。
-M1 的三个副本名是同一类的第三处，也是最宽的一处：`scripts/verify-m1.ps1` 里 `primary`/`secondary`/`tools` 出现在断言、`/admin/breakers` 的 `name`、`/stats` 的 `upstream`、`/metrics` 的 `upstream="..."` 标签、日志行的 `upstream=` 与 `tried="a -> b"` 正则，以及显式 pin 的请求头里，二十余处。现在这些都从脚本自己渲染的那份 `configs/routing-local.yaml` 文本读回来，`Get-ConfigListScalar` 为此多了一个 `-WhereKey/-WhereValue` 选择器：按 `base_url` 里这次运行替换进去的端口认条目——端口是门禁对副本唯一的抓手，名字因此不再是第二份拷贝。把样例里的三个后端改名成 `alpha`/`beta`/`gamma`（纯改名、行为中性），门禁仍然 61/61 全绿并逐条打印配置里的名字：`priority 1 wins ('alpha')`、`the answer came from the next backend ('beta')`、`the capability backend served it ('gamma')`；把解析结果临时钉成 `pinned-wrong`，十四条断言立刻红（47 passed, 14 FAILED）。能力名 `tools` 留在请求头里不动：客户端按名字要能力，配置改能力名就是真的改了契约，红了是对的。
+M1 的三个副本名是同一类的第三处，也是最宽的一处：`scripts/verify-m1.ps1` 里 `primary`/`secondary`/`tools` 出现在断
+言、`/admin/breakers` 的 `name`、`/stats` 的 `upstream`、`/metrics` 的 `upstream="..."` 标签、日志行的 `upstream=`
+与 `tried="a -> b"` 正则，以及显式 pin 的请求头里，二十余处。现在这些都从脚本自己渲染的那份
+`configs/routing-local.yaml` 文本读回来，`Get-ConfigListScalar` 为此多了一个 `-WhereKey/-WhereValue` 选择器：按
+`base_url` 里这次运行替换进去的端口认条目——端口是门禁对副本唯一的抓手，名字因此不再是第二份拷贝。把样例里的三个后
+端改名成 `alpha`/`beta`/`gamma`（纯改名、行为中性），门禁仍然 61/61 全绿并逐条打印配置里的名字：
+`priority 1 wins ('alpha')`、`the answer came from the next backend ('beta')`、
+`the capability backend served it ('gamma')`；把解析结果临时钉成 `pinned-wrong`，十四条断言立刻红（47 passed, 14
+FAILED）。能力名 `tools` 留在请求头里不动：客户端按名字要能力，配置改能力名就是真的改了契约，红了是对的。
 这条链抓到的第一类是四舍五入：`m0-baseline.json` 里 5496.49 与 1095.45 在 RESUME 与 USAGE 里被印成
 5497 与 1096，记录本身没错，是那三处字符串错了。
 
