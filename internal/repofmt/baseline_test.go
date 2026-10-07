@@ -106,6 +106,106 @@ func TestHeadlineClaimsMatchTheBaseline(t *testing.T) {
 			path: []string{"total_ms", "p50"}, digits: 0,
 		},
 		{
+			// The RESUME prints the M4 table at one decimal per cell, while the
+			// summary sentence above rounds the same readings to whole
+			// milliseconds. Both are quoted as printed: the table is the artifact
+			// a reader compares variants with, so its cells get their own entries.
+			quote: "35.2", phrase: "35.2ms", file: "m4-summary.json", docs: resumeOnly,
+			find: map[string]any{"variant": "fp16"},
+			path: []string{"ttft_ms", "p50"}, digits: 1,
+		},
+		{
+			quote: "28.1", phrase: "28.1ms", file: "m4-summary.json", docs: resumeOnly,
+			find: map[string]any{"variant": "awq"},
+			path: []string{"ttft_ms", "p50"}, digits: 1,
+		},
+		{
+			quote: "28.7", phrase: "28.7ms", file: "m4-summary.json", docs: resumeOnly,
+			find: map[string]any{"variant": "gptq"},
+			path: []string{"ttft_ms", "p50"}, digits: 1,
+		},
+		{
+			quote: "1758.5", phrase: "1758.5ms", file: "m4-summary.json", docs: resumeOnly,
+			find: map[string]any{"variant": "fp16"},
+			path: []string{"total_ms", "p50"}, digits: 1,
+		},
+		{
+			quote: "699.5", phrase: "699.5ms", file: "m4-summary.json", docs: resumeOnly,
+			find: map[string]any{"variant": "awq"},
+			path: []string{"total_ms", "p50"}, digits: 1,
+		},
+		{
+			quote: "723.6", phrase: "723.6ms", file: "m4-summary.json", docs: resumeOnly,
+			find: map[string]any{"variant": "gptq"},
+			path: []string{"total_ms", "p50"}, digits: 1,
+		},
+		{
+			quote: "41.5", phrase: "41.5 tok/s", file: "m4-summary.json", docs: resumeOnly,
+			find: map[string]any{"variant": "fp16"},
+			path: []string{"throughput", "output_tokens_per_s_request_wall"}, digits: 1,
+		},
+		{
+			quote: "95.3", phrase: "95.3 tok/s", file: "m4-summary.json", docs: resumeOnly,
+			find: map[string]any{"variant": "gptq"},
+			path: []string{"throughput", "output_tokens_per_s_request_wall"}, digits: 1,
+		},
+		{
+			// Token overlap is a set-Jaccard mean against the fp16 texts, not an
+			// accuracy score; the record says so in a caveat beside the number.
+			quote: "0.444", file: "m4-summary.json", docs: resumeOnly,
+			find: map[string]any{"variant": "awq"},
+			path: []string{"agreement", "mean_token_overlap"}, digits: 3,
+		},
+		{
+			quote: "0.460", file: "m4-summary.json", docs: resumeOnly,
+			find: map[string]any{"variant": "gptq"},
+			path: []string{"agreement", "mean_token_overlap"}, digits: 3,
+		},
+		{
+			// The exact-match column is a rate over 12 requests; scaling it back up
+			// to a count is what makes the RESUME's "0/12" and "1/12" checkable.
+			quote: "1", phrase: "1/12", file: "m4-summary.json", docs: resumeOnly,
+			find: map[string]any{"variant": "gptq"},
+			path: []string{"agreement", "exact_match_rate"}, digits: 0, scale: 12,
+		},
+		{
+			quote: "0", phrase: "0/12", file: "m4-summary.json", docs: resumeOnly,
+			find: map[string]any{"variant": "awq"},
+			path: []string{"agreement", "exact_match_rate"}, digits: 0, scale: 12,
+		},
+		{
+			// VRAM is quoted as the delta a load reported, in the MiB the RESUME
+			// prints even though the record names its field _mb.
+			quote: "6169", phrase: "+6169 MiB", file: "m4-summary.json", docs: resumeOnly,
+			find: map[string]any{"variant": "fp16"},
+			path: []string{"vram_delta_mb"}, digits: 0,
+		},
+		{
+			quote: "6921", phrase: "+6921 MiB", file: "m4-summary.json", docs: resumeOnly,
+			find: map[string]any{"variant": "awq"},
+			path: []string{"vram_delta_mb"}, digits: 0,
+		},
+		{
+			quote: "7353", phrase: "+7353 MiB", file: "m4-summary.json", docs: resumeOnly,
+			find: map[string]any{"variant": "gptq"},
+			path: []string{"vram_delta_mb"}, digits: 0,
+		},
+		{
+			quote: "58", phrase: "58s", file: "m4-summary.json", docs: resumeOnly,
+			find: map[string]any{"variant": "fp16"},
+			path: []string{"load_seconds"}, digits: 0,
+		},
+		{
+			quote: "60", phrase: "60s", file: "m4-summary.json", docs: resumeOnly,
+			find: map[string]any{"variant": "awq"},
+			path: []string{"load_seconds"}, digits: 0,
+		},
+		{
+			quote: "55", phrase: "55s", file: "m4-summary.json", docs: resumeOnly,
+			find: map[string]any{"variant": "gptq"},
+			path: []string{"load_seconds"}, digits: 0,
+		},
+		{
 			quote: "59400", file: "m5-summary.json", docs: readmeAndResume,
 			path: []string{"*", "otlp_exported"}, digits: 0,
 		},
@@ -180,7 +280,7 @@ func TestHeadlineClaimsMatchTheBaseline(t *testing.T) {
 			path:  []string{"*", "errors"}, digits: 0,
 		},
 	}
-	if len(claims) < 24 {
+	if len(claims) < 40 {
 		t.Fatalf("only %d claims; this check has been hollowed out", len(claims))
 	}
 
