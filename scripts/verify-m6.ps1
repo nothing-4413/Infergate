@@ -91,6 +91,10 @@ function Assert-Close {
 
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
+# Get-ConfigScalar reads a value out of the config this run renders, so the
+# policy surfaces asserted below are the ones the gateway was actually handed.
+. (Join-Path $PSScriptRoot 'lib\config-scalar.ps1')
+
 function Invoke-Curl {
     param([string[]]$Arguments)
     # Capture stdout ONLY. Windows PowerShell 5.1 turns anything a native command
@@ -109,19 +113,6 @@ function Read-Text {
     # would be silently corrupted by the console codepage.
     $reader = New-Object System.IO.StreamReader($Path, $script:utf8NoBom, $true)
     try { return $reader.ReadToEnd() } finally { $reader.Dispose() }
-}
-
-function Get-ConfigScalar {
-    param([string]$Text, [string]$Block, [string]$Key)
-    # A top-level block is named at column zero and owns everything indented
-    # under it, up to the next column-zero line. Scoping the lookup that way is
-    # what lets `ttl` come from the replay store rather than from whichever
-    # `ttl` happens to appear first in the file.
-    $b = [regex]::Match($Text, "(?ms)^$([regex]::Escape($Block)):[^\r\n]*\r?\n(.*?)(?=^\S|\z)")
-    if (-not $b.Success) { return $null }
-    $k = [regex]::Match($b.Groups[1].Value, "(?m)^\s*$([regex]::Escape($Key)):\s*([^\s#]+)")
-    if (-not $k.Success) { return $null }
-    return $k.Groups[1].Value.Trim('"')
 }
 
 function Get-DurationSeconds {
@@ -477,10 +468,13 @@ try {
     $policyReplayTTL = Get-ConfigScalar -Text $cfg -Block 'idempotency' -Key 'ttl'
     $policyReplayMaxBytes = Get-ConfigScalar -Text $cfg -Block 'idempotency' -Key 'max_response_bytes'
     $policyRoutingStrategy = Get-ConfigScalar -Text $cfg -Block 'routing' -Key 'strategy'
+    $policyBackendName = Get-ConfigListScalar -Text $cfg -Block 'upstreams' -Key 'name'
     Assert-True 'the rendered config declares the model context window' `
         ($null -ne $policyContextWindow) "read $cfgPath"
     Assert-True 'the rendered config declares the routing strategy' `
         ($null -ne $policyRoutingStrategy) "read $cfgPath"
+    Assert-True 'the rendered config declares its backend name' `
+        ($null -ne $policyBackendName) "read $cfgPath"
     Assert-True 'the rendered config declares the replay store settings' `
         ($null -ne $policyReplayCapacity -and $null -ne $policyReplayTTL -and $null -ne $policyReplayMaxBytes) "read $cfgPath"
 
@@ -499,13 +493,13 @@ try {
     $upstreams = Get-Json "$gwURL/admin/upstreams" 'upstreams'
     if ($upstreams) {
         Assert-Equal 'one backend is configured' 1 $upstreams.upstreams.Count
-        Assert-Equal 'the backend is the scripted mock' 'scripted-mock' $upstreams.upstreams[0].name
+        Assert-Equal "the backend is the config's $policyBackendName" $policyBackendName $upstreams.upstreams[0].name
         Assert-True 'the backend is a catch-all, so any model lands somewhere' ([bool]$upstreams.upstreams[0].catch_all)
         # A catch-all backend claims no model BY NAME, so the index is empty: the
         # fallback is a routing rule, not an entry in the model table.
         Assert-Equal 'a catch-all backend claims no model by name' 0 @($upstreams.model_index.PSObject.Properties).Count
         Assert-Equal "the routing strategy is the config's $policyRoutingStrategy" $policyRoutingStrategy $upstreams.routing.strategy
-        Assert-Equal 'the breaker starts closed' 'closed' $upstreams.breaker_states.'scripted-mock'
+        Assert-Equal "the breaker starts closed for $policyBackendName" 'closed' $upstreams.breaker_states.$policyBackendName
     }
     $calls = Get-Json "$mockURL/calls" 'calls'
     if ($calls) { Assert-Equal 'the mock has seen no traffic yet' 0 $calls.calls }
@@ -517,7 +511,7 @@ try {
     if ($caps) {
         Assert-Equal 'the gateway declares one model' 1 $caps.model_count
         Assert-Equal "the declared context window is the config's $policyContextWindow" ([int]$policyContextWindow) $caps.models[0].context_window
-        Assert-True 'the model is served by the scripted backend' ($caps.models[0].upstreams -contains 'scripted-mock')
+        Assert-True 'the model is served by the scripted backend' ($caps.models[0].upstreams -contains $policyBackendName)
         Assert-True 'the model is available while the breaker is closed' ([bool]$caps.models[0].available)
         Assert-True 'the supported capabilities are reported' ($caps.models[0].capabilities -contains 'chat')
     }
@@ -549,7 +543,7 @@ try {
     $turn1File = New-BodyFile 'm6-turn1.json' $turn1Body
     $turn1 = Send-Chat -Url "$gwURL/v1/chat/completions" -BodyFile $turn1File -ExtraHeaders $sessionHeaders -Tag 'm6-turn1'
     Assert-Equal 'the first turn is answered' 200 $turn1.Status
-    Assert-Equal 'the scripted backend is named' 'scripted-mock' $turn1.Name
+    Assert-Equal "the backend serving the turn is the config's $policyBackendName" $policyBackendName $turn1.Name
     Assert-Equal 'one attempt was made' '1' $turn1.Attempt
     Assert-Equal 'no failover header is set when the first candidate answers' '' $turn1.Tried
     Assert-Contains 'the model asked for a tool' $turn1.Body 'call_abc123'
@@ -588,7 +582,7 @@ try {
         Assert-Equal 'prompt tokens are summed over the conversation' 32 $sessions.sessions[0].prompt_tokens
         Assert-Equal 'completion tokens too' 12 $sessions.sessions[0].completion_tokens
         Assert-True 'the served model is recorded' ($null -ne $sessions.sessions[0].models.'mock-gpt')
-        Assert-True 'the backend that served it is recorded' ($null -ne $sessions.sessions[0].upstreams.'scripted-mock')
+        Assert-True 'the backend that served it is recorded' ($null -ne $sessions.sessions[0].upstreams.$policyBackendName)
         Assert-Equal 'the recent turns are kept' 2 $sessions.sessions[0].recent.Count
         # (11 prompt + 5 completion) + (21 + 7): 1.0/1e6 in, 3.0/1e6 out.
         Assert-Close 'the cost comes from the configured price book' 0.000068 $sessions.sessions[0].cost_usd
@@ -628,7 +622,7 @@ try {
     Assert-Equal 'and says it is a replay' 'true' $replay.Replay
     Assert-Equal 'the replay names the request that did the work' $first.RequestID $replay.Origin
     Assert-Equal 'the replay is attributed to no backend' 'replay' $replay.Name
-    Assert-Equal 'and separately names the backend that did the work' 'scripted-mock' $replay.IdemUp
+    Assert-Equal 'and separately names the backend that did the work' $policyBackendName $replay.IdemUp
     Assert-True 'the answer reports its age' ($replay.IdemAge -ne '')
     Assert-Equal 'the replayed bytes are the stored bytes' $first.Body $replay.Body
 
@@ -760,7 +754,7 @@ try {
     # gateway passes that through untouched.)
     Assert-Equal 'the provider failure reaches the caller as itself' 502 $flaky.Status
     Assert-Contains 'with the provider error envelope intact' $flaky.Body 'provider is restarting'
-    Assert-Equal 'the backend is still named' 'scripted-mock' $flaky.Name
+    Assert-Equal 'the backend is still named' $policyBackendName $flaky.Name
     Assert-Equal 'exactly one attempt was spent' '1' $flaky.Attempt
     Assert-Equal 'and no failover happened, because there was nowhere to fail over to' '' $flaky.Tried
 

@@ -595,7 +595,7 @@ JSONL 59400 行 == `export_stats.jsonl.written` 且每行都能解析出 `trace_
   `model` 时报 `skipped` 与理由，而不是替它编一个模型名。
 - **验收与产物**：`cmd/verify-m6` **381** 条断言（进程内真实 server + 真实上游，六段：重放 / 什么不会
   被记住 / 管理面与指标 / 会话账本 / 声明式能力面与活体探测 / 一次完整的工具调用对话）+ 真实进程 curl
-  `scripts/verify-m6.ps1` **152** 条断言（上游是仓库内可脚本化的 `cmd/mockupstream`，并用它自己的
+  `scripts/verify-m6.ps1` **153** 条断言（上游是仓库内可脚本化的 `cmd/mockupstream`，并用它自己的
   `GET /calls` 作外部证人——"两次客户端尝试、上游只被调用一次"这句话由上游数出来，不是由网关自己声称）
   + `docs/baseline/m6-summary.json`（`scripts/measure-m6.ps1`，**9** 项检查、**58** 条断言（收尾后产物
   共记 67 条）、0 条失败断言）；
@@ -689,4 +689,4 @@ JSONL 59400 行 == `export_stats.jsonl.written` 且每行都能解析出 `trace_
 > `/v1/capabilities` 让 Agent 在压缩历史前知道模型能装多少上下文，活体探测故意绕过缓存/配额/熔断，
 > 因为探测是诊断流量——顺带在门禁里抓出并钉死了"`Idempotency-Key` 会透传给上游"这个会跨租户串答案的
 > 缺陷），
-> 双路端到端验收（Go 2353 条 + 真实进程 curl 1076 条）保证可验证性。
+> 双路端到端验收（Go 2353 条 + 真实进程 curl 1077 条）保证可验证性。

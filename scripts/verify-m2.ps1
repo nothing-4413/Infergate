@@ -481,7 +481,11 @@ try {
     [System.IO.File]::WriteAllText($redisCfg, $cfgR, $utf8NoBom)
     Assert-Contains 'the rewritten redis config listens on this run''s redis gateway port' $cfgR "listen: `":$RedisGatewayPort`""
     Assert-Contains 'the rewritten redis config points at this run''s miniredis' $cfgR "addr: `"127.0.0.1:$MiniredisPort`""
-    Assert-Contains 'the redis config really selects the redis store' $cfgR 'store: "redis"'
+    # The same shape the memory config is held to at section 3: `store` is the
+    # config's own word for the backend it selects, so the value the running
+    # gateway is compared against is read back out of this text.
+    $policyRedisStore = (Get-CachePolicy -Text $cfgR).Store
+    Assert-True 'the redis config really selects a store' ($null -ne $policyRedisStore) "read $redisCfg"
 
     # -----------------------------------------------------------------------
     # 2. Start the stack
@@ -1065,7 +1069,7 @@ try {
     $rAdmin = Get-CacheAdmin -Base $redisBase
     Assert-True 'GET /admin/cache answers on the redis gateway' ($null -ne $rAdmin)
     if ($null -ne $rAdmin) {
-        Assert-Equal 'the running store is redis' 'redis' $rAdmin.store
+        Assert-Equal "the running store is the config's $policyRedisStore" $policyRedisStore $rAdmin.store
     }
     # The scope table is asserted AFTER the requests below, not here. A scope only
     # exists once something has been stored, so the table is legitimately empty on

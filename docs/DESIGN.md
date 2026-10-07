@@ -1047,7 +1047,7 @@ requests / ok / failed、token 三态、按**实际服务的模型**定价的成
 - `cmd/verify-m6`（Go，**381** 条断言，CI 门禁）：在进程内起真实 server 与真实上游，六段——幂等重放、
   什么不会被记住、幂等管理面与指标、会话账本、声明式能力面与活体探测、一次完整的 Agent 工具调用对话
   （工具调用 → 工具结果 → 回答，以及重放与冲突各自如何入账）。
-- `scripts/verify-m6.ps1`（curl，**152** 条断言）：真进程 + 真 curl，上游是仓库内**脚本化** mock
+- `scripts/verify-m6.ps1`（curl，**153** 条断言）：真进程 + 真 curl，上游是仓库内**脚本化** mock
   （`cmd/mockupstream -script`），并用 mock 自己的 `GET /calls` 作外部证人——"两次客户端尝试、上游只被
   调用一次"这句话由上游数出来，而不是由网关自己声称。
 - `scripts/measure-m6.ps1`：M6 的代价与收益（下节），原始数据落在

@@ -82,6 +82,10 @@ function Assert-Contains {
 
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
+# Get-ConfigScalar reads a value out of the fleet config this run renders, so the
+# policy asserted below is the one the gateway was actually handed.
+. (Join-Path $PSScriptRoot 'lib\config-scalar.ps1')
+
 function Invoke-Curl {
     param([string[]]$Arguments)
     # Capture stdout ONLY. Windows PowerShell 5.1 turns anything a native command
@@ -100,19 +104,6 @@ function Read-Text {
     # would be silently corrupted by the console codepage.
     $reader = New-Object System.IO.StreamReader($Path, $script:utf8NoBom, $true)
     try { return $reader.ReadToEnd() } finally { $reader.Dispose() }
-}
-
-function Get-ConfigScalar {
-    param([string]$Text, [string]$Block, [string]$Key)
-    # A top-level block is named at column zero and owns everything indented
-    # under it, up to the next column-zero line. Scoping the lookup that way is
-    # what lets `strategy` come from the `routing` block rather than from
-    # whichever nested `strategy` happens to appear first in the file.
-    $b = [regex]::Match($Text, "(?ms)^$([regex]::Escape($Block)):[^\r\n]*\r?\n(.*?)(?=^\S|\z)")
-    if (-not $b.Success) { return $null }
-    $k = [regex]::Match($b.Groups[1].Value, "(?m)^\s*$([regex]::Escape($Key)):\s*([^\s#]+)")
-    if (-not $k.Success) { return $null }
-    return $k.Groups[1].Value.Trim('"')
 }
 
 function New-BodyFile {
