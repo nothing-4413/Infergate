@@ -3,6 +3,7 @@ package repofmt
 import (
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -178,6 +179,13 @@ func TestDocumentedGateTotalsAreTheSumOfTheirRows(t *testing.T) {
 // gate). Counts that belong to something else -- the measure scripts quote
 // their own totals in the same sentences -- are not matched, because the
 // patterns require the cmd/verify* or scripts/verify-m*.ps1 name.
+//
+// The Makefile states the same counts in English, one ## comment per target, and
+// it is read here for the same reason: nothing compared it against the table, and
+// two of its comments had drifted. verify-m5-curl still said 203 where the row
+// says 211 (the number M5's curl row had before its eight parser self-checks),
+// and verify-m6-curl claimed "over 5,000 curl-level assertions across the seven
+// gates" where the seven curl rows add up to 1068.
 func TestEveryQuotedGateCountMatchesTheTable(t *testing.T) {
 	root := repoRoot(t)
 	readme := readFile(t, filepath.Join(root, "README.md"))
@@ -326,7 +334,147 @@ func TestEveryQuotedGateCountMatchesTheTable(t *testing.T) {
 		}
 	}
 
-	t.Logf("checked %d quoted gate counts across %d documents", total, len(docs))
+	// The curl column's total, for the one comment that states it as well as its
+	// own row.
+	curlTotal := 0
+	for _, name := range milestoneNames {
+		curlTotal += rows[name][1]
+	}
+
+	// The Makefile states the same counts in English, one ## comment per gate
+	// target. The target name anchors the claim, so the block above a target has
+	// to quote exactly that target's row -- the two drifted numbers this test
+	// grew a Makefile half for (203 for verify-m5-curl, "over 5,000" for
+	// verify-m6-curl) each sat next to a target that said which gate it was.
+	//
+	// measure-* and run-* targets are not covered: their comments quote the
+	// totals their own runs print, which are measurements rather than rows of
+	// the gate table.
+	type makeClaim struct {
+		target    string
+		milestone string
+		curl      bool
+		total     bool // the block also states the curl column's total
+	}
+	makeClaims := []makeClaim{
+		{"verify", "M0", false, false},
+		{"verify-curl", "M0", true, false},
+		{"verify-m1", "M1", false, false},
+		{"verify-m1-curl", "M1", true, false},
+		{"verify-m2", "M2", false, false},
+		{"verify-m2-curl", "M2", true, false},
+		{"verify-m3", "M3", false, false},
+		{"verify-m3-curl", "M3", true, false},
+		{"verify-m4", "M4", false, false},
+		{"verify-m4-curl", "M4", true, false},
+		{"verify-m5", "M5", false, false},
+		{"verify-m5-curl", "M5", true, false},
+		{"verify-m6", "M6", false, false},
+		{"verify-m6-curl", "M6", true, true},
+	}
+
+	quoted := regexp.MustCompile(`(\d+)\s+assertions?`)
+	targetLine := regexp.MustCompile(`^([a-z][a-z0-9-]*):$`)
+	makefile := readFile(t, filepath.Join(root, "Makefile"))
+	makeLines := strings.Split(makefile, "\n")
+
+	// commentBlock renders the run of "##" lines directly above line i as one
+	// paragraph: the Makefile wraps a sentence over several of them, so a count
+	// at the end of one line and the word it counts on the next only meet once
+	// the prefixes are gone.
+	commentBlock := func(i int) string {
+		from := i
+		for from > 0 && strings.HasPrefix(makeLines[from-1], "##") {
+			from--
+		}
+		parts := make([]string, 0, i-from)
+		for _, ln := range makeLines[from:i] {
+			parts = append(parts, strings.TrimSpace(strings.TrimPrefix(ln, "##")))
+		}
+		return strings.Join(parts, " ")
+	}
+
+	listed := map[string]bool{}
+	commented := 0
+	for _, c := range makeClaims {
+		listed[c.target] = true
+		at := -1
+		for i, ln := range makeLines {
+			if ln == c.target+":" {
+				at = i
+				break
+			}
+		}
+		if at < 0 {
+			t.Errorf("the Makefile has no %s target, so the comment quoting its count cannot be checked", c.target)
+			continue
+		}
+		block := commentBlock(at)
+		if block == "" {
+			t.Errorf("the Makefile's %s target has no ## comment above it, so nothing states its count", c.target)
+			continue
+		}
+		side, sideName := 0, "Go"
+		if c.curl {
+			side, sideName = 1, "curl"
+		}
+		want := []int{rows[c.milestone][side]}
+		note := ""
+		if c.total {
+			want = append(want, curlTotal)
+			note = " plus the curl column's total"
+		}
+		var got []int
+		for _, m := range quoted.FindAllStringSubmatch(block, -1) {
+			got = append(got, atoi(t, "Makefile", m[1]))
+		}
+		commented++
+		if countsKey(got) != countsKey(want) {
+			t.Errorf("the Makefile's %s comment quotes %s assertions, but this test expects %s (M%s's %s row%s)",
+				c.target, joinInts(got), joinInts(want), strings.TrimPrefix(c.milestone, "M"), sideName, note)
+		}
+	}
+
+	// A coverage guard: a verify-* target whose comment quotes a count has to be
+	// listed above, or a gate added later would state its count unchecked.
+	var unlisted []string
+	for i, ln := range makeLines {
+		m := targetLine.FindStringSubmatch(ln)
+		if m == nil || !strings.HasPrefix(m[1], "verify") {
+			continue
+		}
+		if !listed[m[1]] && quoted.MatchString(commentBlock(i)) {
+			unlisted = append(unlisted, m[1])
+		}
+	}
+	if len(unlisted) > 0 {
+		t.Errorf("the Makefile quotes an assertion count for %s, but this test does not check %s; add it to makeClaims",
+			strings.Join(unlisted, ", "), strings.Join(unlisted, ", "))
+	}
+	if commented < len(makeClaims) {
+		t.Errorf("read the count from only %d of %d Makefile comments; a target or the block above it moved",
+			commented, len(makeClaims))
+	}
+
+	t.Logf("checked %d quoted gate counts across %d documents and %d Makefile comments",
+		total, len(docs), commented)
+}
+
+// countsKey renders a small count list as a key, sorted so a comment that states
+// the same numbers in another order still matches.
+func countsKey(ns []int) string {
+	sorted := append([]int(nil), ns...)
+	sort.Ints(sorted)
+	return joinInts(sorted)
+}
+
+// joinInts renders counts for an error message.
+func joinInts(ns []int) string {
+	parts := make([]string, len(ns))
+	for i, n := range ns {
+		parts[i] = strconv.Itoa(n)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // readmeMilestoneRow and acceptanceMilestoneRow are the two spellings of a
