@@ -76,6 +76,11 @@ $script:variantPaths = @{}
 # them the same way.
 . (Join-Path $PSScriptRoot 'lib\pricing.ps1')
 
+# The tier limits are read out of the config under test with the same reader the
+# M1 and M6 gates use, so section 11 compares the admin echo against the policy
+# the gateway actually loaded instead of against a second copy of the numbers.
+. (Join-Path $PSScriptRoot 'lib\config-scalar.ps1')
+
 # ---------------------------------------------------------------------------
 # Assertions
 # ---------------------------------------------------------------------------
@@ -807,45 +812,32 @@ try {
     Assert-Equal '/admin/upstreams lists exactly the two configured upstreams' 2 $adminNames.Count `
         " names: $($adminNames -join ', ')"
 
-    # The M4 view of an upstream is only complete if it carries its tier. The
-    # field is checked for presence first: if a build stops publishing it, that
-    # is reported as a defect rather than papered over with a weaker assertion.
-    $netProps = @()
-    if ($adminJson.upstreams.Count -gt 0) { $netProps = @($adminJson.upstreams[0].PSObject.Properties.Name) }
-    $hasTier = $netProps -contains 'tier'
-    if ($hasTier) {
-        foreach ($pair in @(@('local-vllm', 'local'), @('cloud-mock', 'cloud'))) {
-            $row = @($adminJson.upstreams | Where-Object { $_.name -eq $pair[0] })
-            Assert-Equal "/admin/upstreams reports tier=$($pair[1]) for $($pair[0])" $pair[1] $row[0].tier
-        }
-    }
-    else {
-        Add-Note "DEFECT: /admin/upstreams publishes no per-upstream 'tier' field (internal/server/server.go upstreamView has no tier member), so the loaded tier of each backend cannot be read from the admin surface. Tiers are proven behaviourally in sections 4-7 and 9-10 instead."
-        Assert-Equal '/admin/upstreams upstream view has no tier field to assert' 'absent' 'absent'
+    # The M4 view of an upstream is only complete if it carries its tier, so the
+    # loaded tier of each backend is asserted on the row itself. A build that
+    # stops publishing the field fails here rather than being papered over.
+    foreach ($pair in @(@('local-vllm', 'local'), @('cloud-mock', 'cloud'))) {
+        $row = @($adminJson.upstreams | Where-Object { $_.name -eq $pair[0] })
+        Assert-Equal "/admin/upstreams reports tier=$($pair[1]) for $($pair[0])" $pair[1] $row[0].tier
     }
 
     Assert-Equal '/admin/upstreams reports the tiered strategy' 'tiered' $adminJson.routing.strategy
 
-    $routingProps = @($adminJson.routing.PSObject.Properties.Name)
-    if ($routingProps -contains 'tier_policy') {
-        $tp = $adminJson.routing.tier_policy
-        Assert-Equal 'the echoed tier_policy carries local_max_prompt_tokens = 400' 400 ([int]$tp.local_max_prompt_tokens)
-        Assert-Equal 'the echoed tier_policy carries local_max_completion_tokens = 256' 256 ([int]$tp.local_max_completion_tokens)
-        Assert-Equal 'the echoed tier_policy lists two cloud capabilities' 2 @($tp.cloud_capabilities).Count
-        Assert-Contains 'the echoed tier_policy routes tools to the cloud' (@($tp.cloud_capabilities) -join ',') 'tools'
-        Assert-Contains 'the echoed tier_policy routes vision to the cloud' (@($tp.cloud_capabilities) -join ',') 'vision'
-    }
-    else {
-        Add-Note "DEFECT: /admin/upstreams publishes no 'routing.tier_policy' (internal/server/server.go emits only strategy/weights/fallback_model/default_capabilities/max_attempts/retry_backoff), so the limits that decide local vs cloud are invisible to an operator. The policy values are re-derived from the config file the gateway loaded and asserted against the observed routing instead."
-        Assert-Equal 'the admin routing view has no tier_policy key to assert' 'absent' 'absent'
-    }
+    # The limits that decide local vs cloud have to be visible on the admin
+    # surface, and they have to be the values behaviour was measured against.
+    # They are read back out of the config the gateway loaded and compared with
+    # the echo, so a retuned policy is not a second copy of the numbers here.
+    # The two presence checks come first: a renamed config key then reports "no
+    # ceiling in the config" instead of decaying into a 0-vs-0 comparison.
+    $policyLocalPrompt = Get-ConfigScalar -Text $instantiated -Block 'routing' -Key 'local_max_prompt_tokens'
+    $policyLocalCompletion = Get-ConfigScalar -Text $instantiated -Block 'routing' -Key 'local_max_completion_tokens'
+    Assert-True 'the loaded config sets a local prompt ceiling' ($null -ne $policyLocalPrompt) "read $configPath"
+    Assert-True 'the loaded config sets a local completion ceiling' ($null -ne $policyLocalCompletion) "read $configPath"
 
-    # Re-derive the policy from the config the gateway actually loaded, so the
-    # numbers asserted here are the ones behaviour was measured against.
-    Assert-Contains 'the loaded config sets the local prompt ceiling to 400' $instantiated 'local_max_prompt_tokens: 400'
-    Assert-Contains 'the loaded config sets the local completion ceiling to 256' $instantiated 'local_max_completion_tokens: 256'
-    Assert-Contains 'the loaded config lists tools as a cloud capability' $instantiated '"tools"'
-    Assert-Contains 'the loaded config lists vision as a cloud capability' $instantiated '"vision"'
+    $tp = $adminJson.routing.tier_policy
+    Assert-Equal "the echoed tier_policy carries the configured local prompt ceiling ($policyLocalPrompt)" ([int]$policyLocalPrompt) ([int]$tp.local_max_prompt_tokens)
+    Assert-Equal "the echoed tier_policy carries the configured local completion ceiling ($policyLocalCompletion)" ([int]$policyLocalCompletion) ([int]$tp.local_max_completion_tokens)
+    Assert-Contains 'the echoed tier_policy routes tools to the cloud' (@($tp.cloud_capabilities) -join ',') 'tools'
+    Assert-Contains 'the echoed tier_policy routes vision to the cloud' (@($tp.cloud_capabilities) -join ',') 'vision'
 
 
     # -----------------------------------------------------------------------

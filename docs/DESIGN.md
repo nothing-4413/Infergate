@@ -748,7 +748,7 @@ KV cache 的结果：三个变体都填满同一张卡，所以这个数不能�
 
 - `cmd/verify-m4`（Go，进程内真 server，877 条断言，16 组）：分类与容量上限的边界、层序、能力
   筛选、优先级、跨层故障转移、`/admin/upstreams` 的层字段，以及一次真实的本地/云端分流与省钱核算。
-- `scripts/verify-m4.ps1`（curl，两个假上游层，127 条断言）：同样的主张在真二进制上再走一遍，
+- `scripts/verify-m4.ps1`（curl，两个假上游层，128 条断言）：同样的主张在真二进制上再走一遍，
   **不需要 GPU**——真实 vLLM 层由测量脚本负责，验收门禁不能依赖一张显卡。
 - `scripts/measure-m4.ps1`：真实 vLLM 的三变体量化对比 + 一次真实的分层运行（本地 vLLM + 云端
   mock），产物落在 `docs/baseline/m4-summary.json`。

@@ -447,6 +447,11 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 
 // handleUpstreams describes the resolved routing table. It answers the first
 // question in any incident: "which backend did this model go to?"
+//
+// It also publishes the tier policy, because the limits that decide local vs
+// cloud are the next question in the same incident, and reading the config file
+// on the box that is misbehaving is not the same as seeing the policy the
+// running process actually loaded.
 func (s *Server) handleUpstreams(w http.ResponseWriter, r *http.Request) {
 	type upstreamView struct {
 		Name         string   `json:"name"`
@@ -487,6 +492,7 @@ func (s *Server) handleUpstreams(w http.ResponseWriter, r *http.Request) {
 			"weights":              s.cfg.Routing.Weights,
 			"fallback_model":       s.cfg.Routing.FallbackModel,
 			"default_capabilities": s.cfg.Routing.DefaultCapabilities,
+			"tier_policy":          s.cfg.Routing.TierPolicy,
 			"max_attempts":         s.cfg.Health.MaxFailuresPerRequest,
 			"retry_backoff":        s.cfg.Health.RetryBackoff.String(),
 		},
