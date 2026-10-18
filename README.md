@@ -32,8 +32,8 @@ Go 进程内端到端 **2355** 条断言、真实进程 + 真实 `curl.exe` **10
 .\tools\go.cmd run .\cmd\infergate -config .\configs\mock.yaml -check   # 只校验配置
 ```
 
-想要"真进程 + 真 socket"那一侧，是第 3.2 节的两条启动命令加第 3.3 节的一条验收命令（153 条 `curl.exe` 断言）；
-不想开三个终端就 `docker compose up -d --build`，见第 3.5 节。
+想要"真进程 + 真 socket"那一侧，是一句 `.\scripts\dev-up.ps1`（默认 mock 档，8080 被占就 `-Port 18088`）
+加第 3.3 节的一条验收命令（153 条 `curl.exe` 断言）；要在容器里跑就 `docker compose up -d --build`，见第 3.5 节。
 
 三条路径的细节在[第 3 节](#3-快速开始)，量化结论在第 5 节，**没做到的事**写在第 10 节。
 用法见 [docs/USAGE.md](docs/USAGE.md)，验收口径见 [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md)，
@@ -93,6 +93,27 @@ Go 进程内端到端 **2355** 条断言、真实进程 + 真实 `curl.exe` **10
 ```
 
 ### 3.2 起一个可用的本地栈
+
+一条命令：脚本先查端口、补编缺失的二进制、按需改写监听端口、等 `/healthz` 转 200，再把请求与收尾命令打印出来。
+
+```powershell
+# 默认 mock 档：假上游 :9000 + 网关 :8080，不碰 Docker、不碰模型，最快
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev-up.ps1
+
+# 接本机 Ollama：没有容器就建、没有模型就拉（模型落在 D:\ollama\models）
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev-up.ps1 -Profile ollama
+
+# 容器形态三件套：网关 :18080、mock :19000、RESP2 :16399
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev-up.ps1 -Profile docker
+
+# 收尾：只停上一条命令起的东西；Ollama 容器故意留着
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev-up.ps1 -Down
+```
+
+8080 被别的进程占着时不用改配置：`-Port 18088 -MockPort 19088` 会把 `server.listen` 和 mock 的 `base_url`
+一起改写进 `tmp\dev-up\`，仓库里的文件一个字节都不动；`-DryRun` 只打印将执行的命令，`-Rebuild` 强制重编二进制。
+
+下面是同一件事的**手动版**，三个终端分开跑，用来理解脚本替你做的每一步：
 
 ```powershell
 # 终端 1：假上游（9000 端口，首帧前故意停顿 250ms，用来验证首字延迟）
