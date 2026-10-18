@@ -14,7 +14,7 @@
 
 一条贯穿全册的约束值得先说：这个项目**没有把任何命令产物提交进仓库**。`bin/`、`tmp/`、`dist/`、`*.exe`、`*.test`、`*.out`、`*.log`、`*.pid` 都在 `.gitignore` 里，连 `docs/baseline/` 都只保留那份 JSON、丢掉 `*.txt` 与 `*.log`（注释原文："keep the committed baseline JSON, drop the rest"）。这条约定解释了后面反复出现的分工：**命令负责产生证据，证据里只有结论性文件被留下**，原始日志留在 `tmp/` 里供当场排查。`.dockerignore` 的立场是同一个：它排除 `bin`、`tmp`、`*.exe`、`*.test`，还排除 `docs`、`deploy`、`scripts`——注释说后者"编译用不到，而且 `deploy/` 是被挂进观测容器而不是烘进网关镜像的"。
 
-`configs/` 下 14 份 YAML 也按同一套逻辑成对存在：`infergate.yaml` 是默认入口，`mock.yaml`/`cache-local.yaml`/`cache-redis.yaml`/`quota-local.yaml`/`quota-redis.yaml`/`routing.yaml`+`routing-local.yaml`/`tiered.yaml`+`tiered-local.yaml`/`agent.yaml`+`agent-local.yaml` 是各里程碑的样例画像，`observability.yaml` 与 `docker.yaml` 分别是观测画像与容器画像。`Makefile` 的 `run-*` 目标就是把它们逐一点起来的手册——`make run-mock`/`run-gateway`/`run-cache`/`run-quota`/`run-tiered`/`run-observability`/`run-agent`，每条注释都写明了它需要你先在别的 shell 里起哪个 mock 与哪个端口。读 `cmd/` 的命令时配着这份目标清单看，比单读源码更容易看清"谁跟谁配对"。
+`configs/` 下 15 份 YAML 也按同一套逻辑成对存在：`infergate.yaml` 是默认入口，`mock.yaml`/`cache-local.yaml`/`cache-redis.yaml`/`quota-local.yaml`/`quota-redis.yaml`/`routing.yaml`+`routing-local.yaml`/`tiered.yaml`+`tiered-local.yaml`/`agent.yaml`+`agent-local.yaml` 是各里程碑的样例画像，`observability.yaml` 与 `docker.yaml` 分别是观测画像与容器画像，`ollama.yaml` 则是"本机一个模型、没有 provider 凭据"时的那份画像（连 127.0.0.1:11434 的 catch-all，不需要任何环境变量）。`Makefile` 的 `run-*` 目标就是把它们逐一点起来的手册——`make run-mock`/`run-gateway`/`run-cache`/`run-quota`/`run-tiered`/`run-observability`/`run-agent`，每条注释都写明了它需要你先在别的 shell 里起哪个 mock 与哪个端口。读 `cmd/` 的命令时配着这份目标清单看，比单读源码更容易看清"谁跟谁配对"。
 
 一张最小的定位表，先回答"这个命令该不该由我来起"：
 

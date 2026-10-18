@@ -116,6 +116,30 @@ mock 的常用开关：`-token-delay 0` 关掉每 token 的 15ms 间隔（**压�
 > Windows 会把 `127.0.0.1` 的请求交给那个更具体的绑定，于是 `/healthz` 莫名其妙返回别人的 404。
 > 验收脚本默认用 `18080` 就是为了绕开这一点；手动实验请用 `localhost` 而不是 `127.0.0.1`。
 
+> **网关起来了，但一请求就 502 `upstream_unreachable`？** 先看启动日志的第一段：进程在开监听之前会把
+> 每个 `base_url` 各拨一次 TCP，连不上的连同**地址**一起打 `WARN upstream is not reachable ...`。
+> `configs/infergate.yaml` 里的 `vllm-local`（`127.0.0.1:8000`）和 `ollama-local`（`127.0.0.1:11434`）
+> 指向本机服务，没装或没启动时网关本身没问题，只是这条路没有后端可用——502 是如实上报，不是故障。
+> 想不装任何东西就先跑通，用 `configs/mock.yaml`（它只依赖仓库自带的 `mockupstream`）。
+
+> **接一个真的本地模型（Docker + Ollama，模型落 D 盘）**：不装 Ollama 桌面版也能起，
+> 容器把 `11434` 暴露到本机，模型目录挂到 D 盘，网关用 `configs/ollama.yaml` 单上游直连：
+>
+> ```powershell
+> # 一次性：起容器（重启后自动回来），模型文件落在 D:\ollama\models
+> docker run -d --name ollama-infergate --restart unless-stopped -p 11434:11434 `
+>   -v D:\ollama\models:/root/.ollama ollama/ollama
+> docker exec ollama-infergate ollama pull qwen2.5:0.5b      # 约 400MB，先跑通再换大模型
+> curl.exe -s http://127.0.0.1:11434/v1/models              # 后端自证：列出模型名
+>
+> .\bin\infergate.exe -config .\configs\ollama.yaml         # 启动日志首段应出现 upstream reachable
+> ```
+>
+> 发请求时 `model` 写 Ollama 的模型名（`qwen2.5:0.5b`），流式与非流式都走 `/v1/chat/completions`。
+> 注意：只有**模型**在 D 盘；镜像层与容器仍在 Docker Desktop 的数据盘（默认 `C:\Users\<you>\AppData\Local\Docker`），
+> 想连镜像一起搬，用 Docker Desktop → Settings → Resources → Advanced → Disk image location 改到 D:，它会重启并迁移。
+> 首次启动会看到 `pricing.default is 0 ...` 的 WARN：本地模型没有按 token 的账单，美元预算本就数不到它的流量，属预期。
+
 ### 3.3 一键验收
 
 两条路径相互独立：Go 门用进程内假上游，跑得快、断言密度高；curl 门编译真二进制、拉真进程、
@@ -232,7 +256,7 @@ M6 与 Warden 打通（幂等重放 + 会话账本 + 能力发现）。七个里
 
 ## 7. 目录结构
 
-树里 36 个包、14 份配置；`README.md` 这份清单本身也被 `internal/repofmt` 的
+树里 36 个包、15 份配置；`README.md` 这份清单本身也被 `internal/repofmt` 的
 `TestReadmeTreeNamesEveryPackage` 对着树读一遍（漏一个包就红）。
 
 ```
@@ -245,7 +269,7 @@ infergate/
 │   ├── mockcollector/      # 假 OTLP collector（M5 验证导出路径）
 │   ├── measure-m2/         # 缓存阈值扫描：26 对语料 → 各阈值下的真/误命中率
 │   └── verify, verify-m1..m6/   # 7 个 Go 端到端验收程序（38 ~ 879 条断言）
-├── configs/                # 14 份逐行注释的示例配置（mock / routing / cache / quota / tiered / agent / docker …）
+├── configs/                # 15 份逐行注释的示例配置（mock / routing / cache / quota / tiered / agent / docker / ollama …）
 ├── internal/
 │   ├── config/ miniyaml/ logging/     # 配置加载（YAML→JSON→struct）、手写 YAML 子集、slog
 │   ├── sse/                            # SSE 帧解析 / 写出 / 增量观测（usage、tool_call、首字）

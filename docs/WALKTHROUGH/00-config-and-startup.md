@@ -10,16 +10,22 @@
 
 ## 1. 启动数据流总览
 
-启动顺序是固定的，且每一步都在**开始监听之前**完成，因此配置错误的表现是进程直接退出，而不是第一个请求神秘地 502：
+启动顺序是固定的，且每一步都在**开始监听之前**完成，因此配置错误的表现是进程直接退出，而不是第一个请求神秘地 502（后端不达不算配置错误：那时进程照常启动，只是启动日志会点名是哪个后端，见第 5 步）。
 
 | 步骤 | 调用 | 失败时的表现 |
 | --- | --- | --- |
 | 1 | `flag.Parse()` | 参数拼错由 flag 包自己打印用法并 `os.Exit(2)` |
 | 2 | `config.Load(configPath)` | `infergate: configuration error: <err>` 写 stderr，退出码 1 |
 | 3 | `logging.New(os.Stdout, cfg.Log.Level, cfg.Log.Format)` | `infergate: logger error: <err>` 写 stderr，退出码 1 |
-| 4 | `-check` 分支 | 打印 `configuration OK: N upstream(s) from <path>` 后正常返回 0 |
-| 5 | `server.NewServer(cfg, logger)` | `logger.Error("startup failed", "err", err)`，退出码 1 |
-| 6 | `srv.ListenAndServe()` | 阻塞；返回即进入关闭序列 |
+| 4 | `-check` 分支 | 打印 `configuration OK: N upstream(s) from <path>` 后正常返回 0（**不拨后端**，见下） |
+| 5 | `upstream.ProbeReach(ctx, cfg.Upstreams)` | 从不失败：每个连不上的后端一条 `WARN upstream is not reachable`，进程照常启动 |
+| 6 | `server.NewServer(cfg, logger)` | `logger.Error("startup failed", "err", err)`，退出码 1 |
+| 7 | `srv.ListenAndServe()` | 阻塞；返回即进入关闭序列 |
+
+第 5 步只把「后端此刻连不上」变成启动时的一行 WARN，这是刻意的：网关的职责不是替上游起进程，一次短暂的
+后端不可用不该让网关自己也起不来，所以它永远不阻断启动、也永远不改变退出码。`-check` 刻意不包含这一步
+（它跑在 CI 与安装脚本里，校验一份配置不该依赖任何 provider 在线），所以 `-check` 打印 `configuration OK`
+只说明「这份配置读得懂」，不说明「后端现在能用」。
 
 关闭序列在 `main()` 里是**顺序**的，不是并发关闭：先 cache、再 quota、最后 tracing。理由写在 `cmd/infergate/main.go` 的注释里，逐条见下一节。
 
@@ -54,7 +60,8 @@ func main()
 - 关键顺序与理由（源码注释的观点）：
   - 配置校验放在一切之前——「在别的任何事情之前先校验，这样一个拼写错误会在启动时以清晰的消息失败，而不是在第一个请求上变成一个神秘的 502」；
   - `-version` 最先短路，连配置文件都不读（因此没有配置文件时 `-version` 依然可用）；
-  - `-check` 在**日志构造之后**才短路，所以它同时验证了 `log.level` / `log.format` 是受支持的值；它打印的是上游条数 `len(cfg.Upstreams)`，这是「配置里到底有几个后端」最直接的一个数字；
+  - `-check` 在**日志构造之后**才短路，所以它同时验证了 `log.level` / `log.format` 是受支持的值；它打印的是上游条数 `len(cfg.Upstreams)`，这是「配置里到底有几个后端」最直接的一个数字；它**不拨后端**，因此 CI 里跑 `-check` 不会依赖任何 provider 在线；
+  - `upstream.ProbeReach (internal/upstream/reach.go)` 是 `-check` 之后、监听之前唯一的网络 I/O：每个 `base_url` 各拨一次 TCP（`http` 缺省 80、`https` 缺省 443，不从 `HTTP(S)_PROXY` 走），连不上的后端打一条带 `addr=` 的 WARN，全部连不上再加一条汇总 WARN。它**从不返回错误**——网关不能因为一个 provider 当时不通就拒绝启动，而 `/healthz` 在「后端全挂但进程健康」时本来就该是 200；这行 WARN 只是把「第一个请求 502」提前成「启动时就知道是谁没起来」（`configs/infergate.yaml` 的 `vllm-local`/`ollama-local` 指向本机服务，没启动时正是这个表现）；
   - 关闭信号用 `signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)`：SIGINT/SIGTERM 都会触发 `ctx.Done()`，`defer stop()` 保证监听被解除；
   - 关闭 goroutine 用 `cfg.Server.ShutdownTimeout.Duration()` 造出一个带超时的 `shutdownCtx`，所以「优雅关闭最多等这么久」是由配置决定的，不是硬编码；
   - `srv.CloseCache()`、`srv.CloseQuota()`、`srv.CloseTracing()` 的三个理由（源码注释的观点）：cache「在 listener 停止之后才关闭，这样没有请求还握着连接池里的 Redis 连接」；quota「一个还在飞行中的 settle 必须能到达它的计数器」；tracing「listener 停止时仍排在队列里的导出必须到达 sink，因为它描述的那个请求早已返回给调用方」。

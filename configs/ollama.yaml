@@ -1,0 +1,80 @@
+# InferGate configuration — a local model behind the gateway, no API key.
+#
+# This is the profile to reach for when the machine can run a model but has no
+# provider credential: it points the one upstream at a model server on the same
+# box. The gateway itself is provider-agnostic, so this file is the whole
+# integration — swap the base_url and the rest of the features (routing,
+# caching, quota, metrics) behave identically.
+#
+# Ollama is the shortest path to a running backend, and its OpenAI-compatible
+# surface lives at the same port as its native one, so base_url carries no /v1:
+# the inbound /v1/chat/completions path is appended verbatim.
+#
+#   docker run -d --name ollama-infergate --restart unless-stopped \
+#     -p 11434:11434 -v D:\ollama\models:/root/.ollama ollama/ollama
+#   docker exec ollama-infergate ollama pull qwen2.5:0.5b
+#
+#   go run ./cmd/infergate -config configs/ollama.yaml
+#
+# Then ask for {"model": "qwen2.5:0.5b"} and the model name is passed through
+# unchanged: a catch-all backend accepts whatever the caller sends.
+#
+# Time values MUST be quoted strings. The loader normalises YAML to JSON, and
+# encoding/json cannot parse "30s" into a time.Duration from a bare token.
+
+server:
+  listen: ":8080"
+
+  # Slowloris defence: a client must finish sending headers within this window.
+  read_header_timeout: "10s"
+
+  # Keep-alive sockets with no in-flight request are reaped after this.
+  idle_timeout: "90s"
+
+  # Bounds one upstream exchange INCLUDING the streaming body. A small local
+  # model on a CPU can take well over a minute for a long answer, so this is
+  # deliberately generous; it still stops a wedged backend from pinning a
+  # goroutine forever.
+  upstream_timeout: "10m"
+
+  # Grace period for in-flight requests (streams included) on shutdown.
+  shutdown_timeout: "15s"
+
+  # 8 MiB of prompt is far beyond a normal agent request but still finite, so a
+  # hostile client cannot make the gateway allocate without limit.
+  max_body_bytes: 8388608
+
+  max_idle_conns_per_host: 256
+
+log:
+  level: "info"
+  format: "text"
+
+upstreams:
+  - name: "ollama-local"
+    kind: "openai"
+    base_url: "http://127.0.0.1:11434"
+
+    # Empty on purpose: Ollama needs no credential, and with no configured key
+    # the gateway forwards the caller's Authorization header if one is sent.
+    api_key: ""
+
+    # "/" is the catch-all (the nginx location-prefix idiom). Using it here
+    # means any model name the caller sends — qwen2.5:0.5b, llama3.2, whatever
+    # was pulled — resolves to this backend without editing the file. Name a
+    # real model explicitly instead when the alias must be rewritten to it.
+    models:
+      - "/"
+
+# USD per one million tokens. Used only to attach a cost figure to each request.
+# A local model has no per-token bill, so both prices stay 0 and cost_usd stays
+# 0. The gateway says so at startup ("pricing: these models have no price and
+# pricing.default is 0, so their cost_usd is 0 and cost budgets cannot see their
+# traffic") — that warning is accurate, not a misconfiguration: with no provider
+# invoice there is nothing for a dollar budget to count. Give the model a nominal
+# price here (e.g. in 0.05 / out 0.15) if /stats and the budget path should show
+# local traffic at a non-zero cost.
+pricing:
+  default:
+    in: 0.0
+    out: 0.0

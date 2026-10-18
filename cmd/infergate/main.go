@@ -18,6 +18,7 @@ import (
 	"github.com/infergate/infergate/internal/config"
 	"github.com/infergate/infergate/internal/logging"
 	"github.com/infergate/infergate/internal/server"
+	"github.com/infergate/infergate/internal/upstream"
 )
 
 // version is overridden at build time:
@@ -51,8 +52,40 @@ func main() {
 	}
 
 	if *check {
+		// No I/O here on purpose: -check is what CI and install scripts run,
+		// and a config that validates must not depend on a provider being up.
 		fmt.Printf("configuration OK: %d upstream(s) from %s\n", len(cfg.Upstreams), *configPath)
 		return
+	}
+
+	// Dial every configured backend once before the listener opens.
+	//
+	// WHAT THIS PREVENTS. Without it the process starts cleanly, /healthz
+	// answers 200, and the first real request fails with 502 "dial tcp
+	// 127.0.0.1:11434: connectex: No connection could be made" -- because the
+	// config points at a local model server (Ollama, vLLM) that was never
+	// started. The gateway is behaving correctly there, but the operator is
+	// debugging the wrong layer. One WARN per dead backend moves that
+	// discovery to startup, and it names the address, so "Ollama is not
+	// running" and "DNS is broken" stop looking the same.
+	//
+	// It is a warning and never a refusal to start: a brief provider outage
+	// must not take the gateway down with it.
+	reach := upstream.ProbeReach(context.Background(), cfg.Upstreams)
+	dead := 0
+	for _, r := range reach {
+		if r.Reachable() {
+			logger.Info("upstream reachable", "upstream", r.Name, "addr", r.Addr)
+			continue
+		}
+		dead++
+		logger.Warn("upstream is not reachable: requests routed to it fail with 502 until it starts",
+			"upstream", r.Name, "base_url", r.BaseURL, "addr", r.Addr, "err", r.Err)
+	}
+	if dead == len(reach) && dead > 0 {
+		logger.Warn("no upstream answered: the gateway will serve errors until one starts",
+			"upstreams", len(reach),
+			"hint", "start the backend, or use configs/mock.yaml which needs no external service")
 	}
 
 	srv, err := server.NewServer(cfg, logger)

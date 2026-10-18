@@ -48,6 +48,32 @@ mock 的常用开关：`-token-delay 0` 关掉每 token 的 15ms 间隔（**压�
 > Windows 会优先把 `127.0.0.1` 的请求交给那个更具体的绑定，于是 `/healthz` 会莫名其妙返回别人的 404。
 > 验收脚本默认用 `18080` 就是为了绕开这一点；手动实验时请用 `localhost` 而不是 `127.0.0.1`。
 
+> **网关起来了，但一请求就 502 `upstream_unreachable`？** 看启动日志：进程在开监听前会把每个
+> `base_url` 各拨一次 TCP，失败的后端一条 `WARN upstream is not reachable`，带 `addr=`
+> （是 `127.0.0.1:11434` 还是 `api.deepseek.com:443`，处理方式完全不同）。示例配置里的
+> `vllm-local` / `ollama-local` 指向本机服务，没启动时网关是健康的、只是没后端可用——502 是如实上报。
+> `curl.exe -s http://127.0.0.1:11434/api/tags` 能确认是不是 Ollama 没起来；只想先跑通就用
+> `configs/mock.yaml`，它只需要仓库自带的 `mockupstream`。
+
+> **想接真的模型（Docker + Ollama，模型放 D 盘）**：不需要装桌面版 Ollama，也不需要任何 API key。
+> 容器把 `11434` 开到本机，模型目录挂到 D 盘，网关用 `configs/ollama.yaml`（单上游 + `"/"` catch-all）直连：
+>
+> ```powershell
+> # 一次性：起容器（随 Docker 自启），模型落在 D:\ollama\models
+> docker run -d --name ollama-infergate --restart unless-stopped -p 11434:11434 `
+>   -v D:\ollama\models:/root/.ollama ollama/ollama
+> docker exec ollama-infergate ollama pull qwen2.5:0.5b     # 约 400MB
+> curl.exe -s http://127.0.0.1:11434/v1/models              # 后端自证
+>
+> .\bin\infergate.exe -config .\configs\ollama.yaml        # 日志首段：upstream reachable upstream=ollama-local
+> ```
+>
+> 请求里的 `model` 写 Ollama 的模型名（`qwen2.5:0.5b`）；流式与非流式都走 `/v1/chat/completions`，
+> `/stats` 会按模型记录 p50 与首字延迟。只有**模型**在 D 盘，镜像层与容器在 Docker Desktop 的数据盘
+> （默认 `C:\Users\<you>\AppData\Local\Docker`），要连镜像一起搬用 Settings → Resources → Advanced →
+> Disk image location 改到 D:。启动时那句 `pricing.default is 0 ...` 的 WARN 是正确的：本地模型没有
+> 按 token 的账单，美元预算基数本来就是 0；想让 `/stats` 显示非零成本，就在 `pricing` 里给一个名义价。
+
 ### 3.3 curl 验证（对应"可 curl 验证"的交付要求）
 
 ```powershell
@@ -197,7 +223,7 @@ infergate: configuration error: config: parse .\tmp\typo.yaml: miniyaml: decode:
 要求能严格解码，所以一份故意写坏键名的配置不可能作为出厂配置留在仓库里。
 
 以前这一行不会出现：未知键被静默丢掉，`quota:` 写成 `quotas:` 时所有限额悄悄回到默认值，`-check` 还是绿的
-——这是当时唯一没有任何断言盯着的失败形态。`configs/` 下 14 份出厂配置由 `internal/config` 的
+——这是当时唯一没有任何断言盯着的失败形态。`configs/` 下 15 份出厂配置由 `internal/config` 的
 `TestEveryShippedConfigDecodes` 逐份钉住，键名写错的拒绝则由同包的 `TestLoadRejectsAKeyWithNoFieldBehindIt`
 与 `internal/miniyaml` 的 `TestUnmarshalStrictNamesTheKeyItRefuses` 钉住。
 
